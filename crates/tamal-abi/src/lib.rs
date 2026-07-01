@@ -25,8 +25,8 @@
 /// deterministic timing, compile-time error injection, capture/verdict), so
 /// tamal bytecode is **not** interchangeable with a stock RISC-V toolchain.
 pub mod isa {
-    //! Placeholder — instruction word layout, opcode/format tables, and the
-    //! encode/decode helpers land here.
+    // Placeholder — instruction word layout, opcode/format tables, and the
+    // encode/decode helpers land here.
 }
 
 /// Control-plane messages: host → device.
@@ -36,7 +36,7 @@ pub mod isa {
 /// `SET_IO_MODE(single|dual|quad)`, `SET_CRC(on|off)`,
 /// `SET_INJECT(seed, ratio)`, `ARM`, `TRIGGER`.
 pub mod control {
-    //! Placeholder — control command/response types land here.
+    // Placeholder — control command/response types land here.
 }
 
 /// Result / trace-plane events: device → host.
@@ -46,5 +46,5 @@ pub mod control {
 /// The stream must tolerate dropped events (an overflow marker) so the eSPI bus
 /// is never blocked by trace backpressure.
 pub mod trace {
-    //! Placeholder — observed-transaction and verdict types land here.
+    // Placeholder — observed-transaction and verdict types land here.
 }

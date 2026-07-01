@@ -19,17 +19,17 @@ use thiserror::Error;
 
 /// Tokeniser: source text → tokens.
 pub mod lexer {
-    //! Placeholder — the token stream and lexer land here.
+    // Placeholder — the token stream and lexer land here.
 }
 
 /// Parser: tokens → an intermediate representation (labels, directives, instrs).
 pub mod parser {
-    //! Placeholder — the AST/IR and parser land here.
+    // Placeholder — the AST/IR and parser land here.
 }
 
 /// Encoder: IR → tamal bytecode words (via [`tamal_abi::isa`]).
 pub mod encoder {
-    //! Placeholder — instruction encoding + relocation/label fixups land here.
+    // Placeholder — instruction encoding + relocation/label fixups land here.
 }
 
 /// Errors that can arise while assembling tamal source.
