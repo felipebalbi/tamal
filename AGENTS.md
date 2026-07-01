@@ -72,6 +72,26 @@ Rust is built with `cargo` from the repo root. The gateware is built
 dependency graph is `asm → abi`, `asm-cli → asm + abi`, `loader → abi`,
 `loader-cli → loader + abi`.
 
+## Licensing
+
+Split-licensed along the same `crates/` vs `hdl/` boundary:
+
+- **Host tooling** — the Rust crates under `crates/` — is **MIT** (root
+  [`LICENSE`](LICENSE); `license = "MIT"` in the workspace `Cargo.toml`).
+- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-P-2.0** (CERN Open
+  Hardware Licence v2 – Permissive; [`hdl/LICENSE`](hdl/LICENSE)). A permissive
+  open-hardware licence fits hardware description better than a software licence
+  like MIT.
+
+Every `hdl/**/*.hs` file carries a REUSE-style header
+(`SPDX-FileCopyrightText` + `SPDX-License-Identifier: CERN-OHL-P-2.0`) — keep it
+on any new HDL file. `hdl/tamal.cabal` uses `license: LicenseRef-CERN-OHL-P-2.0`
+(not the bare `CERN-OHL-P-2.0`) **only** because the pinned Cabal 3.12 predates
+the SPDX-list entry added in Cabal-syntax 3.14; switch to the bare id once the
+`stack.yaml` snapshot moves to Cabal ≥ 3.14. Note `CERN_OHL_P_2_0` (underscores)
+is just the Haskell constructor in `Distribution.SPDX.LicenseId` — the cabal
+field and SPDX headers use the hyphenated string.
+
 ## Target hardware
 
 - **Digilent Arty A7-100T**, part `xc7a100tcsg324-1`, 100 MHz clock (pin E3).
@@ -144,3 +164,5 @@ ready); tolerate WAIT STATE; drive/observe alerts.
 - Don't add runtime randomness to error injection — it must be compile-time and
   reproducible (`ratio = 0` is exactly zero; `(seed, ratio)` replays byte for
   byte).
+- Don't relicense `hdl/` under MIT or strip the SPDX headers — the gateware is
+  CERN-OHL-P-2.0; only the Rust host tooling under `crates/` is MIT.
