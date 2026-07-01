@@ -15,6 +15,7 @@ import qualified Test.Config
 import qualified Test.Crc
 import Test.Gen (genByte)
 import qualified Test.Isa
+import qualified Test.RegFile
 import qualified Test.Serdes
 import qualified Test.Trace
 
@@ -38,4 +39,5 @@ tests =
     , Test.Trace.tests
     , Test.Branch.tests
     , Test.Alu.tests
+    , Test.RegFile.tests
     ]
