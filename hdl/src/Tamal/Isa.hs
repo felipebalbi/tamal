@@ -224,7 +224,7 @@ decodeData sub' rd rs1 rs2 imm =
     0x9 -> only (z rs2)                           (Ori rd rs1 imm)
     0xa -> only (z imm)                           (Xor_ rd rs1 rs2)
     0xb -> only (z rs2)                           (Xori rd rs1 imm)
-    0xc -> only (z rs2 && shMid == 0)             (Shift rd rs1 shOp shAmt)  -- imm=op[10:9]++rsv[8:5]++amt[4:0]
+    0xc -> only (z rs2 && shMid == 0 && shOp /= 0b11) (Shift rd rs1 shOp shAmt)  -- imm=op[10:9]++rsv[8:5]++amt[4:0]; op 0b11 reserved
     0xd -> only (z rs1 && z rs2 && immHi5 == 0)   (Rdsr rd (truncateB imm))  -- imm[4:0]=sr#, imm[10:5] reserved
     _   -> Left IllegalOpcode
   where

@@ -38,6 +38,10 @@ tests =
     , testCase "reserved non-zero field traps (CS_ASSERT with junk imm)" $
         -- CS_ASSERT = group 00, sub 0x0, all operand bits reserved; set imm bit 0.
         decode (busWord 0b00 0x0 + 1) @?= Left ReservedFieldNonZero
+    , testCase "reserved SHIFT op (0b11) traps" $
+        -- encode never validates, so this builds a SHIFT word whose op field
+        -- is the reserved 0b11; the tightened decoder must reject it (spec §9).
+        decode (encode (Shift 0 0 0b11 0)) @?= Left ReservedFieldNonZero
     ]
   where
     -- helper: build a word from (group, sub) with all-zero operands
