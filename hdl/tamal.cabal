@@ -101,6 +101,7 @@ library
     Tamal.Config
     Tamal.Bus.Serdes
     Tamal.Trace
+    Tamal.Branch
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.
@@ -142,6 +143,7 @@ test-suite test-library
     Test.Config
     Test.Serdes
     Test.Trace
+    Test.Branch
   build-depends:
     tamal,
     tasty >= 1.2 && < 1.6,
