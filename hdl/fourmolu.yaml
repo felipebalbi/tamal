@@ -1,0 +1,12 @@
+# Deliberate Haskell formatting for the tamal gateware (everything under hdl/).
+# One style, enforced locally by `make format-check` and in CI. HLS also reads
+# this file, so format-on-save matches CI when the formatting provider is set to
+# fourmolu. See the full option list with `fourmolu --print-defaults`.
+
+indentation: 2            # 2-space, matching the existing hand-written style
+comma-style: leading      # leading commas:  ( foo\n , bar\n )
+import-export-style: leading
+indent-wheres: false
+record-brace-space: false
+newlines-between-decls: 1
+respectful: true          # keep deliberate blank lines where fourmolu can

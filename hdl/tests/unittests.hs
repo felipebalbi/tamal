@@ -3,28 +3,30 @@
 
 module Main (main) where
 
-import Prelude
-import Clash.Prelude (pack, unpack, BitVector)
+import Clash.Prelude (BitVector, pack, unpack)
+import Hedgehog (forAll, property, (===))
 import Test.Tasty
 import Test.Tasty.Hedgehog (testProperty)
-import Hedgehog (property, forAll, (===))
+import Prelude
 
-import Test.Gen (genByte)
-import qualified Test.Crc
-import qualified Test.Isa
+import qualified Test.Alu
+import qualified Test.Branch
 import qualified Test.Config
+import qualified Test.Crc
+import Test.Gen (genByte)
+import qualified Test.Isa
 import qualified Test.Serdes
 import qualified Test.Trace
-import qualified Test.Branch
-import qualified Test.Alu
 
 main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
 tests =
-  testGroup "tamal"
-    [ testGroup "smoke"
+  testGroup
+    "tamal"
+    [ testGroup
+        "smoke"
         [ testProperty "pack/unpack byte round-trips" $ property $ do
             b <- forAll genByte
             unpack (pack b) === (b :: BitVector 8)

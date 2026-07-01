@@ -1,14 +1,14 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
 -- SPDX-License-Identifier: CERN-OHL-P-2.0
-
 {-# LANGUAGE NumericUnderscores #-}
+
 module Test.Serdes (tests) where
 
 import Clash.Prelude
+import Hedgehog (forAll, property, (===))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
-import Hedgehog (property, forAll, (===))
 
 import Tamal.Bus.Serdes
 import Test.Gen (genByte)
@@ -19,13 +19,14 @@ io0 lanes = fst (lanes !! (0 :: Index 4))
 
 tests :: TestTree
 tests =
-  testGroup "Serdes"
+  testGroup
+    "Serdes"
     [ testProperty "x1 serialize/deserialize round-trips (loopback)" $ property $ do
         b <- forAll genByte
         deserializeX1 (map io0 (serializeX1 b)) === b
     , testCase "x1 serialize drives IO[0] MSB-first, tri-states IO[1..3]" $ do
-        let beats = serializeX1 0b1000_0000        -- MSB set only
-        io0 (head beats) @?= 1                       -- first beat carries the MSB
+        let beats = serializeX1 0b1000_0000 -- MSB set only
+        io0 (head beats) @?= 1 -- first beat carries the MSB
         io0 (last beats) @?= 0
         -- IO[1] output-enable is 0 (tri-stated) on every beat
         map (\l -> snd (l !! (1 :: Index 4))) beats @?= repeat 0

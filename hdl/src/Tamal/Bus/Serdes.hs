@@ -10,15 +10,15 @@ x1 rules: PUT drives the data bit on IO[0], MSB first, with IO[1..3]
 tri-stated; GET samples IO[1] with all engine drivers tri-stated. Dual/
 quad maps land in Phase 3.
 -}
-module Tamal.Bus.Serdes (
-        Lane,
-        Lanes,
-        hiZ,
-        driveHigh,
-        serializeX1,
-        deserializeX1,
-        tarBeat,
-) where
+module Tamal.Bus.Serdes
+  ( Lane
+  , Lanes
+  , hiZ
+  , driveHigh
+  , serializeX1
+  , deserializeX1
+  , tarBeat
+  ) where
 
 import Clash.Prelude
 
@@ -36,9 +36,9 @@ driveHigh = repeat (1, 1)
 -- | One byte -> eight beats, MSB first, driving IO[0] only.
 serializeX1 :: BitVector 8 -> Vec 8 Lanes
 serializeX1 b = map beat (unpack b :: Vec 8 Bit)
-    where
-        beat :: Bit -> Lanes
-        beat bit' = (bit', 1) :> (0, 0) :> (0, 0) :> (0, 0) :> Nil
+ where
+  beat :: Bit -> Lanes
+  beat bit' = (bit', 1) :> (0, 0) :> (0, 0) :> (0, 0) :> Nil
 
 -- | Eight IO[1] samples (MSB first) -> one byte.
 deserializeX1 :: Vec 8 Bit -> BitVector 8

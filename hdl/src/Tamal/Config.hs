@@ -18,35 +18,39 @@ module Tamal.Config
 
 import Clash.Prelude
 
-data Role        = Controller | Target        deriving stock (Generic, Show, Eq) deriving anyclass NFDataX
-data IoMode      = X1 | X2 | X4               deriving stock (Generic, Show, Eq) deriving anyclass NFDataX
-data Sck         = Sck20 | Sck33 | Sck50 | Sck66 deriving stock (Generic, Show, Eq) deriving anyclass NFDataX
-data AlertSource = AlertPin | AlertIo1        deriving stock (Generic, Show, Eq) deriving anyclass NFDataX
+data Role = Controller | Target deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
+data IoMode = X1 | X2 | X4 deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
+data Sck = Sck20 | Sck33 | Sck50 | Sck66 deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
+data AlertSource = AlertPin | AlertIo1 deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
 
 data Config = Config
-  { cfgRole        :: Role
-  , cfgIoMode      :: IoMode
-  , cfgSck         :: Sck
+  { cfgRole :: Role
+  , cfgIoMode :: IoMode
+  , cfgSck :: Sck
   , cfgAlertSource :: AlertSource
   }
   deriving stock (Generic, Show, Eq)
-  deriving anyclass NFDataX
+  deriving anyclass (NFDataX)
 
 data ConfigError
   = UnsupportedRole
   | UnsupportedIoMode
   | UnsupportedSck
   deriving stock (Generic, Show, Eq)
-  deriving anyclass NFDataX
+  deriving anyclass (NFDataX)
 
 -- payload[5]=role, [4:3]=io_mode, [2:1]=sck, [0]=alert_source
 decodeConfig :: BitVector 6 -> Either ConfigError Config
 decodeConfig p =
   case (role, io, sck) of
     (0b0, 0b00, 0b00) -> Right (Config Controller X1 Sck20 alertSrc)
-    (0b1, _,    _   ) -> Left UnsupportedRole
-    (_,   io',  _   ) | io' /= 0b00 -> Left UnsupportedIoMode
-    _                 -> Left UnsupportedSck
-  where
-    (role, io, sck, alert) = bitCoerce p :: (BitVector 1, BitVector 2, BitVector 2, BitVector 1)
-    alertSrc = if alert == 0 then AlertPin else AlertIo1
+    (0b1, _, _) -> Left UnsupportedRole
+    (_, io', _) | io' /= 0b00 -> Left UnsupportedIoMode
+    _ -> Left UnsupportedSck
+ where
+  (role, io, sck, alert) = bitCoerce p :: (BitVector 1, BitVector 2, BitVector 2, BitVector 1)
+  alertSrc = if alert == 0 then AlertPin else AlertIo1

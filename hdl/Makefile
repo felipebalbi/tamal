@@ -112,6 +112,23 @@ test:
 	$(TEST)
 
 ##----------------------------------------------------------------------------##
+#   Formatting (fourmolu)                                                      #
+##----------------------------------------------------------------------------##
+
+# Every Haskell source file. Shell-free discovery via $(wildcard) (a make
+# built-in), covering src/, src/*/ (Tamal/), src/*/*/ (Tamal/Bus/), tests/,
+# tests/Test/, and bin/ — same portability rationale as the codegen prereqs.
+HS = $(wildcard src/*.hs src/*/*.hs src/*/*/*.hs tests/*.hs tests/*/*.hs bin/*.hs)
+
+# Rewrite every file in place to the hdl/fourmolu.yaml style.
+format:
+	$(FOURMOLU) --mode inplace $(HS)
+
+# Fail (non-zero exit) if anything is unformatted. Used by CI.
+format-check:
+	$(FOURMOLU) --mode check $(HS)
+
+##----------------------------------------------------------------------------##
 #   Cleanup                                                                    #
 ##----------------------------------------------------------------------------##
 
@@ -122,5 +139,5 @@ clean:
 #   Special Targets                                                            #
 ##----------------------------------------------------------------------------##
 
-.PHONY: default bitstream program test clean
+.PHONY: default bitstream program test clean format format-check
 .SECONDARY:

@@ -1,6 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
 -- SPDX-License-Identifier: CERN-OHL-P-2.0
-
 {-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -18,7 +17,7 @@ import Clash.Prelude
 
 -- | 100 MHz system clock of the Arty A7-100T (CLK100MHZ, pin E3).
 createDomain
-        vSystem
-                { vName = "Dom100"
-                , vPeriod = hzToPeriod 100_000_000
-                }
+  vSystem
+    { vName = "Dom100"
+    , vPeriod = hzToPeriod 100_000_000
+    }

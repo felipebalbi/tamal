@@ -39,6 +39,20 @@ jobs:
       - name: Clash -> Verilog codegen smoke
         run: stack run clash -- Tamal --verilog
 
+  haskell-format:
+    name: Haskell format (fourmolu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads hdl/fourmolu.yaml (per-file upward search) and hdl/tamal.cabal
+      # (for default-extensions). Pin the version so CI matches local installs.
+      - uses: haskell-actions/run-fourmolu@v11
+        with:
+          version: "0.16.2.0"
+          pattern: |
+            hdl/**/*.hs
+
   rust:
     name: Rust (workspace)
     runs-on: ubuntu-latest

@@ -15,11 +15,11 @@ DATA-group compute layer (ALU/branch design §5–7). Two layers:
 The ISA is imported qualified as @Isa@ because 'AluOp'\'s @Add@/@Sub@ would
 otherwise clash with 'Tamal.Isa.Instr'\'s @Add@/@Sub@ constructors.
 -}
-module Tamal.Alu (
-        AluOp (..),
-        alu,
-        dataResult,
-) where
+module Tamal.Alu
+  ( AluOp (..)
+  , alu
+  , dataResult
+  ) where
 
 -- 'And'/'Xor' are hidden because Clash.Prelude re-exports the Data.Bits newtype
 -- wrappers of those names, which would clash with 'AluOp'\'s constructors. We
@@ -29,44 +29,44 @@ import Tamal.Isa (Instr)
 import qualified Tamal.Isa as Isa
 
 data AluOp = Add | Sub | And | Or | Xor | Sll | Srl | Sra
-        deriving stock (Generic, Show, Eq, Enum, Bounded)
-        deriving anyclass (NFDataX)
+  deriving stock (Generic, Show, Eq, Enum, Bounded)
+  deriving anyclass (NFDataX)
 
 alu :: AluOp -> BitVector 32 -> BitVector 32 -> BitVector 32
 alu op r1 r2 = case op of
-        Add -> r1 + r2
-        Sub -> r1 - r2
-        And -> r1 .&. r2
-        Or -> r1 .|. r2
-        Xor -> r1 `xor` r2
-        Sll -> r1 `shiftL` sh
-        Srl -> r1 `shiftR` sh
-        Sra -> pack (shiftR (unpack r1 :: Signed 32) sh)
-    where
-        sh :: Int
-        sh = fromIntegral (unpack (truncateB r2) :: Unsigned 5)
+  Add -> r1 + r2
+  Sub -> r1 - r2
+  And -> r1 .&. r2
+  Or -> r1 .|. r2
+  Xor -> r1 `xor` r2
+  Sll -> r1 `shiftL` sh
+  Srl -> r1 `shiftR` sh
+  Sra -> pack (shiftR (unpack r1 :: Signed 32) sh)
+ where
+  sh :: Int
+  sh = fromIntegral (unpack (truncateB r2) :: Unsigned 5)
 
 -- Complete DATA-group value semantics over register VALUES (rs1v, rs2v).
 -- Total over Instr; non-DATA-compute constructors hit the documented default.
 dataResult :: Instr -> BitVector 32 -> BitVector 32 -> BitVector 32
 dataResult instr rs1v rs2v = case instr of
-        Isa.LoadImm _ imm -> signExtend imm
-        Isa.Lui _ imm20 -> (zeroExtend imm20 :: BitVector 32) `shiftL` 12
-        Isa.Mov _ _ -> rs1v
-        Isa.Add _ _ _ -> alu Add rs1v rs2v
-        Isa.Addi _ _ imm -> alu Add rs1v (signExtend imm)
-        Isa.Sub _ _ _ -> alu Sub rs1v rs2v
-        Isa.And_ _ _ _ -> alu And rs1v rs2v
-        Isa.Andi _ _ imm -> alu And rs1v (signExtend imm)
-        Isa.Or_ _ _ _ -> alu Or rs1v rs2v
-        Isa.Ori _ _ imm -> alu Or rs1v (signExtend imm)
-        Isa.Xor_ _ _ _ -> alu Xor rs1v rs2v
-        Isa.Xori _ _ imm -> alu Xor rs1v (signExtend imm)
-        Isa.Shift _ _ shOp amt -> alu (toAluShift shOp) rs1v (zeroExtend amt)
-        _ -> 0 -- BUS / CTRL / RDSR: never routed here by the Engine
-    where
-        toAluShift :: BitVector 2 -> AluOp
-        toAluShift = \case
-                0b00 -> Sll
-                0b01 -> Srl
-                _ -> Sra -- 0b10; 0b11 is unreachable (decode traps it, Task 1)
+  Isa.LoadImm _ imm -> signExtend imm
+  Isa.Lui _ imm20 -> (zeroExtend imm20 :: BitVector 32) `shiftL` 12
+  Isa.Mov _ _ -> rs1v
+  Isa.Add _ _ _ -> alu Add rs1v rs2v
+  Isa.Addi _ _ imm -> alu Add rs1v (signExtend imm)
+  Isa.Sub _ _ _ -> alu Sub rs1v rs2v
+  Isa.And_ _ _ _ -> alu And rs1v rs2v
+  Isa.Andi _ _ imm -> alu And rs1v (signExtend imm)
+  Isa.Or_ _ _ _ -> alu Or rs1v rs2v
+  Isa.Ori _ _ imm -> alu Or rs1v (signExtend imm)
+  Isa.Xor_ _ _ _ -> alu Xor rs1v rs2v
+  Isa.Xori _ _ imm -> alu Xor rs1v (signExtend imm)
+  Isa.Shift _ _ shOp amt -> alu (toAluShift shOp) rs1v (zeroExtend amt)
+  _ -> 0 -- BUS / CTRL / RDSR: never routed here by the Engine
+ where
+  toAluShift :: BitVector 2 -> AluOp
+  toAluShift = \case
+    0b00 -> Sll
+    0b01 -> Srl
+    _ -> Sra -- 0b10; 0b11 is unreachable (decode traps it, Task 1)
