@@ -1,18 +1,22 @@
 module Main (main) where
 
 import Prelude
+import Clash.Prelude (pack, unpack, BitVector)
 import Test.Tasty
-import Test.Tasty.HUnit
+import Test.Tasty.Hedgehog (testProperty)
+import Hedgehog (property, forAll, (===))
 
--- Placeholder tasty suite so `stack test` / `make test` is wired up from the
--- start. Real component tests (instruction encoder, assembler, eSPI cycle
--- decode, verdict engine) replace this as the gateware grows.
+import Test.Gen (genByte)
+
 main :: IO ()
 main = defaultMain tests
 
 tests :: TestTree
 tests =
-        testGroup
-                "tamal"
-                [ testCase "scaffold placeholder" (True @?= True)
-                ]
+  testGroup "tamal"
+    [ testGroup "smoke"
+        [ testProperty "pack/unpack byte round-trips" $ property $ do
+            b <- forAll genByte
+            unpack (pack b) === (b :: BitVector 8)
+        ]
+    ]

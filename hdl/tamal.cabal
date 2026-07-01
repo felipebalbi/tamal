@@ -127,7 +127,12 @@ test-suite test-library
   type: exitcode-stdio-1.0
   ghc-options: -threaded
   main-is: unittests.hs
+  other-modules:
+    Test.Gen
   build-depends:
     tamal,
     tasty >= 1.2 && < 1.6,
-    tasty-hunit
+    tasty-hunit,
+    tasty-hedgehog,
+    hedgehog,
+    clash-prelude-hedgehog
