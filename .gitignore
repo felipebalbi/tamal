@@ -1,0 +1,58 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Rust (host tooling under crates/)
+# ──────────────────────────────────────────────────────────────────────────
+/target
+**/*.rs.bk
+# Cargo.lock IS committed (we ship binaries) — do not ignore it.
+
+# ──────────────────────────────────────────────────────────────────────────
+# Haskell / Clash (hdl/)
+# ──────────────────────────────────────────────────────────────────────────
+.stack-work/
+dist-newstyle/
+dist/
+.ghc.environment.*
+*.hi
+*.hi-boot
+*.o
+*.o-boot
+*.dyn_hi
+*.dyn_o
+*.p_o
+*.chi
+*.prof
+*.hp
+*.aux
+
+# Clash HDL output (created during the build cycle)
+hdl/verilog/
+hdl/vhdl/
+hdl/systemverilog/
+
+# ──────────────────────────────────────────────────────────────────────────
+# HDL build tree + Vivado (hdl/)
+# ──────────────────────────────────────────────────────────────────────────
+hdl/_build/
+*.jou
+*.log
+*.str
+*.dcp
+*.bit
+*.ltx
+*.backup.*
+.Xil/
+.cache/
+usage_statistics_webtalk.*
+vivado_pid*.str
+
+# Local, machine-specific tool-path overrides (build.cfg.local etc.)
+*.local
+
+# ──────────────────────────────────────────────────────────────────────────
+# Editors / OS
+# ──────────────────────────────────────────────────────────────────────────
+*~
+.DS_Store
+/.idea
+*.iml
+*.swp

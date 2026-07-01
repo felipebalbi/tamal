@@ -1,0 +1,13 @@
+[package]
+name = "tamal-asm"
+version = "0.1.0"
+description = "Assembler for the tamal ISA: RISC-V-flavored source into tamal bytecode."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tamal-abi.workspace = true
+thiserror.workspace = true

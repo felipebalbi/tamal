@@ -1,0 +1,21 @@
+{-# LANGUAGE NumericUnderscores #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
+
+{- |
+Clock domain for the tamal gateware on the Digilent Arty A7-100T.
+
+The board's 100 MHz oscillator (CLK100MHZ, pin E3) drives the single system
+domain. The default 'vSystem' reset (asynchronous, active-high) is kept as-is:
+the top entity ties it permanently de-asserted, so it never reaches hardware
+and Clash emits no reset port.
+-}
+module Tamal.Domain where
+
+import Clash.Prelude
+
+-- | 100 MHz system clock of the Arty A7-100T (CLK100MHZ, pin E3).
+createDomain
+        vSystem
+                { vName = "Dom100"
+                , vPeriod = hzToPeriod 100_000_000
+                }

@@ -1,0 +1,27 @@
+# Workspace for the tamal host-side tooling. The FPGA gateware is a separate
+# Clash project under hdl/ (built with `cd hdl && make`), not a Cargo member.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+# Shared metadata for every crate under crates/. Edition 2024 is stable on
+# current rustc; bump `rust-version` only when a member needs a newer feature.
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+authors = ["Felipe Balbi <felipe@balbi.sh>"]
+repository = "https://github.com/felipebalbi/tamal"
+license = "MIT"
+
+# Shared dependencies. Members opt in with e.g. `clap.workspace = true`.
+[workspace.dependencies]
+# Intra-workspace libs.
+tamal-abi = { path = "crates/tamal-abi" }
+tamal-asm = { path = "crates/tamal-asm" }
+tamal-loader = { path = "crates/tamal-loader" }
+
+# Third-party.
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+serialport = "4"

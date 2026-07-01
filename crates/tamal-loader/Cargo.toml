@@ -1,0 +1,14 @@
+[package]
+name = "tamal-loader"
+version = "0.1.0"
+description = "Host-side loader: ships tamal bytecode to the rig and drains the result stream (UART transport to start)."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tamal-abi.workspace = true
+thiserror.workspace = true
+serialport.workspace = true

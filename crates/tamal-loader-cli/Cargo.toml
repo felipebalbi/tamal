@@ -1,0 +1,19 @@
+[package]
+name = "tamal-loader-cli"
+version = "0.1.0"
+description = "Command-line loader and controller for a tamal eSPI compliance rig."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tamal-loader"
+path = "src/main.rs"
+
+[dependencies]
+tamal-abi.workspace = true
+tamal-loader.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
