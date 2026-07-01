@@ -7,6 +7,7 @@ import Test.Tasty.Hedgehog (testProperty)
 import Hedgehog (property, forAll, (===))
 
 import Test.Gen (genByte)
+import qualified Test.Crc
 
 main :: IO ()
 main = defaultMain tests
@@ -19,4 +20,5 @@ tests =
             b <- forAll genByte
             unpack (pack b) === (b :: BitVector 8)
         ]
+    , Test.Crc.tests
     ]
