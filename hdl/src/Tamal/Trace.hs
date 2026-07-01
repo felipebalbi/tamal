@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 {- |
 Result-ring record encoding and the overflow-safe push model (spec §8).
 Records are whole 32-bit words: CAPTURE (1 word, tag 00), MARK (2 words,

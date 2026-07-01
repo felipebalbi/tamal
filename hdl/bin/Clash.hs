@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 {- Wrapper around Clash's batch compiler, with the tamal project in scope.
 
    Generate Verilog with:

@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 {- |
 Engine configuration decoded from the @SET_CONFIG@ payload (spec §7.2).
 v1 implements only controller role, single I/O, and 20 MHz SCK; any other

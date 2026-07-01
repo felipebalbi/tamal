@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 module Test.Crc (tests) where
 
 import Clash.Prelude

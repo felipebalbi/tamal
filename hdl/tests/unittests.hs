@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 module Main (main) where
 
 import Prelude

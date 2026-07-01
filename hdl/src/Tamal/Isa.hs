@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 {- |
 Tamal instruction encoding (spec §4–6). 32-bit fixed-width words:
 

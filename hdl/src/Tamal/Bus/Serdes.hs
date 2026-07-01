@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: 2026 Felipe Balbi
+-- SPDX-License-Identifier: CERN-OHL-P-2.0
+
 {- |
 Pure single-I/O (x1) byte serialisation and the turnaround (TAR) beat
 vector (spec §5). A 'Lanes' value is the per-beat drive state of the four

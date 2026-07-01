@@ -105,4 +105,11 @@ and set `VIVADO` there.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Tamal is split-licensed by concern:
+
+- **Host tooling** — the Rust crates under `crates/` — is **MIT**; see
+  [`LICENSE`](LICENSE).
+- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-P-2.0** (CERN Open
+  Hardware Licence Version 2 – Permissive); see [`hdl/LICENSE`](hdl/LICENSE). A
+  permissive open-hardware licence fits hardware description better than a
+  software licence like MIT.

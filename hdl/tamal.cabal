@@ -2,7 +2,10 @@ cabal-version:       2.4
 name:                tamal
 version:             0.1.0
 synopsis:            eSPI compliance test-rig gateware (Clash) for the Digilent Arty A7-100T
-license:             MIT
+-- CERN-OHL-P-2.0 is a real SPDX id, but Cabal's bundled SPDX list doesn't know
+-- it; express it as a LicenseRef and ship the full text in license-file.
+license:             LicenseRef-CERN-OHL-P-2.0
+license-file:        LICENSE
 author:              Felipe Balbi <felipe@balbi.sh>
 copyright:           2026 Felipe Balbi
 
