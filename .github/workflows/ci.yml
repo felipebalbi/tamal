@@ -49,7 +49,7 @@ jobs:
       # (for default-extensions). Pin the version so CI matches local installs.
       - uses: haskell-actions/run-fourmolu@v11
         with:
-          version: "0.16.2.0"
+          version: "0.20.0.0"
           pattern: |
             hdl/**/*.hs
 

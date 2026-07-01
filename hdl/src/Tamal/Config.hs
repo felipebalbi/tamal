@@ -18,13 +18,17 @@ module Tamal.Config
 
 import Clash.Prelude
 
-data Role = Controller | Target deriving stock (Generic, Show, Eq)
+data Role = Controller | Target
+  deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
-data IoMode = X1 | X2 | X4 deriving stock (Generic, Show, Eq)
+data IoMode = X1 | X2 | X4
+  deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
-data Sck = Sck20 | Sck33 | Sck50 | Sck66 deriving stock (Generic, Show, Eq)
+data Sck = Sck20 | Sck33 | Sck50 | Sck66
+  deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
-data AlertSource = AlertPin | AlertIo1 deriving stock (Generic, Show, Eq)
+data AlertSource = AlertPin | AlertIo1
+  deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
 data Config = Config
