@@ -11,6 +11,7 @@ import qualified Test.Crc
 import qualified Test.Isa
 import qualified Test.Config
 import qualified Test.Serdes
+import qualified Test.Trace
 
 main :: IO ()
 main = defaultMain tests
@@ -27,4 +28,5 @@ tests =
     , Test.Isa.tests
     , Test.Config.tests
     , Test.Serdes.tests
+    , Test.Trace.tests
     ]
