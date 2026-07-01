@@ -2,12 +2,14 @@
 
 Living roadmap for the Clash gateware. Tracks what pure cores exist, what's
 missing, and the order to build them. Anchored to the ISA & HDL Engine design
-(`docs/superpowers/specs/2026-07-01-tamal-isa-design.md`, esp. §6, §10, §11).
+(`docs/superpowers/specs/2026-07-01-tamal-isa-design.md`, esp. §6, §10, §11) and
+the ALU/branch design (`docs/superpowers/specs/2026-07-01-tamal-alu-branch-design.md`).
 
 ## Where things stand
 
 Every **pure leaf core** from the §10 module decomposition is built and
-hedgehog-tested — *except the compute layer*.
+hedgehog-tested — *the compute layer (ALU + branch comparator) included*. What
+remains is the **register file** and the keystone **Engine**.
 
 | Module | Purpose | Status |
 |---|---|---|
@@ -16,56 +18,66 @@ hedgehog-tested — *except the compute layer*.
 | `Tamal.Bus.Serdes` | x1 serialize/deserialize + `tarBeat` | done, tested |
 | `Tamal.Config` | `SET_CONFIG` decode | done, tested |
 | `Tamal.Trace` | ring record encode + `ringPush` overflow | done, tested |
+| `Tamal.Alu` | `alu` core + `dataResult` wrapper (DATA group) | done, tested |
+| `Tamal.Branch` | `branchTaken` comparator (CTRL group, unsigned) | done, tested |
 | `Tamal.Domain` | `Dom100` clock domain | done |
 | `Tamal` (top) | synthesis entry point | **placeholder heartbeat** (LED blink) |
 
-Confirmed absent: no `Engine.hs`, no ALU, no branch unit, no register file.
+Confirmed absent: no `Engine.hs`, no register file.
 
 ## The gap
 
 The keystone `Engine.step :: State -> BusIn -> (State, BusOut, Maybe Ring)`
-(§10) cannot execute the DATA group without an **ALU**, nor resolve CTRL
-branches without a **branch comparator**. These are the only two remaining pure,
-combinational, independently-testable leaf cores — and both are prerequisites
-for the Engine.
+(§10) now has both compute cores it needs — `dataResult`/`alu` for the DATA
+group, `branchTaken` for CTRL branches. Two things still stand between the cores
+and a running engine:
 
-## Next step: the pure compute pair (ALU + branch comparator)
+1. **The register file** (16×32, `x0` = 0) — the last pure-ish leaf. It holds the
+   architectural state the Engine reads (`rs1`/`rs2`) and writes (`rd`), with
+   `x0` hardwired to zero. Small, but its read/write interface is what
+   `Engine.step` is built on.
+2. **`Engine.step` itself** — the first *stateful* piece (a Mealy transition) and
+   the composition point for decode + regfile + `alu`/`dataResult` + `branchTaken`
+   + `Serdes` + `Crc` + `Trace`, plus PC/branch-offset math, `RDSR`
+   (RX CRC-8 special-register read), and the multi-cycle bus FSM that sequences
+   BUS ops.
 
-Not the whole Engine yet. Build the ALU (DATA group) and the branch comparator
-(CTRL group) next, because:
+## Next step: the register file
 
-1. **It continues the established rhythm.** Everything so far is a small, total,
-   pure function property-tested in isolation before assembly. §10 explicitly
-   names the `Op`-dispatched ALU and `branch :: Branch -> BitVector 32 ->
-   BitVector 32 -> Bool` as exactly this kind of function. This is the last work
-   that fits the pattern.
-2. **It unblocks the keystone.** With ALU + branch done, `Engine.step` becomes
-   *wiring*, not *invention*.
-3. **It's the last thing buildable in complete isolation** before the difficulty
-   spike into stateful (`Engine.step` Mealy) and impure (BRAM, UART, SCK/edge
-   gen, IOBUF tri-states) territory — the parts AGENTS.md flags as the genuinely
-   hard timing/tri-state logic. Nail the pure compute while it's cheap.
+Not the whole Engine yet. Build the 16×32 register file next, because:
 
-Concrete scope (straight off §6.1 / §6.2):
+1. **It continues the established rhythm.** It is the last thing buildable and
+   testable close to isolation before the difficulty spike into the stateful
+   `Engine.step` Mealy and the impure `topEntity` shell (BRAM, UART, SCK/edge
+   gen, IOBUF tri-states) — the parts AGENTS.md flags as the genuinely hard
+   timing/tri-state logic.
+2. **It pins the Engine's operand interface.** `Engine.step` reads two source
+   registers and writes one destination each cycle; nailing the regfile
+   read/write semantics (and `x0`) first turns that part of the Engine into
+   wiring.
 
-- **ALU** — `LOAD_IMM`, `LUI`, `MOV`, `ADD`/`ADDI`, `SUB`, `AND`/`ANDI`,
-  `OR`/`ORI`, `XOR`/`XORI`, `SHIFT` (SLL/SRL/SRA). Signedness seam: `SRA` needs
-  `unpack :: BitVector 32 -> Signed 32`.
-- **Branch** — `BEQ`/`BNE` plus **unsigned** `BLTU`/`BGEU` (unsigned compare is
-  the easy thing to get wrong).
-- **Tests** — mirror the existing hedgehog style: cross-check against a
-  reference model, `x0`-stays-zero, shift-amount edges, signed/unsigned
-  boundaries (test-plan item 5 groundwork).
+Concrete scope (§6 / §10 / §14):
 
-## Ordering after the compute pair
+- **State** — `Vec 16 (BitVector 32)`, initialised to all-zero.
+- **Read** — combinational read of a `Reg` selector, with `x0` reading `0`
+  regardless of contents.
+- **Write** — write `rd` unless `rd == x0` (writes to `x0` are discarded).
+- **v1 register window** — x0..x15 live; x16..x31 are rejected upstream
+  (assembler + engine), so the file indexes 16 entries.
+- **Tests** — mirror the existing hedgehog style: read-after-write, `x0` always
+  reads zero, writes to `x0` are no-ops, reads of untouched registers, and
+  independence of distinct registers.
 
-1. **ALU + branch comparator** (pure, hedgehog) ← do this next
-2. **Register file** (16×32, `x0` = 0) — trivial, lands with the Engine
-3. **`Engine.hs` — `step` Mealy** — composes decode + regfile + ALU + branch +
-   serdes + CRC + trace (test-plan item 5)
+## Ordering
+
+1. **ALU + branch comparator** (pure, hedgehog) — done
+2. **Register file** (16×32, `x0` = 0) ← do this next
+3. **`Engine.hs` — `step` Mealy** — composes decode + regfile + `alu`/`dataResult`
+   + `branchTaken` + serdes + CRC + trace; includes `RDSR` and PC/branch-offset
+   math and the bus-op FSM (test-plan item 5)
 4. **Real `topEntity` shell** — instr-BRAM, ring-BRAM, UART load/drain FSM, SCK
    gen, IOBUF wiring (the impure, timing-critical part)
 
-Short version: the ALU (paired with the branch comparator) is the right next
-step — it's the last pure core, keeps the hedgehog-first discipline, and turns
-the subsequent `Engine.step` from a design problem into an assembly job.
+Short version: the register file is the right next step — it's the last leaf,
+keeps the hedgehog-first discipline, and fixes the operand interface so the
+subsequent `Engine.step` is assembly, not invention.
