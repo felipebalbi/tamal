@@ -83,7 +83,9 @@ Three planes (per `AGENTS.md`):
   assembler and engine).
 - **imm / payload** `[10:0]`: immediate, branch offset, TAR count, bit-count, or
   opcode-specific. Big 32-bit constants (rare — the host builds packet bytes)
-  come from a `li` pseudo-op expanding to `LUI` + `ORI`.
+  come from a `li` pseudo-op expanding to `LUI` + `ADDI` (standard `%hi`/`%lo`
+  carry adjustment; the 11-bit immediate leaves a residual reachability gap that
+  `tamal-asm` covers with a 3-instruction sequence — see the ALU/branch design).
 
 Fields unused by an opcode are **reserved-must-be-zero**; a non-zero reserved
 field → `TRAP`. This gives forward room and catches malformed bytecode.
@@ -181,8 +183,8 @@ later — v1 programs are branch-structured.
 
 | sub | Mnemonic | Form | Effect |
 |----|----------|------|--------|
-| `0x0` | `LOAD_IMM` | `rd, imm` | `rd ← ext(imm[10:0])`. |
-| `0x1` | `LUI` | `rd, imm20` | `rd ← imm << 12` (pairs with `ORI` for 32-bit consts). |
+| `0x0` | `LOAD_IMM` | `rd, imm` | `rd ← sext(imm[10:0])`. |
+| `0x1` | `LUI` | `rd, imm20` | `rd ← imm << 12` (pairs with `ADDI` for 32-bit consts). |
 | `0x2` | `MOV` | `rd, rs1` | `rd ← rs1`. |
 | `0x3`/`0x4` | `ADD`/`ADDI` | rr / ri | add. |
 | `0x5` | `SUB` | rr | subtract (`DEC` = `ADDI rd,rd,-1`). |
@@ -196,7 +198,7 @@ later — v1 programs are branch-structured.
 ### 6.3 RISC-V assembly surface (`tamal-asm`, host-side)
 The lean core is what fabric decodes; the assembler exposes familiar sugar:
 
-- **Pseudo-ops**: `nop`=`addi x0,x0,0`, `mv`=`addi rd,rs,0`, `li`=`lui`+`ori`,
+- **Pseudo-ops**: `nop`=`addi x0,x0,0`, `mv`=`addi rd,rs,0`, `li`=`lui`+`addi`,
   `j off`=`beq x0,x0,off`, `beqz/bnez rs`=`beq/bne rs,x0`. `call/ret` reserved.
 - **Directives / labels**: `.text .data .word .globl .equ .align .macro .option`,
   numeric locals `1f`/`1b` — all assembler-side; the HDL only sees 32-bit words.
