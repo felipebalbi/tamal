@@ -16,6 +16,7 @@ import qualified Test.Config
 import qualified Test.Serdes
 import qualified Test.Trace
 import qualified Test.Branch
+import qualified Test.Alu
 
 main :: IO ()
 main = defaultMain tests
@@ -34,4 +35,5 @@ tests =
     , Test.Serdes.tests
     , Test.Trace.tests
     , Test.Branch.tests
+    , Test.Alu.tests
     ]
