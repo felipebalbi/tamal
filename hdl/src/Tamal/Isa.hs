@@ -89,6 +89,13 @@ bitsField = bitCoerce
 mkBitsImm :: Index 8 -> BitVector 8 -> BitVector 11
 mkBitsImm n b = bitCoerce (pack n, b)
 
+-- LUI imm20 occupies rs1 ++ rs2 ++ imm low 20 bits; bit 20 reserved 0.
+splitImm20 :: BitVector 20 -> (BitVector 5, BitVector 5, BitVector 11)
+splitImm20 i20 = bitCoerce ((0 :: BitVector 1) ++# i20)
+
+joinImm20 :: BitVector 5 -> BitVector 5 -> BitVector 11 -> (BitVector 1, BitVector 20)
+joinImm20 rs1 rs2 imm = bitCoerce (rs1 ++# rs2 ++# imm)
+
 encode :: Instr -> BitVector 32
 encode = \case
   -- BUS group (00)
@@ -115,12 +122,22 @@ encode = \case
   SetConfig p     -> joinW (0b01, 0x6, 0, 0, 0, zeroExtend p)
   Mark lbl rs     -> joinW (0b01, 0x7, 0, rs, 0, lbl)
   CrcReset        -> joinW (0b01, 0x8, 0, 0, 0, 0)
-  -- DATA group (10) encodes in Task 5; the reserved word keeps the ADT total
-  -- until then (decode for these lands later too).
-  _               -> encodeRest
-
-encodeRest :: BitVector 32
-encodeRest = joinW (0b11, 0xF, 0, 0, 0, 0)
+  -- DATA group (10)
+  LoadImm rd i    -> joinW (0b10, 0x0, rd, 0, 0, i)
+  Lui rd i20      -> let (rs1', rs2', imm') = splitImm20 i20
+                     in joinW (0b10, 0x1, rd, rs1', rs2', imm')
+  Mov rd rs       -> joinW (0b10, 0x2, rd, rs, 0, 0)
+  Add rd a b      -> joinW (0b10, 0x3, rd, a, b, 0)
+  Addi rd a i     -> joinW (0b10, 0x4, rd, a, 0, i)
+  Sub rd a b      -> joinW (0b10, 0x5, rd, a, b, 0)
+  And_ rd a b     -> joinW (0b10, 0x6, rd, a, b, 0)
+  Andi rd a i     -> joinW (0b10, 0x7, rd, a, 0, i)
+  Or_ rd a b      -> joinW (0b10, 0x8, rd, a, b, 0)
+  Ori rd a i      -> joinW (0b10, 0x9, rd, a, 0, i)
+  Xor_ rd a b     -> joinW (0b10, 0xA, rd, a, b, 0)
+  Xori rd a i     -> joinW (0b10, 0xB, rd, a, 0, i)
+  Shift rd a op a5 -> joinW (0b10, 0xC, rd, a, 0, bitCoerce (op, 0 :: BitVector 4, a5))
+  Rdsr rd sr      -> joinW (0b10, 0xD, rd, 0, 0, zeroExtend sr)
 
 -- Decode dispatches on the group, then the per-group decoder rebuilds the
 -- instruction and checks reserved fields.
@@ -129,7 +146,7 @@ decode w =
   case grp of
     0b00 -> decodeBus sub' rd rs1 rs2 imm
     0b01 -> decodeCtrl sub' rd rs1 rs2 imm
-    0b10 -> Left OpcodeUnimplemented   -- Task 5 (DATA)
+    0b10 -> decodeData sub' rd rs1 rs2 imm
     _    -> Left IllegalOpcode         -- group 11 reserved
   where
     (grp, sub', rd, rs1, rs2, imm) = splitWord w
@@ -186,4 +203,31 @@ decodeCtrl sub' rd rs1 rs2 imm =
     (cond, timeout) = bitCoerce imm :: (BitVector 2, BitVector 9)
     immHi8 = slice d10 d8 imm    -- HALT: imm[10:8]  (BitVector 3) reserved
     immHi6 = slice d10 d6 imm    -- SET_CONFIG: imm[10:6] (BitVector 5) reserved
+
+decodeData
+  :: BitVector 4 -> BitVector 5 -> BitVector 5 -> BitVector 5 -> BitVector 11
+  -> Either DecodeError Instr
+decodeData sub' rd rs1 rs2 imm =
+  case sub' of
+    0x0 -> only (z rs1 && z rs2)                  (LoadImm rd imm)     -- imm=i11; rs1,rs2 reserved
+    0x1 -> only (hi == 0)                         (Lui rd i20)         -- i20 packed in rs1++rs2++imm; bit20 reserved
+    0x2 -> only (z rs2 && z imm)                  (Mov rd rs1)         -- rd,rs1 used; rs2,imm reserved
+    0x3 -> only (z imm)                           (Add rd rs1 rs2)     -- reg-reg: imm reserved
+    0x4 -> only (z rs2)                           (Addi rd rs1 imm)    -- imm op: rs2 reserved
+    0x5 -> only (z imm)                           (Sub rd rs1 rs2)
+    0x6 -> only (z imm)                           (And_ rd rs1 rs2)
+    0x7 -> only (z rs2)                           (Andi rd rs1 imm)
+    0x8 -> only (z imm)                           (Or_ rd rs1 rs2)
+    0x9 -> only (z rs2)                           (Ori rd rs1 imm)
+    0xa -> only (z imm)                           (Xor_ rd rs1 rs2)
+    0xb -> only (z rs2)                           (Xori rd rs1 imm)
+    0xc -> only (z rs2 && shMid == 0)             (Shift rd rs1 shOp shAmt)  -- imm=op[10:9]++rsv[8:5]++amt[4:0]
+    0xd -> only (z rs1 && z rs2 && immHi5 == 0)   (Rdsr rd (truncateB imm))  -- imm[4:0]=sr#, imm[10:5] reserved
+    _   -> Left IllegalOpcode
+  where
+    z :: KnownNat n => BitVector n -> Bool
+    z = (== 0)
+    (hi, i20)            = joinImm20 rs1 rs2 imm
+    (shOp, shMid, shAmt) = bitCoerce imm :: (BitVector 2, BitVector 4, BitVector 5)
+    immHi5 = slice d10 d5 imm    -- RDSR imm[10:5] (BitVector 6) reserved
 
