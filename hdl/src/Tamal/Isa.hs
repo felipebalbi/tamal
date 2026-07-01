@@ -105,8 +105,18 @@ encode = \case
   RstAssert       -> joinW (0b00, 0xA, 0, 0, 0, 0)
   RstDeassert     -> joinW (0b00, 0xB, 0, 0, 0, 0)
   GetAlert rd     -> joinW (0b00, 0xC, rd, 0, 0, 0)
-  -- CTRL / DATA groups encode in Tasks 4–5; the reserved word keeps the ADT
-  -- total until then (decode for these lands later too).
+  -- CTRL group (01)
+  Halt s          -> joinW (0b01, 0x0, 0, 0, 0, zeroExtend s)
+  Beq  a b off    -> joinW (0b01, 0x1, 0, a, b, off)
+  Bne  a b off    -> joinW (0b01, 0x2, 0, a, b, off)
+  Bltu a b off    -> joinW (0b01, 0x3, 0, a, b, off)
+  Bgeu a b off    -> joinW (0b01, 0x4, 0, a, b, off)
+  WaitOn rd c t   -> joinW (0b01, 0x5, rd, 0, 0, bitCoerce (c, t))
+  SetConfig p     -> joinW (0b01, 0x6, 0, 0, 0, zeroExtend p)
+  Mark lbl rs     -> joinW (0b01, 0x7, 0, rs, 0, lbl)
+  CrcReset        -> joinW (0b01, 0x8, 0, 0, 0, 0)
+  -- DATA group (10) encodes in Task 5; the reserved word keeps the ADT total
+  -- until then (decode for these lands later too).
   _               -> encodeRest
 
 encodeRest :: BitVector 32
@@ -118,7 +128,7 @@ decode :: BitVector 32 -> Either DecodeError Instr
 decode w =
   case grp of
     0b00 -> decodeBus sub' rd rs1 rs2 imm
-    0b01 -> Left OpcodeUnimplemented   -- Task 4 (CTRL)
+    0b01 -> decodeCtrl sub' rd rs1 rs2 imm
     0b10 -> Left OpcodeUnimplemented   -- Task 5 (DATA)
     _    -> Left IllegalOpcode         -- group 11 reserved
   where
@@ -154,4 +164,26 @@ decodeBus sub' rd rs1 rs2 imm =
     nBits  = unpack n3 :: Index 8
     immHi8 = slice d10 d8 imm    -- imm[10:8]  (BitVector 3) reserved for PUT_BYTE
     immHi4 = slice d10 d4 imm    -- imm[10:4]  (BitVector 7) reserved for TAR
+
+decodeCtrl
+  :: BitVector 4 -> BitVector 5 -> BitVector 5 -> BitVector 5 -> BitVector 11
+  -> Either DecodeError Instr
+decodeCtrl sub' rd rs1 rs2 imm =
+  case sub' of
+    0x0 -> only (z rd && z rs1 && z rs2 && immHi8 == 0)  (Halt (truncateB imm))  -- imm[7:0]=status, imm[10:8] reserved
+    0x1 -> only (z rd)                                   (Beq  rs1 rs2 imm)  -- rs1,rs2,off=imm; rd reserved
+    0x2 -> only (z rd)                                   (Bne  rs1 rs2 imm)
+    0x3 -> only (z rd)                                   (Bltu rs1 rs2 imm)
+    0x4 -> only (z rd)                                   (Bgeu rs1 rs2 imm)
+    0x5 -> only (z rs1 && z rs2)                         (WaitOn rd cond timeout)  -- rd used, imm=cond++timeout
+    0x6 -> only (z rd && z rs1 && z rs2 && immHi6 == 0)  (SetConfig (truncateB imm))  -- imm[5:0]=payload, imm[10:6] reserved
+    0x7 -> only (z rd && z rs2)                          (Mark imm rs1)  -- label=imm, rs1=payload
+    0x8 -> only (z rd && z rs1 && z rs2 && z imm)        CrcReset
+    _   -> Left IllegalOpcode
+  where
+    z :: KnownNat n => BitVector n -> Bool
+    z = (== 0)
+    (cond, timeout) = bitCoerce imm :: (BitVector 2, BitVector 9)
+    immHi8 = slice d10 d8 imm    -- HALT: imm[10:8]  (BitVector 3) reserved
+    immHi6 = slice d10 d6 imm    -- SET_CONFIG: imm[10:6] (BitVector 5) reserved
 

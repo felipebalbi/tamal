@@ -7,7 +7,7 @@ import Test.Tasty.Hedgehog (testProperty)
 import Hedgehog (property, forAll, (===))
 
 import Tamal.Isa
-import Test.Gen (genBusInstr)
+import Test.Gen (genBusInstr, genCtrlInstr)
 
 tests :: TestTree
 tests =
@@ -20,6 +20,9 @@ tests =
         let w = encode i
         decode w === Right i
         (encode <$> decode w) === Right w
+    , testProperty "CTRL: decode . encode == Right" $ property $ do
+        i <- forAll genCtrlInstr
+        decode (encode i) === Right i
     , testCase "reserved non-zero field traps (CS_ASSERT with junk imm)" $
         -- CS_ASSERT = group 00, sub 0x0, all operand bits reserved; set imm bit 0.
         decode (busWord 0b00 0x0 + 1) @?= Left ReservedFieldNonZero
