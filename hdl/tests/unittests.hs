@@ -9,6 +9,7 @@ import Hedgehog (property, forAll, (===))
 import Test.Gen (genByte)
 import qualified Test.Crc
 import qualified Test.Isa
+import qualified Test.Config
 
 main :: IO ()
 main = defaultMain tests
@@ -23,4 +24,5 @@ tests =
         ]
     , Test.Crc.tests
     , Test.Isa.tests
+    , Test.Config.tests
     ]
