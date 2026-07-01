@@ -8,6 +8,7 @@ import Hedgehog (property, forAll, (===))
 
 import Test.Gen (genByte)
 import qualified Test.Crc
+import qualified Test.Isa
 
 main :: IO ()
 main = defaultMain tests
@@ -21,4 +22,5 @@ tests =
             unpack (pack b) === (b :: BitVector 8)
         ]
     , Test.Crc.tests
+    , Test.Isa.tests
     ]

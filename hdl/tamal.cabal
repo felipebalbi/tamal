@@ -94,6 +94,7 @@ library
     Tamal.Domain
     Tamal
     Tamal.Crc
+    Tamal.Isa
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.
@@ -131,6 +132,7 @@ test-suite test-library
   other-modules:
     Test.Gen
     Test.Crc
+    Test.Isa
   build-depends:
     tamal,
     tasty >= 1.2 && < 1.6,
