@@ -4,10 +4,10 @@ import Clash.Prelude
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
-import Hedgehog (property, forAll, (===))
+import Hedgehog (property, forAll, (===), success)
 
 import Tamal.Isa
-import Test.Gen (genBusInstr, genCtrlInstr, genDataInstr, genInstr)
+import Test.Gen (genBusInstr, genCtrlInstr, genDataInstr, genInstr, genWord)
 
 tests :: TestTree
 tests =
@@ -15,11 +15,14 @@ tests =
     [ testProperty "BUS: decode . encode == Right" $ property $ do
         i <- forAll genBusInstr
         decode (encode i) === Right i
-    , testProperty "canonical: decode w == Right i ==> encode i == w" $ property $ do
-        i <- forAll genBusInstr
-        let w = encode i
-        decode w === Right i
-        (encode <$> decode w) === Right w
+    , testProperty "any 32-bit word: decode is canonical or traps" $ property $ do
+        -- Over ALL words (every group), not just the image of encode: any word
+        -- decode accepts must re-encode to itself. This catches a too-lax
+        -- reserved-field check in any group (spec §11.1).
+        w <- forAll genWord
+        case decode w of
+          Right i -> encode i === w
+          Left _  -> success
     , testProperty "CTRL: decode . encode == Right" $ property $ do
         i <- forAll genCtrlInstr
         decode (encode i) === Right i

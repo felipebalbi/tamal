@@ -3,6 +3,7 @@ module Test.Gen
   , genByte
   , genReg
   , genIndex8
+  , genWord
   , genBusInstr
   , genCtrlInstr
   , genDataInstr
@@ -28,6 +29,11 @@ genReg = genDefinedBitVector
 -- | Count minus one (0..7 -> 1..8 bits) for PUT_BITS/GET_BITS.
 genIndex8 :: Gen (Index 8)
 genIndex8 = unpack <$> (genDefinedBitVector :: Gen (BitVector 3))
+
+-- | An arbitrary 32-bit instruction word (any bit pattern, not just the image
+-- of 'encode'). Used to exercise decode's reject/canonical paths.
+genWord :: Gen (BitVector 32)
+genWord = genDefinedBitVector
 
 genBusInstr :: Gen Instr
 genBusInstr = Gen.choice
