@@ -10,6 +10,7 @@ import Test.Gen (genByte)
 import qualified Test.Crc
 import qualified Test.Isa
 import qualified Test.Config
+import qualified Test.Serdes
 
 main :: IO ()
 main = defaultMain tests
@@ -25,4 +26,5 @@ tests =
     , Test.Crc.tests
     , Test.Isa.tests
     , Test.Config.tests
+    , Test.Serdes.tests
     ]
