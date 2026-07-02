@@ -120,6 +120,30 @@ tests =
         $ risingEdges
           (driveTrace 200 [encode CsAssert, encode (TarImm 2), encode CsDeassert, encode (Halt 0)])
         @?= 2
+    , testCase "MARK emits label word (tag 10) then payload word" $ do
+        let prog = [encode (LoadImm 1 0x123), encode (Mark 0x234 1), encode (Halt 0)]
+            Run _ ring _ = runProg 60 prog
+            pairs =
+              [ (w0, w1)
+              | (Ring _ w0, Ring _ w1) <- L.zip ring (L.drop 1 ring)
+              , slice d31 d30 w0 == 0b10
+              ]
+        assertBool
+          "MARK label+payload present"
+          (L.any (\(w0, w1) -> slice d13 d0 w0 == 0x234 && w1 == 0x123) pairs)
+    , testCase "CRC residue: message + correct CRC byte -> rdsr == 0" $ do
+        let msg = 0x25 :: BitVector 8
+            crcByte = crc8Update 0 msg
+            prog =
+              [ encode CsAssert
+              , encode (GetByte 1)
+              , encode (GetByte 1)
+              , encode CsDeassert
+              , encode (Rdsr 2 0)
+              , encode (Halt 0)
+              ]
+            Run s _ _ = runGet2 msg crcByte prog
+        readReg (regs s) 2 @?= 0
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
@@ -200,6 +224,29 @@ runGet b prog = go 0 initState 0 [] (0 :: Int) (0 :: Bit)
             (s', bo, mr) = step s inp
             bitIx' = if prevSck == 0 && sckOut bo == 1 then bitIx + 1 else bitIx
          in go (t + 1) s' (pcOut bo) (maybe ring (: ring) mr) bitIx' (sckOut bo)
+
+{- | Like 'runGet' but feeds a two-byte sequence: byte 0 for the first 8 SCK
+rising edges, byte 1 for the next 8 (keyed on a running rising-edge counter).
+-}
+runGet2 :: BitVector 8 -> BitVector 8 -> [BitVector 32] -> Run
+runGet2 b0 b1 prog = go 0 initState 0 [] (0 :: Int) (0 :: Bit)
+ where
+  mem = memOf prog
+  bits0 = unpack b0 :: Vec 8 Bit
+  bits1 = unpack b1 :: Vec 8 Bit
+  go !t !s !prevPc !ring !gbit !prevSck
+    | phase s == Halted && t > 0 = Run s (L.reverse ring) t
+    | t >= 400 = Run s (L.reverse ring) t
+    | otherwise =
+        let curBit
+              | gbit < 8 = bits0 !! gbit
+              | gbit < 16 = bits1 !! (gbit - 8)
+              | otherwise = 0
+            io = replace (1 :: Index 4) curBit (repeat 0)
+            inp = BusIn (mem prevPc) io 0 (t == 0)
+            (s', bo, mr) = step s inp
+            gbit' = if prevSck == 0 && sckOut bo == 1 then gbit + 1 else gbit
+         in go (t + 1) s' (pcOut bo) (maybe ring (: ring) mr) gbit' (sckOut bo)
 
 -- | Read a register out of the engine's final state.
 readRegE :: State -> Reg -> BitVector 32

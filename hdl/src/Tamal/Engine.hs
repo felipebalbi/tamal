@@ -158,6 +158,7 @@ step s inp = case phase s of
   Fetch -> stepFetch s inp
   Exec -> stepExec s inp
   BusBeat -> stepBusBeat s inp
+  TraceEmit -> stepTraceEmit s inp
   _ -> (s, busOut s, Nothing) -- filled in by later tasks
 
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
@@ -201,6 +202,18 @@ stepBusBeat s inp
   nextBeat t =
     let bi = beatIx t + 1
      in t{busPhase = 0, beatIx = bi, sck = 0, lanes = beatLanes t bi}
+
+-- | TraceEmit: write the MARK payload word, then advance past the MARK instr.
+stepTraceEmit :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepTraceEmit s _ = case pending s of
+  PendMark payload ->
+    let s' =
+          (advance s)
+            { ringPtr = ringPtr s + 1
+            , pending = PendNone
+            }
+     in (s', busOut s', Just (Ring (ringPtr s) payload))
+  _ -> (advance s, busOut s, Nothing)
 
 -- | SCK level for a phase: low {0,1,2}, high {3,4}.
 sckOf :: Index 5 -> Bit
@@ -277,6 +290,10 @@ haltWith trap reason status s =
       w = bitCoerce (0b11 :: BitVector 2, 0 :: BitVector 17, reason, trap, (ovf s), status)
    in (s', busOut s', Just (Ring termAddr w))
 
+-- | MARK label word otag 10, 14-bit label) - mirrors Trace.encodeRecord
+markLabelWord :: BitVector 14 -> BitVector 32
+markLabelWord lbl = bitCoerce (0b10 :: BitVector 2, 0 :: BitVector 16, lbl)
+
 execInstr :: Instr -> State -> BusIn -> (State, BusOut, Maybe Ring)
 execInstr i s inp = case i of
   LoadImm rd _ -> dataWb rd
@@ -325,6 +342,21 @@ execInstr i s inp = case i of
   GetBits rd n -> startGet rd (fromIntegral n + 1) False
   TarImm n -> startTar (unpack n)
   TarReg a -> startTar (unpack (truncateB (readReg (regs s) a)))
+  Mark lbl a ->
+    let payload = readReg (regs s) a
+        w0 = markLabelWord (zeroExtend lbl)
+        fits2 = not (ovf s) && ringPtr s + 1 <= termAddr - 1
+     in if fits2
+          then
+            ( s
+                { phase = TraceEmit
+                , ringPtr = ringPtr s + 1
+                , pending = PendMark payload
+                }
+            , busOut s
+            , Just (Ring (ringPtr s) w0)
+            )
+          else (advance (s{ovf = True}), busOut s, Nothing) -- no 2 slots -> drop atomically
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)
