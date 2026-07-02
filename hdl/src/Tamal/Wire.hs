@@ -8,11 +8,15 @@ reference model (not synthesizable — like 'Tamal.Trace.encodeRecord'). The
 streaming realization is the piece-3 loader.
 -}
 module Tamal.Wire
-  ( wordToBytesLE
+  ( WireError (..)
+  , ControlMsg (..)
+  , wordToBytesLE
   , bytesToWordLE
   , crc8
   , frameEncode
   , frameDecode
+  , encodeControl
+  , decodeControl
   ) where
 
 import Clash.Prelude
@@ -21,6 +25,15 @@ import qualified Data.List as L
 
 import Tamal.Crc (crc8Update)
 import Tamal.Wire.Cobs (cobsDecode, cobsEncode)
+
+-- | Control-plane messages (host -> FPGA).
+data ControlMsg
+  = -- | instruction words to load into the instr BRAM
+    LoadProgram [BitVector 32]
+  | -- | Start-of-run pulse
+    Trigger
+  deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
 
 -- | Why a frame failed to decode.
 data WireError
@@ -84,3 +97,39 @@ stripDelim xs
 splitLastByte :: [BitVector 8] -> Either WireError ([BitVector 8], BitVector 8)
 splitLastByte [] = Left ShortFrame
 splitLastByte xs = Right (L.init xs, L.last xs)
+
+-- | Frame opcodes (§8.1). 0x00 is the delimiter, never an opcode.
+opLoadProgram :: BitVector 8
+opLoadProgram = 0x01
+
+opTrigger :: BitVector 8
+opTrigger = 0x02
+
+-- | Encode a control message to its wire frame.
+encodeControl :: ControlMsg -> [BitVector 8]
+encodeControl (LoadProgram ws) =
+  frameEncode (opLoadProgram : L.concatMap (toList . wordToBytesLE) ws)
+encodeControl Trigger = frameEncode [opTrigger]
+
+-- | Decode a wire frame into a control message.
+decodeControl :: [BitVector 8] -> Either WireError ControlMsg
+decodeControl wire = do
+  logical <- frameDecode wire
+  case logical of
+    [] -> Left ShortFrame
+    (op : payload)
+      | op == opLoadProgram -> LoadProgram <$> bytesToWords payload
+      | op == opTrigger ->
+          if L.null payload
+            then Right Trigger
+            else Left BadPayloadLen
+      | otherwise -> Left (UnknownOpcode op)
+
+{- | Regroup a byte payload into little-endian 32-bit words; fail unless the
+length is a multiple of four.
+-}
+bytesToWords :: [BitVector 8] -> Either WireError [BitVector 32]
+bytesToWords [] = Right []
+bytesToWords (a : b : c : d : rest) =
+  (bytesToWordLE (a :> b :> c :> d :> Nil) :) <$> bytesToWords rest
+bytesToWords _ = Left BadPayloadLen

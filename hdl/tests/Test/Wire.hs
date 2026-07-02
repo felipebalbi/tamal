@@ -75,6 +75,21 @@ tests =
         i <- forAll (Gen.int (Range.linear 0 (L.length f - 1)))
         let f' = [if j == i then x `xor` 1 else x | (j, x) <- L.zip [0 ..] f]
         frameDecode f' /== Right xs
+    , testProperty "decodeControl . encodeControl (LoadProgram) == Right" $ property $ do
+        ws <- forAll (Gen.list (Range.linear 0 32) genWord)
+        decodeControl (encodeControl (LoadProgram ws)) === Right (LoadProgram ws)
+    , testCase "decodeControl . encodeControl Trigger == Right Trigger"
+        $ decodeControl (encodeControl Trigger)
+        @?= Right Trigger
+    , testCase "unknown opcode -> UnknownOpcode"
+        $ decodeControl (frameEncode [0x7E, 0xAA])
+        @?= Left (UnknownOpcode 0x7E)
+    , testCase "LOAD payload not a multiple of 4 -> BadPayloadLen"
+        $ decodeControl (frameEncode [0x01, 0xAA, 0xBB])
+        @?= Left BadPayloadLen
+    , testCase "empty logical frame -> ShortFrame"
+        $ decodeControl (frameEncode [])
+        @?= Left ShortFrame
     ]
 
 -- A zero-dense byte generator: stresses COBS group boundaries far harder than
