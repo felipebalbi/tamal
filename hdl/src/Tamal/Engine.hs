@@ -26,7 +26,7 @@ import Clash.Prelude
 import Tamal.Alu (dataResult)
 import qualified Tamal.Branch as Br
 import Tamal.Bus.Serdes (Lanes, hiZ)
-import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..))
+import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..), decodeConfig)
 import Tamal.Isa (Instr (..), Reg, decode)
 import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
 
@@ -202,7 +202,7 @@ haltWith trap reason status s =
    in (s', busOut s', Just (Ring termAddr w))
 
 execInstr :: Instr -> State -> BusIn -> (State, BusOut, Maybe Ring)
-execInstr i s _inp = case i of
+execInstr i s inp = case i of
   LoadImm rd _ -> dataWb rd
   Lui rd _ -> dataWb rd
   Mov rd _ -> dataWb rd
@@ -226,6 +226,21 @@ execInstr i s _inp = case i of
   Bne a b off -> branch Br.Bne a b off
   Bltu a b off -> branch Br.Bltu a b off
   Bgeu a b off -> branch Br.Bgeu a b off
+  CsAssert -> pinOp (s{csN = 0})
+  CsDeassert -> pinOp (s{csN = 1, lanes = hiZ})
+  RstAssert -> pinOp (s{rstN = 0})
+  RstDeassert -> pinOp (s{rstN = 1})
+  CrcReset -> pinOp (s{rxCrc = 0})
+  SetConfig p -> case decodeConfig p of
+    Right c -> pinOp (s{cfg = c})
+    Left _ -> haltWith True 2 0 (safePins s) -- unsupported config -> reason 2
+  GetAlert rd ->
+    let b =
+          if cfgAlertSource (cfg s) == AlertPin
+            then alertIn inp
+            else ioIn inp !! 1
+        s' = (advance s){regs = writeReg (regs s) rd (zeroExtend (pack b))}
+     in (s', busOut s', Nothing)
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)
@@ -278,3 +293,9 @@ operandRs2 = \case
   Bltu _ b _ -> b
   Bgeu _ b _ -> b
   _ -> 0
+
+{- | A pin/state op: apply the state update, then advance to the next
+instruction.
+-}
+pinOp :: State -> (State, BusOut, Maybe Ring)
+pinOp s = let s' = advance s in (s', busOut s', Nothing)

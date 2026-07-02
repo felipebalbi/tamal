@@ -68,6 +68,27 @@ tests =
         let prog = [encode (LoadImm 1 5), encode (Beq 1 0 5), encode (Halt 0x22)]
             Run _ ring _ = runProg 60 prog
         haltStatus (L.last ring) @?= 0x22
+    , testCase "CS/RST ops latch into the pin state" $ do
+        let Run s1 _ _ = runProg 30 [encode CsAssert, encode (Halt 0)]
+        csN s1 @?= 0
+        let Run s2 _ _ = runProg 30 [encode CsAssert, encode CsDeassert, encode (Halt 0)]
+        csN s2 @?= 1
+        lanes s2 @?= hiZ
+        let Run s3 _ _ = runProg 30 [encode RstAssert, encode (Halt 0)]
+        rstN s3 @?= 0
+    , testCase "CRC_RESET runs; SET_CONFIG unsupported traps (reason 2)" $ do
+        let Run s _ _ = runProg 30 [encode CrcReset, encode (Halt 0)]
+        phase s @?= Halted
+        rxCrc s @?= 0
+        let bad = [encode (SetConfig 0b100000), encode (Halt 0)]
+            Run _ ring _ = runProg 30 bad
+        haltReason (L.last ring) @?= (True, 2)
+    , testCase "GET_ALERT samples raw alert level into rd[0]" $ do
+        let prog = [encode (GetAlert 1), encode (Halt 0)]
+            rHi = drive 30 (memOf prog) (\t -> (repeat 0, 1, t == 0))
+            rLo = drive 30 (memOf prog) (\t -> (repeat 0, 0, t == 0))
+        readReg (regs (runState rHi)) 1 @?= 1
+        readReg (regs (runState rLo)) 1 @?= 0
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
