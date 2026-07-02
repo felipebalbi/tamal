@@ -29,10 +29,12 @@ the rest of the impure `topEntity` shell that wires everything to the pins.
 | `Tamal.Uart.*` | 8N1 UART (NCO tick, RX, TX, umbrella) — host transport | done, tested |
 | `Tamal.Engine` | `step` Mealy: fetch/decode/datapath + SCK bus FSM + trace + HALT/TRAP | done, tested |
 | `Tamal.Mem` | instr + ring memories (`blockRamPow2`; 1024×32, 4096×32) | done, tested |
+| `Tamal.Wire.Cobs` | COBS encode/decode (`0x00`-delimiter framing) | done, tested |
+| `Tamal.Wire` | LE word↔bytes, CRC-8 fold, control/result frame + message layer | done, tested |
 | `Tamal.Domain` | `Dom100` clock domain | done |
 | `Tamal` (top) | synthesis entry point | **placeholder heartbeat** (LED blink) |
 
-Confirmed absent: the rest of the impure shell — wire protocol, loader, IOBUF, and
+Confirmed absent: the rest of the impure shell — loader, IOBUF, and
 the real `topEntity` (the Engine + BRAMs wired to the pins).
 
 ## What remains: the impure `topEntity` shell
@@ -42,11 +44,11 @@ the real `topEntity` (the Engine + BRAMs wired to the pins).
 the board: memories, the host load/drain path, tri-state IO, and the top that
 wires it all to the pins.
 
-This shell decomposes into **five independently-startable pieces** (the first,
-**BRAM**, is now complete). Each remaining one is meant to be picked up in its own
-fresh session and taken through the repo's standard
+This shell decomposes into **five independently-startable pieces** (the first two,
+**BRAM** and the **wire protocol**, are now complete). Each remaining one is meant
+to be picked up in its own fresh session and taken through the repo's standard
 cycle — **brainstorming → writing-plans → TDD** (see "Per-piece workflow" below).
-Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntity**;
+Build order is **BRAM (done) → wire protocol (done) → loader → IOBUF → topEntity**;
 `topEntity` integrates everything and is deliberately last.
 
 ```
@@ -81,9 +83,11 @@ Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntit
   4096 words (`Unsigned 12`, ≈ 4 BRAM36), so `termAddr = maxBound :: Unsigned 12 =
   D − 1` is already correct — the engine needed **no** behavioral change (only a
   `termAddr` doc-comment). This 4096 value feeds the loader's drain length too.
-- **Wire-format gap.** `crates/tamal-abi` (`control`, `trace` modules) is still
-  placeholder — there is **no** control/result framing yet. The loader cannot be
-  built until a minimal framing exists, so it gets its own mini-spec (piece 2).
+ - **Wire-format gap — RESOLVED (piece 2).** The control/result framing now exists
+   as a pure Clash core (`Tamal.Wire.Cobs` + `Tamal.Wire`, hedgehog-tested), so the
+   loader has a contract to speak. The Rust `crates/tamal-abi` (`control`, `trace`)
+   mirror stays a placeholder — deferred to post-silicon, to implement the same
+   contract once the gateware is validated.
 - **Board / XDC.** Arty A7-100T; USB-UART on the FTDI pins; eSPI pins on Pmods.
   `constraints/arty_a7.xdc` currently constrains only `clk` + `led`; every piece
   that adds pins extends it (pin numbers from Digilent's Arty-A7-100 master XDC).
@@ -111,16 +115,25 @@ Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntit
   address boundaries, ring drain sweep) + 3 hedgehog properties (model-equivalence
   at both widths + last-write-wins sweep). Spec + plan under `docs/superpowers/`.
 
-### 2. Wire protocol — fill the `tamal-abi` placeholder  *(loader prerequisite)*
+### 2. Wire protocol — `Tamal.Wire` pure core  *(done — `Tamal.Wire.Cobs` + `Tamal.Wire`)*
 
-- **What:** the minimal, transport-agnostic control (host→FPGA) and result
-  (FPGA→host) byte framing, defined in `crates/tamal-abi` (`control`, `trace`),
-  consumed by *both* the gateware loader and the host `tamal-loader`.
-- **Scope (v1):** control = `LOAD_PROGRAM(len, words…)` + `TRIGGER`; result =
-  the drained ring stream (`REVISION … records … HALT terminator`) with framing.
-  Little-endian on the wire (ISA §4). Keep it lean.
-- **Decisions:** framing (length-prefix / sync bytes), error handling.
-- **Depends on:** nothing; informs the loader and host tooling.
+- **What:** the transport-agnostic control (host→FPGA) and result (FPGA→host)
+  byte framing, implemented as a pure Clash core: `Tamal.Wire.Cobs` (COBS
+  encode/decode) + `Tamal.Wire` (LE word↔bytes, CRC-8 fold, frame + message
+  layer). Spec: `docs/superpowers/specs/2026-07-02-tamal-wire-format-design.md`.
+- **Delivered (v1):** control = `LOAD_PROGRAM(words…)` + `TRIGGER`; result = the
+  `TRACE_DRAIN` frame (`REVISION … records … HALT terminator`). Frame =
+  `COBS(opcode ++ payload ++ CRC-8) ++ 0x00`, little-endian (ISA §4).
+  Fire-and-forget control plane.
+- **Decisions made:** COBS `0x00`-delimiter framing (self-delimiting on both
+  planes; dissolves the result-drain length/zero-gap problem); CRC-8 reused from
+  `Tamal.Crc` (poly 0x07); no length field (COBS-implied); `Cobs` is a
+  dependency-free leaf (`Maybe`), the frame layer owns `WireError`.
+- **Deferred:** the Rust `crates/tamal-abi` mirror and `tamal-loader` (post-silicon;
+  they implement the same contract). The gateware loader (piece 3) consumes this core.
+- **Tested:** `Test.Wire` — COBS round-trip + 254/255 boundary vectors, LE
+  round-trip, frame round-trips (control + result), CRC/corruption detection, and
+  the error taxonomy (25 cases).
 
 ### 3. Loader — UART load/drain FSM
 
@@ -131,7 +144,7 @@ Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntit
   BRAM; reads ring BRAM; drives engine `startIn`; observes `haltedOut`.
 - **Decisions:** `mealyS` (State-monad) candidate; load-then-run sequencing (drain
   is post-HALT, so the bus is idle — no bus backpressure concern).
-- **Depends on:** BRAM (ports), wire protocol (framing), `Uart` (done), engine
+- **Depends on:** BRAM (ports), wire protocol (`Tamal.Wire`, done), `Uart` (done), engine
   (`startIn`/`haltedOut`).
 - **Testing:** `Signal`-level sim — feed a UART byte stream, check instr-BRAM
   contents + `start` pulse; drive a halted engine with known ring contents, check
@@ -175,13 +188,14 @@ Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntit
 3. **UART transport** (8N1 RX/TX, NCO 16× oversample) — done
 4. **`Engine.hs` — `step` Mealy** — done, hedgehog-tested
 5. **BRAM** (instr + ring `blockRamPow2`; ring = 4096, `termAddr = maxBound`) — done, hedgehog-tested
-6. **Wire protocol** (`tamal-abi` control/result framing) — loader prerequisite ← next
-7. **Loader** (UART load/drain FSM)
+6. **Wire protocol** (`Tamal.Wire` COBS + CRC-8 framing core) — done, hedgehog-tested
+7. **Loader** (UART load/drain FSM) ← next
 8. **IOBUF** (tri-state IO + sideband pins)
 9. **`topEntity`** (integration; retire the heartbeat) — last
 
-Short version: the pure leaves, the Engine keystone, and the **BRAM memories**
-(`Tamal.Mem`) are all in place and tested. The rest of the impure shell remains,
-decomposed into wire protocol → loader → IOBUF → topEntity — each its own spec →
-plan → TDD session, with `topEntity` last.
+Short version: the pure leaves, the Engine keystone, the **BRAM memories**
+(`Tamal.Mem`), and the **wire-format core** (`Tamal.Wire.Cobs` + `Tamal.Wire`) are
+all in place and tested. The rest of the impure shell remains, decomposed into
+loader → IOBUF → topEntity — each its own spec → plan → TDD session, with
+`topEntity` last.
 
