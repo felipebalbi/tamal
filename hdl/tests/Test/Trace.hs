@@ -20,9 +20,12 @@ tests =
     , testCase "MARK encodes 2 words: tag 10 + label, then payload"
         $ encodeRecord (Mark 0x1234 0xDEADBEEF)
         @?= [(0b10 `shiftL` 30) .|. 0x1234, 0xDEADBEEF]
-    , testCase "HALT encodes tag 11, overflow bit, status"
-        $ encodeRecord (Halt True 0x11)
+    , testCase "HALT (no trap) encodes tag 11, reason 0, trap 0, overflow, status"
+        $ encodeRecord (Halt False 0 True 0x11)
         @?= [(0b11 `shiftL` 30) .|. (1 `shiftL` 8) .|. 0x11]
+    , testCase "HALT (trap) encodes reason in [12:10] and trap bit [9]"
+        $ encodeRecord (Halt True 3 False 0x00)
+        @?= [(0b11 `shiftL` 30) .|. (3 `shiftL` 10) .|. (1 `shiftL` 9)]
     , testCase "ringPush past limit sets sticky overflow and drops" $ do
         -- limit 3: slots 0..3 usable, slot 4 = reserved HALT terminator.
         let step (ptr, ovf, acc) ws =

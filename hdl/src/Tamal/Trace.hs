@@ -19,12 +19,13 @@ import qualified Data.List as L
 
 {- | A result-ring record. @Capture@ reports a sampled byte (with its valid bit
 count), @Mark@ carries a host↔trace correlation label plus a register payload,
-and @Halt@ terminates a run (with the sticky overflow flag and a status byte).
+and @Halt@ terminates a run (with the sticky trap & overflow flags, 3-bit reason
+and a status byte).
 -}
 data Record
   = Capture (BitVector 4) (BitVector 8) -- nbits (1..8), sampled byte
   | Mark (BitVector 14) (BitVector 32) -- label, payload
-  | Halt Bool (BitVector 8) -- overflow, status
+  | Halt Bool (BitVector 3) Bool (BitVector 8) -- trap, reason, overflow, status
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
@@ -35,7 +36,7 @@ encodeRecord :: Record -> [BitVector 32]
 encodeRecord = \case
   Capture n b -> [bitCoerce (0b00 :: BitVector 2, 0 :: BitVector 18, n, b)]
   Mark lbl pl -> [bitCoerce (0b10 :: BitVector 2, 0 :: BitVector 16, lbl), pl]
-  Halt ovf st -> [bitCoerce (0b11 :: BitVector 2, 0 :: BitVector 21, ovf, st)]
+  Halt trp rsn ovf st -> [bitCoerce (0b11 :: BitVector 2, 0 :: BitVector 17, rsn, trp, ovf, st)]
 
 {- | Atomically push a record's words. Given the current write pointer, the
 last usable record slot (@limit@), and prior overflow, either write all
