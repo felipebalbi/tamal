@@ -150,6 +150,8 @@ step :: State -> BusIn -> (State, BusOut, Maybe Ring)
 step s inp = case phase s of
   Idle -> stepIdle s inp
   Halted -> stepHalted s inp
+  Preamble -> stepPreamble s inp
+  Fetch -> stepFetch s inp
   _ -> (s, busOut s, Nothing) -- filled in by later tasks
 
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
@@ -161,3 +163,9 @@ stepHalted :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepHalted s inp
   | startIn inp = (softInit, busOut s, Nothing)
   | otherwise = (s, busOut s, Nothing)
+
+stepPreamble :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepPreamble s _ = (s{phase = Fetch}, busOut s, Just (Ring 0 revisionWord))
+
+stepFetch :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepFetch s _ = (s{phase = Exec}, busOut s, Nothing)
