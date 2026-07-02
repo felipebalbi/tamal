@@ -107,6 +107,7 @@ library
     Tamal.Uart.BaudGen
     Tamal.Uart.Rx
     Tamal.Uart.Tx
+    Tamal.Uart
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.

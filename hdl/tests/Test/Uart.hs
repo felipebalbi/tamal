@@ -12,6 +12,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Domain (Dom100)
+import Tamal.Uart (uart)
 import Tamal.Uart.BaudGen (oversampleTick)
 import Tamal.Uart.Rx (uartRx)
 import Tamal.Uart.Tx (uartTx)
@@ -66,6 +67,20 @@ runFastLoop :: [Maybe (BitVector 8)] -> Int -> [Maybe (BitVector 8)]
 runFastLoop ins n =
   sampleN n (fastLoop (fromList (ins <> L.repeat Nothing)) :: Signal Dom100 (Maybe (BitVector 8)))
 
+-- | Full UART with the real NCO tick (50 cycles/bit at 2 Mbaud); TX line looped to RX.
+fullLoop ::
+  (HiddenClockResetEnable dom) =>
+  Signal dom (Maybe (BitVector 8)) ->
+  Signal dom (Maybe (BitVector 8))
+fullLoop txByte = rxByte
+ where
+  (rxByte, _err, txLine, _rdy) = uart (SNat @2_000_000) rxLine txByte
+  rxLine = txLine
+
+runFullLoop :: [Maybe (BitVector 8)] -> Int -> [Maybe (BitVector 8)]
+runFullLoop ins n =
+  sampleN n (fullLoop (fromList (ins <> L.repeat Nothing)) :: Signal Dom100 (Maybe (BitVector 8)))
+
 tests :: TestTree
 tests =
   testGroup
@@ -97,5 +112,9 @@ tests =
     , testProperty "TX ignores input while busy (ready gating)" $ property $ do
         b <- forAll genByte
         let out = runFastLoop (Nothing : L.replicate 100 (Just b)) 400
+        [b' | Just b' <- out] === [b]
+    , testProperty "full UART loopback (real NCO) recovers the byte" $ property $ do
+        b <- forAll genByte
+        let out = runFullLoop (Nothing : L.replicate 60 (Just b)) 1200
         [b' | Just b' <- out] === [b]
     ]
