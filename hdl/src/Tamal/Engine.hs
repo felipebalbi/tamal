@@ -25,7 +25,7 @@ module Tamal.Engine
 import Clash.Prelude
 import Tamal.Alu (dataResult)
 import qualified Tamal.Branch as Br
-import Tamal.Bus.Serdes (Lanes, hiZ)
+import Tamal.Bus.Serdes (Lanes, hiZ, serializeX1)
 import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..), decodeConfig)
 import Tamal.Isa (Instr (..), Reg, decode)
 import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
@@ -155,6 +155,7 @@ step s inp = case phase s of
   Preamble -> stepPreamble s inp
   Fetch -> stepFetch s inp
   Exec -> stepExec s inp
+  BusBeat -> stepBusBeat s inp
   _ -> (s, busOut s, Nothing) -- filled in by later tasks
 
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
@@ -177,6 +178,35 @@ stepExec :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepExec s inp = case decode (instrWord inp) of
   Left _ -> haltWith True 1 0 (safePins s) -- decode error -> reason 1
   Right i -> execInstr i s inp
+
+{- | One fabric cycle of a bus beat. SCK = fabric/5 via 'busPhase' (0..4):
+low {0,1,2}, high {3,4}. Each beat is 5 cycles; on the last phase we either
+start the next beat or complete the op.
+-}
+stepBusBeat :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepBusBeat s inp
+  | busPhase s < 4 = (tick s, busOut (tick s), Nothing) -- mid-beat: advance phase
+  | beatIx s + 1 < beatTot s = (nextBeat s, busOut (nextBeat s), Nothing) -- more beats
+  | otherwise = complete s inp -- last beat done
+ where
+  tick t = t{busPhase = busPhase t + 1, sck = sckOf (busPhase t + 1)}
+  nextBeat t =
+    let bi = beatIx t + 1
+     in t{busPhase = 0, beatIx = bi, sck = 0, lanes = putLanes t bi}
+
+-- | SCK level for a phase: low {0,1,2}, high {3,4}.
+sckOf :: Index 5 -> Bit
+sckOf = boolToBit <$> (>= 3)
+
+-- | Lane drive for PUT beat @bi@ (GET/TAR override this in Task 9).
+putLanes :: State -> Unsigned 4 -> Lanes
+putLanes t bi = serializeX1 (shifter t) !! bi
+
+-- | Finish a bus op: advance PC, idle SCK. (GET writeback lands in Task 9.)
+complete :: State -> BusIn -> (State, BusOut, Maybe Ring)
+complete s _ =
+  let s' = (advance s){sck = 0, busPhase = 0, beatIx = 0}
+   in (s', busOut s', Nothing)
 
 -- | Advance to the next sequential instruction.
 advance :: State -> State
@@ -241,6 +271,10 @@ execInstr i s inp = case i of
             else ioIn inp !! 1
         s' = (advance s){regs = writeReg (regs s) rd (zeroExtend (pack b))}
      in (s', busOut s', Nothing)
+  PutByteImm b -> startPut b 8
+  PutByteReg a -> startPut (truncateB (readReg (regs s) a)) 8
+  PutBitsImm n b -> startPut b (fromIntegral n + 1)
+  PutBitsReg a n -> startPut (truncateB (readReg (regs s) a)) (fromIntegral n + 1)
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)
@@ -256,6 +290,18 @@ execInstr i s inp = case i of
         s'
           | taken = s{phase = Fetch, pc = pc s + offAw}
           | otherwise = advance s
+     in (s', busOut s', Nothing)
+  startPut byte total =
+    let s' =
+          s
+            { phase = BusBeat
+            , busPhase = 0
+            , beatIx = 0
+            , beatTot = total
+            , shifter = byte
+            , pending = PendNone
+            , lanes = serializeX1 byte !! (0 :: Unsigned 4)
+            }
      in (s', busOut s', Nothing)
 
 operandRs1 :: Instr -> Reg

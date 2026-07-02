@@ -89,6 +89,20 @@ tests =
             rLo = drive 30 (memOf prog) (\t -> (repeat 0, 0, t == 0))
         readReg (regs (runState rHi)) 1 @?= 1
         readReg (regs (runState rLo)) 1 @?= 0
+    , testCase "PUT_BYTE emits exactly 8 SCK rising edges"
+        $ risingEdges
+          (driveTrace 200 [encode CsAssert, encode (PutByteImm 0xA5), encode CsDeassert, encode (Halt 0)])
+        @?= 8
+    , testCase "PUT_BYTE drives IO0 MSB-first (sampled at each SCK rising edge)" $ do
+        let prog = [encode CsAssert, encode (PutByteImm 0xA5), encode CsDeassert, encode (Halt 0)]
+            bos = driveTrace 200 prog
+            atRising =
+              [ fst (lanesOut b !! 0)
+              | (a, b) <- L.zip bos (L.drop 1 bos)
+              , sckOut a == 0
+              , sckOut b == 1
+              ]
+        atRising @?= toList (unpack 0xA5 :: Vec 8 Bit)
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
@@ -129,6 +143,26 @@ runProg budget prog = drive budget (memOf prog) inputs
  where
   inputs 0 = (repeat 0, 0, True)
   inputs _ = (repeat 0, 0, False)
+
+-- | Record the per-cycle 'BusOut' stream (for bus-timing assertions).
+driveTrace :: Int -> [BitVector 32] -> [BusOut]
+driveTrace budget prog = go 0 initState 0 []
+ where
+  mem = memOf prog
+  go !t !s !prevPc !acc
+    | phase s == Halted && t > 0 = L.reverse acc
+    | t >= budget = L.reverse acc
+    | otherwise =
+        let inp = BusIn (mem prevPc) (repeat 0) 0 (t == 0)
+            (s', bo, _) = step s inp
+         in go (t + 1) s' (pcOut bo) (bo : acc)
+
+-- | Count low→high transitions of 'sckOut' across a 'BusOut' stream.
+risingEdges :: [BusOut] -> Int
+risingEdges bos = L.length (L.filter id (L.zipWith rise scks (L.drop 1 scks)))
+ where
+  scks = L.map sckOut bos
+  rise a b = a == 0 && b == 1
 
 -- | Read a register out of the engine's final state.
 readRegE :: State -> Reg -> BitVector 32
