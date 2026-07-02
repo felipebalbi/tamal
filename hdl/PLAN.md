@@ -11,8 +11,9 @@ UART design (`.../2026-07-01-tamal-uart-design.md`).
 
 Every **pure leaf core** from the §10 module decomposition is built and
 hedgehog-tested — the compute layer (ALU + branch), the **register file**, and
-the **UART transport** included. What remains is the keystone **Engine** and the
-impure `topEntity` shell that wires everything to the pins.
+the **UART transport** included — and now the keystone **`Engine.step`** Mealy is
+built and hedgehog-tested too. What remains is the impure `topEntity` shell that
+wires everything to the pins.
 
 | Module | Purpose | Status |
 |---|---|---|
@@ -20,64 +21,64 @@ impure `topEntity` shell that wires everything to the pins.
 | `Tamal.Crc` | `crc8Update` (poly 0x07, init 0x00, MSB-first) | done, tested |
 | `Tamal.Bus.Serdes` | x1 serialize/deserialize + `tarBeat` | done, tested |
 | `Tamal.Config` | `SET_CONFIG` decode | done, tested |
-| `Tamal.Trace` | ring record encode + `ringPush` overflow | done, tested |
+| `Tamal.Trace` | ring record encode (+ trap flag/reason) + `ringPush` overflow | done, tested |
 | `Tamal.Alu` | `alu` core + `dataResult` wrapper (DATA group) | done, tested |
 | `Tamal.Branch` | `branchTaken` comparator (CTRL group, unsigned) | done, tested |
 | `Tamal.RegFile` | 16×32 register file, `x0` hardwired 0 | done, tested |
 | `Tamal.Uart.*` | 8N1 UART (NCO tick, RX, TX, umbrella) — host transport | done, tested |
+| `Tamal.Engine` | `step` Mealy: fetch/decode/datapath + SCK bus FSM + trace + HALT/TRAP | done, tested |
 | `Tamal.Domain` | `Dom100` clock domain | done |
 | `Tamal` (top) | synthesis entry point | **placeholder heartbeat** (LED blink) |
 
-Confirmed absent: no `Engine.hs`, and the real `topEntity` shell.
+Confirmed absent: only the real `topEntity` shell (the Engine wired to the pins).
 
 ## The gap
 
-Every ingredient the engine needs now exists as a tested leaf: decode
+Every ingredient the engine needs exists as a tested leaf: decode
 (`Isa`), operand compute (`Alu`, `Branch`), architectural state (`RegFile`), the
 bus kernel (`Bus.Serdes`), CRC, trace-ring encoding, and — off to the side — the
-host transport (`Uart`). Two things remain:
+host transport (`Uart`). The keystone that composed them is now done, so one
+thing remains:
 
-1. **`Engine.step` :: `State -> BusIn -> (State, BusOut, Maybe Ring)`** — the first
-   full *stateful* piece (a Mealy transition). It introduces the `State` record
-   (PC, `Regs`, config, RX CRC-8, ring pointer, bus-FSM state) and composes decode
-   + regfile + `alu`/`dataResult` + `branchTaken` + `Serdes` + `Crc` + `Trace`,
-   plus PC/branch-offset math, `RDSR` (RX CRC-8 special-register read), and the
-   multi-cycle bus FSM that sequences BUS ops against externally-timed SCK.
+1. **`Engine.step` :: `State -> BusIn -> (State, BusOut, Maybe Ring)`** — *done,
+   hedgehog-tested.* The first full *stateful* piece (a Mealy transition). It owns
+   the `State` record (PC, `Regs`, config, RX CRC-8, ring pointer, bus-FSM state)
+   and composes decode + regfile + `alu`/`dataResult` + `branchTaken` + `Serdes` +
+   `Crc` + trace, plus PC/branch-offset math, `RDSR`, the SCK `/5` bus FSM, and the
+   HALT/TRAP lifecycle. See `docs/superpowers/specs/2026-07-02-tamal-engine-design.md`.
 2. **The real `topEntity` shell** — instr-BRAM, ring-BRAM, the **UART load/drain
    FSM** (UART ↔ memory), SCK/edge gen, and `IOBUF` tri-state wiring. This is
-   where the UART and the Engine finally meet the pins.
+   where the UART and the Engine finally meet the pins. ← **do this next**
 
-## Next step: `Engine.step`
 
-The compute cores, register file, and transport are done; the Engine is now an
-*assembly* problem, not an *invention* problem — every function it calls is
-built and tested. It is, however, the difficulty spike: the first Mealy machine
-of real size, and the first to sequence the externally-timed bus. It warrants its
-own design doc (like the leaves), and may split into sub-specs — e.g. the
-decode→regfile→ALU→writeback / branch path vs. the bus-op sequencing FSM.
+## Next step: the `topEntity` shell
 
-Concrete scope (§6.1 / §6.2 / §7 / §10):
+`Engine.step` is done and hedgehog-tested (92 engine+leaf properties; the bus
+timing, PC/branch math, CRC residue, trace ring, and HALT/TRAP lifecycle all
+under test via a pure-fold cosimulation driver + reference interpreter). What
+remains is the impure shell that lifts `step` onto the board:
 
-- **`State`** — PC, `Regs`, config register, RX CRC-8 accumulator, ring
-  write-pointer + sticky overflow, bus-FSM/SCK-phase state.
-- **DATA/CTRL** — operand fetch (`readReg`), `dataResult` writeback (discarding
-  `x0`), `branchTaken` + `PC += signExtend off`.
-- **`RDSR`** — special-register read (sr=0 → RX CRC-8; else TRAP).
-- **BUS ops** — the FSM that drives/samples `Bus.Serdes` beats with turnaround.
-- **Tests** — hedgehog over instruction sequences; the engine executes a small
-  program and its `State`/ring output matches a reference (test-plan item 5).
+- **instruction BRAM** — synchronous, feeding `BusIn.instrWord` at the registered
+  `pcOut` (the `Fetch` phase models the 1-cycle latency).
+- **ring BRAM** — driven by the `Maybe Ring` writes; drained on `halted`.
+- **UART load/drain FSM** — control-plane load into instr-BRAM; on HALT, stream
+  the ring out over the `Uart` transport.
+- **pin wiring** — `IOBUF` tri-states from `lanesOut` `(o, oe)`, plus `CS#`/`SCK`/
+  `RESET#` outputs and the `ALERT#` synchronizer, bound to the XDC.
+
+This is the impure, timing-critical part; it warrants its own design doc.
 
 ## Ordering
 
 1. **ALU + branch comparator** (pure, hedgehog) — done
 2. **Register file** (16×32, `x0` = 0) — done
 3. **UART transport** (8N1 RX/TX, NCO 16× oversample, loopback-tested) — done
-4. **`Engine.hs` — `step` Mealy** ← do this next — composes decode + regfile +
-   `alu`/`dataResult` + `branchTaken` + serdes + CRC + trace; includes `RDSR`,
-   PC/branch-offset math, and the bus-op FSM (test-plan item 5)
-5. **Real `topEntity` shell** — instr-BRAM, ring-BRAM, UART load/drain FSM, SCK
-   gen, IOBUF wiring (the impure, timing-critical part)
+4. **`Engine.hs` — `step` Mealy** — done, hedgehog-tested (composes decode +
+   regfile + `alu`/`dataResult` + `branchTaken` + serdes + CRC + trace; includes
+   `RDSR`, PC/branch-offset math, the SCK `/5` bus FSM, and HALT/TRAP)
+5. **Real `topEntity` shell** ← do this next — instr-BRAM, ring-BRAM, UART
+   load/drain FSM, SCK gen, IOBUF wiring (the impure, timing-critical part)
 
-Short version: the pure leaves are all in place — the Engine is the next build,
-and it turns from design problem into wiring because decode, the register file,
-the ALU/branch cores, serdes, CRC, and trace are already solid.
+Short version: the pure leaves and the Engine keystone are all in place and
+tested — what remains is wiring `step` to the pins in the impure `topEntity`
+shell.
