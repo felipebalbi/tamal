@@ -36,4 +36,4 @@ ringRam ::
   Signal dom (Unsigned 12) ->
   Signal dom (Maybe (Unsigned 12, BitVector 32)) ->
   Signal dom (BitVector 32)
-ringRam = undefined -- implemented in the ring slice (plan Task 3)
+ringRam = blockRamPow2 (repeat 0)

@@ -11,7 +11,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 
 import Tamal.Domain (Dom100)
-import Tamal.Mem (instrRam)
+import Tamal.Mem (instrRam, ringRam)
 
 {- | Pure oracle mirroring 'Clash.Prelude.blockRam' exactly: zero-init, 1-cycle
 read latency, read-before-write. Produces @[out 1, out 2, ..]@ (the undefined
@@ -43,6 +43,18 @@ simInstr addrs writes =
     $ sampleN
       (L.length addrs + 1)
       ( instrRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)) ::
+          Signal Dom100 (BitVector 32)
+      )
+
+{- | Sample 'ringRam' over a stimulus, dropping the undefined cycle-0 output.
+Same shape as 'simInstr' at the ring's 'Unsigned 12' width.
+-}
+simRing :: [Unsigned 12] -> [Maybe (Unsigned 12, BitVector 32)] -> [BitVector 32]
+simRing addrs writes =
+  L.drop 1
+    $ sampleN
+      (L.length addrs + 1)
+      ( ringRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)) ::
           Signal Dom100 (BitVector 32)
       )
 
@@ -78,4 +90,19 @@ tests =
           [0, maxBound, maxBound]
           [Just (maxBound, 0x0BAD_C0DE), Nothing, Nothing]
         @?= [0, 0x0BAD_C0DE, 0x0BAD_C0DE]
+    , testCase "ring: write then read-back at a mid address"
+        $ simRing
+          [0, 42, 42, 42]
+          [Just (42, 0x1234_5678), Nothing, Nothing, Nothing]
+        @?= [0, 0x1234_5678, 0x1234_5678, 0x1234_5678]
+    , testCase "ring: drain sweep streams the written block in order"
+        $
+        -- write 4 words to addrs 100..103 (one per cycle), then sweep-read
+        -- 100..103. sweep = take 4 (drop 4 ..): reads issued at cycles 4..7
+        -- surface post-latency, by which point all 4 writes have landed.
+        let blk = [0xA0, 0xA1, 0xA2, 0xA3] :: [BitVector 32]
+            base = 100 :: Unsigned 12
+            writes = [Just (base + i, v) | (i, v) <- L.zip [0 .. 3] blk] <> L.replicate 4 Nothing
+            addrs = L.replicate 4 0 <> [base + i | i <- [0 .. 3]]
+         in L.take 4 (L.drop 4 (simRing addrs writes)) @?= blk
     ]

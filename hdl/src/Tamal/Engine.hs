@@ -336,8 +336,9 @@ pushWord ptr ov w
 advance :: State -> State
 advance s = s{phase = Fetch, pc = pc s + 1}
 
-{- | Fixed terminator slot (top of the ring address space; the
-top-shell sizes it).
+{- | Fixed terminator slot: the top of the ring address space. 'Tamal.Mem.ringRam'
+pins the ring at 4096 words, so @termAddr = maxBound = D - 1@ — the last usable
+record slot sits at @termAddr - 1@ (see 'pushWord').
 -}
 termAddr :: Unsigned 12
 termAddr = maxBound
