@@ -98,7 +98,7 @@ tests =
         let prog = [encode CsAssert, encode (PutByteImm 0xA5), encode CsDeassert, encode (Halt 0)]
             bos = driveTrace 200 prog
             atRising =
-              [ fst (lanesOut b !! 0)
+              [ fst (lanesOut b !! (0 :: Index 4))
               | (a, b) <- L.zip bos (L.drop 1 bos)
               , sckOut a == 0
               , sckOut b == 1
@@ -172,11 +172,11 @@ tests =
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
-data Run = Run
-  { runState :: State
-  , runRing :: [Ring]
-  , runCycles :: Int
-  }
+data Run = Run State [Ring] Int
+
+-- | The engine's final state after a run.
+runState :: Run -> State
+runState (Run s _ _) = s
 
 -- | Program memory backed by a plain list (test-only; 0-filled past the end).
 memOf :: [BitVector 32] -> Unsigned 10 -> BitVector 32

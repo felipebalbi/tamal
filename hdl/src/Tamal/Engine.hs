@@ -34,6 +34,13 @@ import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
 -- | Program-address width (word index): 1024-word store (§ D3).
 type AW = 10
 
+{- | The engine lifecycle (the @phase@ field of 'State'). Each constructor is a
+Mealy state 'step' dispatches on: 'Idle' waits for a start trigger, 'Preamble'
+writes the REVISION word, 'Fetch' is the 1-cycle instruction-BRAM bubble, 'Exec'
+decodes and dispatches, 'BusBeat' sequences an SCK-timed transfer, 'TraceEmit'
+writes a MARK's second word, 'WaitAlert' blocks on @WAIT_ON@, and 'Halted' holds
+after HALT/TRAP.
+-}
 data Phase
   = Idle
   | Preamble
@@ -46,6 +53,13 @@ data Phase
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | The full engine state carried through the Mealy transition. Groups: the
+lifecycle @phase@; architectural state (@pc@, @regs@, @cfg@, @rxCrc@); the trace
+ring pointer + sticky overflow; the registered pin drives (@csN@, @sck@, @rstN@,
+@lanes@) that 'busOut' projects; the bus micro-FSM scratch (@busPhase@ 0..4,
+@beatIx@, @beatTot@, @shifter@); and the deferred-work slots (@pending@,
+@waitTimer@). Power-up contents come from 'initState'.
+-}
 data State = State
   { phase :: Phase
   , pc :: Unsigned AW
@@ -68,6 +82,10 @@ data State = State
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | What the top feeds the engine each 100 MHz cycle: the instruction word at
+the registered PC (valid the cycle after 'Fetch'), the sampled IO lanes, the
+synchronized @ALERT#@ level, and the control-plane start trigger.
+-}
 data BusIn = BusIn
   { instrWord :: BitVector 32
   , ioIn :: Vec 4 Bit
@@ -77,6 +95,11 @@ data BusIn = BusIn
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | The engine's pin + memory-control outputs, a pure projection of 'State'
+(see 'busOut'): the instruction-fetch address, the @CS#@/@SCK@/@RESET#@ levels,
+the per-lane @(output, output-enable)@ drives, and the drain-triggering
+@halted@ flag.
+-}
 data BusOut = BusOut
   { pcOut :: Unsigned AW
   , csOut :: Bit
@@ -88,6 +111,9 @@ data BusOut = BusOut
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | One trace-ring BRAM write: a 32-bit record word at an address. At most one
+per cycle (the @Maybe Ring@ third element of 'step').
+-}
 data Ring = Ring
   { rAddr :: Unsigned 12
   , rData :: BitVector 32
@@ -95,6 +121,10 @@ data Ring = Ring
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | Work deferred from an 'Exec' decode to a later completion cycle: a pending
+GET writeback (@rd@, sampled-bit count, whether to fold RX CRC), a MARK payload
+word for 'TraceEmit', an in-flight TAR, or a @WAIT_ON@ target register.
+-}
 data Pending
   = PendNone
   | PendGet Reg (Unsigned 4) Bool
@@ -151,6 +181,11 @@ busOut s =
 softInit :: State
 softInit = initState{phase = Preamble}
 
+{- | The keystone pure Mealy transition: given the current 'State' and this
+cycle's 'BusIn', produce the next 'State', the projected 'BusOut', and an
+optional trace-ring write. Dispatches on 'phase' to the per-phase helpers; the
+top entity lifts it with @mealy@ and wires 'BusOut'/'Ring' to the pins and BRAMs.
+-}
 step :: State -> BusIn -> (State, BusOut, Maybe Ring)
 step s inp = case phase s of
   Idle -> stepIdle s inp
@@ -162,22 +197,27 @@ step s inp = case phase s of
   TraceEmit -> stepTraceEmit s inp
   WaitAlert -> stepWaitAlert s inp
 
+-- | Idle: hold safe pins until 'startIn', then soft-init into 'Preamble'.
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepIdle s inp
   | startIn inp = (softInit, busOut s, Nothing)
   | otherwise = (s, busOut s, Nothing)
 
+-- | Halted: hold (asserting @halted@); a fresh 'startIn' soft-inits a re-run.
 stepHalted :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepHalted s inp
   | startIn inp = (softInit, busOut s, Nothing)
   | otherwise = (s, busOut s, Nothing)
 
+-- | Preamble: write the REVISION word to ring[0], then advance to 'Fetch'.
 stepPreamble :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepPreamble s _ = (s{phase = Fetch}, busOut s, Just (Ring 0 revisionWord))
 
+-- | Fetch: the 1-cycle instruction-BRAM bubble; the word is valid next cycle.
 stepFetch :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepFetch s _ = (s{phase = Exec}, busOut s, Nothing)
 
+-- | Exec: decode the fetched word (a decode error traps, reason 1) and dispatch.
 stepExec :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepExec s inp = case decode (instrWord inp) of
   Left _ -> haltWith True 1 0 (safePins s) -- decode error -> reason 1
@@ -198,7 +238,7 @@ stepBusBeat s inp
         t1 = t{busPhase = p, sck = sckOf p}
      in if p == 3 then sampleGet t1 else t1
   sampleGet t = case pending t of
-    PendGet{} -> t{shifter = shifter t `shiftL` 1 .|. zeroExtend (pack (ioIn inp !! 1))}
+    PendGet{} -> t{shifter = shifter t `shiftL` 1 .|. zeroExtend (pack (ioIn inp !! (1 :: Index 4)))}
     _ -> t
   nextBeat t =
     let bi = beatIx t + 1
@@ -216,7 +256,7 @@ stepTraceEmit s _ = case pending s of
      in (s', busOut s', Just (Ring (ringPtr s) payload))
   _ -> (advance s, busOut s, Nothing)
 
--- | WaitAlert: assert on ALERT# low; else count down ; on 0, timeout (rd=0).
+-- | WaitAlert: assert on ALERT# low; else count down; on 0, timeout (rd=0).
 stepWaitAlert :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepWaitAlert s inp = case pending s of
   PendWait rd
@@ -228,7 +268,7 @@ stepWaitAlert s inp = case pending s of
   b =
     if cfgAlertSource (cfg s) == AlertPin
       then alertIn inp
-      else ioIn inp !! 1
+      else ioIn inp !! (1 :: Index 4)
   asserted = b == 0 -- ALERT#/IO[1] are both active low (§6.5)
   done rd v =
     let s' =
@@ -249,7 +289,9 @@ beatLanes t bi = case pending t of
   PendTar -> tarBeat bi
   _ -> serializeX1 (shifter t) !! bi
 
--- | Finish a bus op: advance PC, idle SCK. (GET writeback lands in Task 9.)
+{- | Finish a bus op: advance PC, idle SCK. On a GET, write @rd@, fold RX CRC
+(GET_BYTE only), and emit the CAPTURE record.
+-}
 complete :: State -> (State, BusOut, Maybe Ring)
 complete s = case pending s of
   PendGet rd nbits crc ->
@@ -313,10 +355,14 @@ haltWith trap reason status s =
       w = bitCoerce (0b11 :: BitVector 2, 0 :: BitVector 17, reason, trap, (ovf s), status)
    in (s', busOut s', Just (Ring termAddr w))
 
--- | MARK label word otag 10, 14-bit label) - mirrors Trace.encodeRecord
+-- | MARK label word (tag 10, 14-bit label) - mirrors Trace.encodeRecord
 markLabelWord :: BitVector 14 -> BitVector 32
 markLabelWord lbl = bitCoerce (0b10 :: BitVector 2, 0 :: BitVector 16, lbl)
 
+{- | Execute one decoded instruction from 'Exec': DATA-compute writeback,
+@RDSR@, branches, pin/config ops, and the multi-cycle bus/trace/wait ops (which
+set up 'State' and hand off to their completion phase). Total over 'Instr'.
+-}
 execInstr :: Instr -> State -> BusIn -> (State, BusOut, Maybe Ring)
 execInstr i s inp = case i of
   LoadImm rd _ -> dataWb rd
@@ -354,7 +400,7 @@ execInstr i s inp = case i of
     let b =
           if cfgAlertSource (cfg s) == AlertPin
             then alertIn inp
-            else ioIn inp !! 1
+            else ioIn inp !! (1 :: Index 4)
         s' = (advance s){regs = writeReg (regs s) rd (zeroExtend (pack b))}
      in (s', busOut s', Nothing)
   PutByteImm b -> startPut b 8
@@ -442,6 +488,7 @@ execInstr i s inp = case i of
                 }
          in (s', busOut s', Nothing)
 
+-- | The @rs1@ register selector an instruction reads (@x0@ for those with none).
 operandRs1 :: Instr -> Reg
 operandRs1 = \case
   Mov _ a -> a
@@ -465,6 +512,7 @@ operandRs1 = \case
   Mark _ a -> a
   _ -> 0
 
+-- | The @rs2@ register selector an instruction reads (@x0@ for those with none).
 operandRs2 :: Instr -> Reg
 operandRs2 = \case
   Add _ _ b -> b
