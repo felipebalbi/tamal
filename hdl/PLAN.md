@@ -11,9 +11,10 @@ UART design (`.../2026-07-01-tamal-uart-design.md`).
 
 Every **pure leaf core** from the §10 module decomposition is built and
 hedgehog-tested — the compute layer (ALU + branch), the **register file**, and
-the **UART transport** included — and now the keystone **`Engine.step`** Mealy is
-built and hedgehog-tested too. What remains is the impure `topEntity` shell that
-wires everything to the pins.
+the **UART transport** included — and the keystone **`Engine.step`** Mealy is
+built and hedgehog-tested too. The first shell piece — the **instruction + ring
+BRAMs** (`Tamal.Mem`) — is now built and hedgehog-tested as well. What remains is
+the rest of the impure `topEntity` shell that wires everything to the pins.
 
 | Module | Purpose | Status |
 |---|---|---|
@@ -27,10 +28,12 @@ wires everything to the pins.
 | `Tamal.RegFile` | 16×32 register file, `x0` hardwired 0 | done, tested |
 | `Tamal.Uart.*` | 8N1 UART (NCO tick, RX, TX, umbrella) — host transport | done, tested |
 | `Tamal.Engine` | `step` Mealy: fetch/decode/datapath + SCK bus FSM + trace + HALT/TRAP | done, tested |
+| `Tamal.Mem` | instr + ring memories (`blockRamPow2`; 1024×32, 4096×32) | done, tested |
 | `Tamal.Domain` | `Dom100` clock domain | done |
 | `Tamal` (top) | synthesis entry point | **placeholder heartbeat** (LED blink) |
 
-Confirmed absent: only the real `topEntity` shell (the Engine wired to the pins).
+Confirmed absent: the rest of the impure shell — wire protocol, loader, IOBUF, and
+the real `topEntity` (the Engine + BRAMs wired to the pins).
 
 ## What remains: the impure `topEntity` shell
 
@@ -39,11 +42,12 @@ Confirmed absent: only the real `topEntity` shell (the Engine wired to the pins)
 the board: memories, the host load/drain path, tri-state IO, and the top that
 wires it all to the pins.
 
-This shell decomposes into **five independently-startable pieces**. Each is meant
-to be picked up in its own fresh session and taken through the repo's standard
+This shell decomposes into **five independently-startable pieces** (the first,
+**BRAM**, is now complete). Each remaining one is meant to be picked up in its own
+fresh session and taken through the repo's standard
 cycle — **brainstorming → writing-plans → TDD** (see "Per-piece workflow" below).
-Build order is **BRAM → wire protocol → loader → IOBUF → topEntity**; `topEntity`
-integrates everything and is deliberately last.
+Build order is **BRAM (done) → wire protocol → loader → IOBUF → topEntity**;
+`topEntity` integrates everything and is deliberately last.
 
 ```
    host ──UART──►┌─────────┐  start   ┌───────────┐  pcOut  ┌────────────┐
@@ -72,12 +76,11 @@ integrates everything and is deliberately last.
   rejected — the boilerplate is already factored into helpers, and the pure form
   keeps the cosim tests trivial). **Revisit `mealyS` for the loader FSM only** — a
   long sequential state machine is where the State-monad idiom actually pays off.
-- **Memory geometry + `termAddr` reconciliation.** The engine currently hardcodes
-  `termAddr = maxBound :: Unsigned 12` (a 4096-word ring) with a "top-shell sizes
-  it" note. The **BRAM** piece pins the real depths — instruction store = 1024
-  words (`AW = 10`, ≈ 1 BRAM36); ring depth = TBD (4096×32 ≈ 4 BRAM36) — and
-  reconciles `termAddr` to the true ring depth − 1 (parameterize the engine or set
-  the constant). This value feeds the loader's drain length too.
+- **Memory geometry + `termAddr` reconciliation — RESOLVED (piece 1).** `Tamal.Mem`
+  pins the instruction store at 1024 words (`AW = 10`, ≈ 1 BRAM36) and the ring at
+  4096 words (`Unsigned 12`, ≈ 4 BRAM36), so `termAddr = maxBound :: Unsigned 12 =
+  D − 1` is already correct — the engine needed **no** behavioral change (only a
+  `termAddr` doc-comment). This 4096 value feeds the loader's drain length too.
 - **Wire-format gap.** `crates/tamal-abi` (`control`, `trace` modules) is still
   placeholder — there is **no** control/result framing yet. The loader cannot be
   built until a minimal framing exists, so it gets its own mini-spec (piece 2).
@@ -87,20 +90,26 @@ integrates everything and is deliberately last.
 
 ---
 
-### 1. BRAM — instruction + ring memories  *(do first; unblocked)*
+### 1. BRAM — instruction + ring memories  *(done — `Tamal.Mem`)*
 
-- **What:** two Clash `blockRam`s (read-address + `Maybe (waddr, wdata)` = simple
-  dual-port).
-  - *instr BRAM:* read addr = engine `pcOut :: Unsigned 10`; write = loader
-    `Maybe (Unsigned 10, BitVector 32)`; output feeds `BusIn.instrWord`. Its
-    **1-cycle read latency is exactly the engine's `Fetch` bubble.**
-  - *ring BRAM:* write = engine `Maybe Ring` (as `Maybe (Unsigned 12, BitVector
-    32)`); read addr = loader drain counter; output streams to the loader.
-- **Decisions to make:** final depths; `blockRamU`/zero-init vs seeded; the
-  `termAddr` reconciliation above.
+- **What:** two Clash `blockRamPow2`s (read-address + `Maybe (waddr, wdata)` =
+  simple dual-port), in `hdl/src/Tamal/Mem.hs`.
+  - *instr BRAM* (`instrRam`, 1024×32): read addr = engine `pcOut :: Unsigned 10`;
+    write = loader `Maybe (Unsigned 10, BitVector 32)`; output feeds
+    `BusIn.instrWord`. Its **1-cycle read latency is exactly the engine's `Fetch`
+    bubble.**
+  - *ring BRAM* (`ringRam`, 4096×32): write = engine `Maybe Ring` (as `Maybe
+    (Unsigned 12, BitVector 32)`); read addr = loader drain counter; output streams
+    to the loader.
+- **Decisions made:** ring = 4096 (`Unsigned 12`) so `termAddr = maxBound = D − 1`
+  needs no engine change; instr store = 1024 (`AW = 10`); zero-init (`repeat 0` →
+  BRAM `INIT`); generic tuple write ports (no `Tamal.Engine` import — the topEntity
+  projects `Maybe Ring`).
 - **Depends on:** nothing (engine + Clash primitives).
-- **Testing:** `Signal`-level `simulate`/`sampleN` — write-then-read-back, verify
-  1-cycle latency, ring write + drain sweep. (Impure but simulatable.)
+- **Tested:** `Test.Mem` — a pure `refRam` oracle (+ `simInstr`/`simRing` samplers);
+  6 HUnit cases (write-then-read-back, 1-cycle latency, read-before-write collision,
+  address boundaries, ring drain sweep) + 3 hedgehog properties (model-equivalence
+  at both widths + last-write-wins sweep). Spec + plan under `docs/superpowers/`.
 
 ### 2. Wire protocol — fill the `tamal-abi` placeholder  *(loader prerequisite)*
 
@@ -165,13 +174,14 @@ integrates everything and is deliberately last.
 2. **Register file** (16×32, `x0` = 0) — done
 3. **UART transport** (8N1 RX/TX, NCO 16× oversample) — done
 4. **`Engine.hs` — `step` Mealy** — done, hedgehog-tested
-5. **BRAM** (instr + ring `blockRam`; pin depths; reconcile `termAddr`) ← next
-6. **Wire protocol** (`tamal-abi` control/result framing) — loader prerequisite
+5. **BRAM** (instr + ring `blockRamPow2`; ring = 4096, `termAddr = maxBound`) — done, hedgehog-tested
+6. **Wire protocol** (`tamal-abi` control/result framing) — loader prerequisite ← next
 7. **Loader** (UART load/drain FSM)
 8. **IOBUF** (tri-state IO + sideband pins)
 9. **`topEntity`** (integration; retire the heartbeat) — last
 
-Short version: the pure leaves and the Engine keystone are all in place and
-tested. The impure shell remains, decomposed into BRAM → wire protocol → loader →
-IOBUF → topEntity — each its own spec → plan → TDD session, with `topEntity` last.
+Short version: the pure leaves, the Engine keystone, and the **BRAM memories**
+(`Tamal.Mem`) are all in place and tested. The rest of the impure shell remains,
+decomposed into wire protocol → loader → IOBUF → topEntity — each its own spec →
+plan → TDD session, with `topEntity` last.
 
