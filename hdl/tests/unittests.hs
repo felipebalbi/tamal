@@ -18,6 +18,7 @@ import qualified Test.Isa
 import qualified Test.RegFile
 import qualified Test.Serdes
 import qualified Test.Trace
+import qualified Test.Uart
 
 main :: IO ()
 main = defaultMain tests
@@ -40,4 +41,5 @@ tests =
     , Test.Branch.tests
     , Test.Alu.tests
     , Test.RegFile.tests
+    , Test.Uart.tests
     ]
