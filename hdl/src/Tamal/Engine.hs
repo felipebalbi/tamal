@@ -23,10 +23,11 @@ module Tamal.Engine
   ) where
 
 import Clash.Prelude
+import Tamal.Alu (dataResult)
 import Tamal.Bus.Serdes (Lanes, hiZ)
 import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..))
-import Tamal.Isa (Reg)
-import Tamal.RegFile (Regs, initRegs)
+import Tamal.Isa (Instr (..), Reg, decode)
+import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
 
 -- | Program-address width (word index): 1024-word store (§ D3).
 type AW = 10
@@ -152,6 +153,7 @@ step s inp = case phase s of
   Halted -> stepHalted s inp
   Preamble -> stepPreamble s inp
   Fetch -> stepFetch s inp
+  Exec -> stepExec s inp
   _ -> (s, busOut s, Nothing) -- filled in by later tasks
 
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
@@ -169,3 +171,91 @@ stepPreamble s _ = (s{phase = Fetch}, busOut s, Just (Ring 0 revisionWord))
 
 stepFetch :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepFetch s _ = (s{phase = Exec}, busOut s, Nothing)
+
+stepExec :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepExec s inp = case decode (instrWord inp) of
+  Left _ -> haltWith True 1 0 (safePins s) -- decode error -> reason 1
+  Right i -> execInstr i s inp
+
+-- | Advance to the next sequential instruction.
+advance :: State -> State
+advance s = s{phase = Fetch, pc = pc s + 1}
+
+{- | Fixed terminator slot (top of the ring address space; the
+top-shell sizes it).
+-}
+termAddr :: Unsigned 12
+termAddr = maxBound
+
+-- | Drive pins safe (used by TRAP): CS# high, lanes hi-Z, SCK low, RESET# high.
+safePins :: State -> State
+safePins s = s{csN = 1, sck = 0, rstN = 1, lanes = hiZ}
+
+{- | Emit the HALT terminator (§7.4). Builds the word directly (mirrors
+'Tamal.Trace.encodeRecord'’s Halt layout) so 'step' stays synthesizable.
+-}
+haltWith :: Bool -> BitVector 3 -> BitVector 8 -> State -> (State, BusOut, Maybe Ring)
+haltWith trap reason status s =
+  let s' = s{phase = Halted}
+      w = bitCoerce (0b11 :: BitVector 2, 0 :: BitVector 17, reason, trap, (ovf s), status)
+   in (s', busOut s', Just (Ring termAddr w))
+
+execInstr :: Instr -> State -> BusIn -> (State, BusOut, Maybe Ring)
+execInstr i s _inp = case i of
+  LoadImm rd _ -> dataWb rd
+  Lui rd _ -> dataWb rd
+  Mov rd _ -> dataWb rd
+  Add rd _ _ -> dataWb rd
+  Addi rd _ _ -> dataWb rd
+  Sub rd _ _ -> dataWb rd
+  And_ rd _ _ -> dataWb rd
+  Andi rd _ _ -> dataWb rd
+  Or_ rd _ _ -> dataWb rd
+  Ori rd _ _ -> dataWb rd
+  Xor_ rd _ _ -> dataWb rd
+  Xori rd _ _ -> dataWb rd
+  Shift rd _ _ _ -> dataWb rd
+  Halt st -> haltWith False 0 st s
+  _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
+ where
+  rs1v = readReg (regs s) (operandRs1 i)
+  rs2v = readReg (regs s) (operandRs2 i)
+  dataWb rd =
+    let s' = (advance s){regs = writeReg (regs s) rd (dataResult i rs1v rs2v)}
+     in (s', busOut s', Nothing)
+
+operandRs1 :: Instr -> Reg
+operandRs1 = \case
+  Mov _ a -> a
+  Add _ a _ -> a
+  Addi _ a _ -> a
+  Sub _ a _ -> a
+  And_ _ a _ -> a
+  Andi _ a _ -> a
+  Or_ _ a _ -> a
+  Ori _ a _ -> a
+  Xor_ _ a _ -> a
+  Xori _ a _ -> a
+  Shift _ a _ _ -> a
+  Beq a _ _ -> a
+  Bne a _ _ -> a
+  Bltu a _ _ -> a
+  Bgeu a _ _ -> a
+  PutByteReg a -> a
+  PutBitsReg a _ -> a
+  TarReg a -> a
+  Mark _ a -> a
+  _ -> 0
+
+operandRs2 :: Instr -> Reg
+operandRs2 = \case
+  Add _ _ b -> b
+  Sub _ _ b -> b
+  And_ _ _ b -> b
+  Or_ _ _ b -> b
+  Xor_ _ _ b -> b
+  Beq _ b _ -> b
+  Bne _ b _ -> b
+  Bltu _ b _ -> b
+  Bgeu _ b _ -> b
+  _ -> 0
