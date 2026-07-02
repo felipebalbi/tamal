@@ -53,6 +53,21 @@ tests =
         let bad = [encode (Rdsr 1 1), encode (Halt 0)]
             Run _ ring _ = runProg 40 bad
         haltReason (L.last ring) @?= (True, 3)
+    , testCase "BEQ taken skips; BNE backward loops via counter" $ do
+        let prog =
+              [ encode (LoadImm 1 3) -- 0: x1 = 3
+              , encode (Addi 1 1 (-1)) -- 1: x1 = x1 - 1  (loop head)
+              , encode (Bne 1 0 (-1)) -- 2: if x1 /= 0 goto 1
+              , encode (Halt 0) -- 3
+              ]
+            Run s _ c = runProg 400 prog
+        phase s @?= Halted
+        readReg (regs s) 1 @?= 0
+        assertBool "loop ran (>10 cycles)" (c > 10)
+    , testCase "BEQ not taken falls through" $ do
+        let prog = [encode (LoadImm 1 5), encode (Beq 1 0 5), encode (Halt 0x22)]
+            Run _ ring _ = runProg 60 prog
+        haltStatus (L.last ring) @?= 0x22
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
@@ -101,6 +116,10 @@ readRegE s = readReg (regs s)
 -- | Extract (trap, reason) from a HALT terminator word.
 haltReason :: Ring -> (Bool, BitVector 3)
 haltReason (Ring _ w) = (testBit w 9, slice d12 d10 w)
+
+-- | Extract the status byte from a HALT terminator word.
+haltStatus :: Ring -> BitVector 8
+haltStatus (Ring _ w) = slice d7 d0 w
 
 -- | Instantaneous reference for straight-line DATA-compute programs.
 refRegs :: [Instr] -> Regs

@@ -24,6 +24,7 @@ module Tamal.Engine
 
 import Clash.Prelude
 import Tamal.Alu (dataResult)
+import qualified Tamal.Branch as Br
 import Tamal.Bus.Serdes (Lanes, hiZ)
 import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..))
 import Tamal.Isa (Instr (..), Reg, decode)
@@ -221,12 +222,25 @@ execInstr i s _inp = case i of
         let s' = (advance s){regs = writeReg (regs s) rd (zeroExtend (rxCrc s))}
          in (s', busOut s', Nothing)
     | otherwise -> haltWith True 3 0 (safePins s) -- reserved sr# -> reason 3
+  Beq a b off -> branch Br.Beq a b off
+  Bne a b off -> branch Br.Bne a b off
+  Bltu a b off -> branch Br.Bltu a b off
+  Bgeu a b off -> branch Br.Bgeu a b off
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)
   rs2v = readReg (regs s) (operandRs2 i)
   dataWb rd =
     let s' = (advance s){regs = writeReg (regs s) rd (dataResult i rs1v rs2v)}
+     in (s', busOut s', Nothing)
+  branch op a b off =
+    let taken = Br.branchTaken op (readReg (regs s) a) (readReg (regs s) b)
+        -- offset is 11-bit signed; PC is AW=10-bit. Take the low AW bits;
+        -- pc + off ≡ pc + (off mod 2^AW) (mod 2^AW)
+        offAw = unpack (truncateB off) :: Unsigned AW
+        s'
+          | taken = s{phase = Fetch, pc = pc s + offAw}
+          | otherwise = advance s
      in (s', busOut s', Nothing)
 
 operandRs1 :: Instr -> Reg
