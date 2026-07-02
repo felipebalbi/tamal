@@ -230,40 +230,43 @@ address (read-before-write is the read happening *before* the current cycle's pu
 
 The proven `Test.Uart` pattern — `Clash.Prelude.sampleN` supplies
 `clockGen`/`resetGen`/`enableGen` to the `HiddenClockResetEnable` signal — with the
-mandatory `L.drop 1`:
+mandatory `L.drop 1`. The RAM function is applied **directly inside** `sampleN`
+(never passed as a plain function argument — its `HiddenClockResetEnable` constraint
+can only be discharged inside `sampleN`'s rank-2 argument), so we use two thin,
+width-fixed samplers rather than one generic wrapper:
 
 ```haskell
-simRam ::
-  (KnownNat n) =>
-  (Signal Dom100 (Unsigned n) ->
-   Signal Dom100 (Maybe (Unsigned n, BitVector 32)) ->
-   Signal Dom100 (BitVector 32)) ->
-  [Unsigned n] ->
-  [Maybe (Unsigned n, BitVector 32)] ->
-  [BitVector 32]
-simRam ramFn addrs writes =
+simInstr :: [Unsigned 10] -> [Maybe (Unsigned 10, BitVector 32)] -> [BitVector 32]
+simInstr addrs writes =
   L.drop 1 $
     sampleN
       (L.length addrs + 1)
-      ( ramFn
-          (fromList (addrs <> L.repeat 0))
-          (fromList (writes <> L.repeat Nothing))
-          :: Signal Dom100 (BitVector 32)
-      )
+      (instrRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)))
+
+simRing :: [Unsigned 12] -> [Maybe (Unsigned 12, BitVector 32)] -> [BitVector 32]
+simRing addrs writes =
+  L.drop 1 $
+    sampleN
+      (L.length addrs + 1)
+      (ringRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)))
 ```
 
+The shared oracle `refRam` stays polymorphic (§7.1); only the samplers are
+width-fixed, mirroring `Test.Uart`'s `runRx`/`runFastLoop`.
+
 **Alignment:** for input length `n`, `refRam addrs writes` has length `n`
-(`out[1..n]`), and `simRam` returns `L.drop 1 (sampleN (n+1) …) = [out[1..n]]` —
-equal length, index-aligned. Dropping sample 0 guarantees no `deepErrorX` is ever
-forced (zero-init makes every remaining element defined).
+(`out[1..n]`), and `simInstr`/`simRing` return `L.drop 1 (sampleN (n+1) …) =
+[out[1..n]]` — equal length, index-aligned. Dropping sample 0 guarantees no
+`deepErrorX` is ever forced (zero-init makes every remaining element defined).
 
 ### 7.3 Properties (hedgehog) — run for `instrRam` (n=10) **and** `ringRam` (n=12)
 
 1. **Model equivalence** — random interleaved read-address / write sequences (a
    `Gen.list` of `(addr, Maybe (waddr, wdata))`), with addresses drawn from a small
    window (e.g. 0..15) so reads frequently hit prior writes:
-   `simRam ramFn addrs writes === refRam addrs writes`. Exercises latency,
-   read-before-write ordering, and per-address independence in one property.
+   `simInstr addrs writes === refRam addrs writes` (and the `simRing` analog).
+   Exercises latency, read-before-write ordering, and per-address independence in
+   one property.
 2. **Full read-back sweep** — apply random `(waddr, wdata)` writes (window addresses
    for collisions), then a deterministic address sweep over the window: each slot
    reads back its last-written value, else 0. Confirms writes land at the intended
@@ -288,8 +291,9 @@ forced (zero-init makes every remaining element defined).
 Addresses for the equivalence/sweep properties are drawn from a **small window**
 (0..15) so random sequences produce read-after-write hits; boundary/max addresses
 are covered by the unit cases. `wdata` is `genDefinedBitVector` (reuse
-`Test.Gen`-style helpers). Both BRAMs share the same polymorphic `refRam`/`simRam`;
-the property bodies instantiate at `Unsigned 10` and `Unsigned 12`.
+`Test.Gen`-style helpers). Both BRAMs share the polymorphic `refRam`;
+`simInstr`/`simRing` are the width-fixed samplers, so the property bodies read the
+same at `Unsigned 10` and `Unsigned 12`.
 
 ---
 
