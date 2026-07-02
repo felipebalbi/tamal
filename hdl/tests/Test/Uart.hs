@@ -6,15 +6,49 @@ module Test.Uart (tests) where
 
 import Clash.Prelude
 import qualified Data.List as L
+import Hedgehog (forAll, property, (===))
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Domain (Dom100)
 import Tamal.Uart.BaudGen (oversampleTick)
+import Tamal.Uart.Rx (uartRx)
+import Test.Gen (genByte)
 
 -- | Ticks emitted over the first n system-clock cycles at 2 Mbaud.
 baudTicks :: Int -> [Bool]
 baudTicks n = sampleN n (oversampleTick (SNat @2_000_000) :: Signal Dom100 Bool)
+
+-- | One line sample per bit-cell position; LSB-first data. 16 samples per bit.
+bitAt :: BitVector 8 -> Int -> Bit
+bitAt b i = if testBit b i then high else low
+
+-- | Full 8N1 line waveform (16 samples/bit): start, 8 data LSB-first, stop.
+frame :: BitVector 8 -> Bit -> [Bit]
+frame b stop =
+  L.replicate 16 low
+    <> L.concatMap (\i -> L.replicate 16 (bitAt b i)) [0 .. 7]
+    <> L.replicate 16 stop
+
+-- | Flip the sample at index k (glitch injection).
+flipAt :: Int -> [Bit] -> [Bit]
+flipAt k xs = [if j == k then complement x else x | (j, x) <- L.zip ([0 ..] :: [Int]) xs]
+
+-- | Drive uartRx with tick = always-true and a crafted line; collect (byte, err).
+runRx :: [Bit] -> [(Maybe (BitVector 8), Bool)]
+runRx samples =
+  sampleN
+    (8 + L.length samples + 24)
+    (bundle (uartRx (pure True) lineSig) :: Signal Dom100 (Maybe (BitVector 8), Bool))
+ where
+  lineSig = fromList (L.replicate 8 high <> samples <> L.repeat high)
+
+recovered :: [(Maybe (BitVector 8), Bool)] -> [BitVector 8]
+recovered xs = [b | (Just b, _) <- xs]
+
+anyErr :: [(Maybe (BitVector 8), Bool)] -> Bool
+anyErr xs = L.or [e | (_, e) <- xs]
 
 tests :: TestTree
 tests =
@@ -26,4 +60,18 @@ tests =
         let n = 10000
             c = L.length (L.filter id (baudTicks n))
          in assertBool ("tick count = " <> show c <> ", expected ~3200") (abs (c - 3200) <= 2)
+    , testProperty "RX decodes a clean 8N1 frame" $ property $ do
+        b <- forAll genByte
+        let out = runRx (frame b high)
+        recovered out === [b]
+        anyErr out === False
+    , testProperty "RX flags a framing error on a low stop bit" $ property $ do
+        b <- forAll genByte
+        let out = runRx (frame b low)
+        recovered out === []
+        anyErr out === True
+    , testProperty "RX majority vote rejects a single glitch" $ property $ do
+        b <- forAll genByte
+        let out = runRx (flipAt (16 + 3 * 16 + 8) (frame b high))
+        recovered out === [b]
     ]
