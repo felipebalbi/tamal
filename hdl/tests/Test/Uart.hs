@@ -14,6 +14,7 @@ import Test.Tasty.Hedgehog (testProperty)
 import Tamal.Domain (Dom100)
 import Tamal.Uart.BaudGen (oversampleTick)
 import Tamal.Uart.Rx (uartRx)
+import Tamal.Uart.Tx (uartTx)
 import Test.Gen (genByte)
 
 -- | Ticks emitted over the first n system-clock cycles at 2 Mbaud.
@@ -50,6 +51,21 @@ recovered xs = [b | (Just b, _) <- xs]
 anyErr :: [(Maybe (BitVector 8), Bool)] -> Bool
 anyErr xs = L.or [e | (_, e) <- xs]
 
+-- | TX line fed straight into RX, both at tick = always-true (16 cycles/bit).
+fastLoop ::
+  (HiddenClockResetEnable dom) =>
+  Signal dom (Maybe (BitVector 8)) ->
+  Signal dom (Maybe (BitVector 8))
+fastLoop txByte = rxByte
+ where
+  tick = pure True
+  (txLine, _txReady) = uartTx tick txByte
+  (rxByte, _rxErr) = uartRx tick txLine
+
+runFastLoop :: [Maybe (BitVector 8)] -> Int -> [Maybe (BitVector 8)]
+runFastLoop ins n =
+  sampleN n (fastLoop (fromList (ins <> L.repeat Nothing)) :: Signal Dom100 (Maybe (BitVector 8)))
+
 tests :: TestTree
 tests =
   testGroup
@@ -74,4 +90,12 @@ tests =
         b <- forAll genByte
         let out = runRx (flipAt (16 + 3 * 16 + 8) (frame b high))
         recovered out === [b]
+    , testProperty "TX->RX fast loopback recovers the byte" $ property $ do
+        b <- forAll genByte
+        let out = runFastLoop [Nothing, Just b] 400
+        [b' | Just b' <- out] === [b]
+    , testProperty "TX ignores input while busy (ready gating)" $ property $ do
+        b <- forAll genByte
+        let out = runFastLoop (Nothing : L.replicate 100 (Just b)) 400
+        [b' | Just b' <- out] === [b]
     ]
