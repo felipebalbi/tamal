@@ -25,8 +25,9 @@ module Tamal.Engine
 import Clash.Prelude
 import Tamal.Alu (dataResult)
 import qualified Tamal.Branch as Br
-import Tamal.Bus.Serdes (Lanes, hiZ, serializeX1)
+import Tamal.Bus.Serdes (Lanes, hiZ, serializeX1, tarBeat)
 import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..), decodeConfig)
+import Tamal.Crc (crc8Update)
 import Tamal.Isa (Instr (..), Reg, decode)
 import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
 
@@ -42,13 +43,6 @@ data Phase
   | TraceEmit
   | WaitAlert
   | Halted
-  deriving stock (Generic, Show, Eq)
-  deriving anyclass (NFDataX)
-
-data Pending
-  = PendNone
-  | PendGet Reg (Unsigned 4) Bool -- rd, nbits, update RX CRC?
-  | PendMark (BitVector 32) -- MARK payload emitted by TraceEmit
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
@@ -98,6 +92,14 @@ data Ring = Ring
   { rAddr :: Unsigned 12
   , rData :: BitVector 32
   }
+  deriving stock (Generic, Show, Eq)
+  deriving anyclass (NFDataX)
+
+data Pending
+  = PendNone
+  | PendGet Reg (Unsigned 4) Bool
+  | PendMark (BitVector 32)
+  | PendTar
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
@@ -187,26 +189,70 @@ stepBusBeat :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepBusBeat s inp
   | busPhase s < 4 = (tick s, busOut (tick s), Nothing) -- mid-beat: advance phase
   | beatIx s + 1 < beatTot s = (nextBeat s, busOut (nextBeat s), Nothing) -- more beats
-  | otherwise = complete s inp -- last beat done
+  | otherwise = complete s
  where
-  tick t = t{busPhase = busPhase t + 1, sck = sckOf (busPhase t + 1)}
+  tick t =
+    let p = busPhase t + 1
+        t1 = t{busPhase = p, sck = sckOf p}
+     in if p == 3 then sampleGet t1 else t1
+  sampleGet t = case pending t of
+    PendGet{} -> t{shifter = shifter t `shiftL` 1 .|. zeroExtend (pack (ioIn inp !! 1))}
+    _ -> t
   nextBeat t =
     let bi = beatIx t + 1
-     in t{busPhase = 0, beatIx = bi, sck = 0, lanes = putLanes t bi}
+     in t{busPhase = 0, beatIx = bi, sck = 0, lanes = beatLanes t bi}
 
 -- | SCK level for a phase: low {0,1,2}, high {3,4}.
 sckOf :: Index 5 -> Bit
 sckOf = boolToBit <$> (>= 3)
 
--- | Lane drive for PUT beat @bi@ (GET/TAR override this in Task 9).
-putLanes :: State -> Unsigned 4 -> Lanes
-putLanes t bi = serializeX1 (shifter t) !! bi
+-- | Lane drive for beat @bi@: GET tri-states, TAR drives clk0 high then hi-Z, PUT shifts.
+beatLanes :: State -> Unsigned 4 -> Lanes
+beatLanes t bi = case pending t of
+  PendGet{} -> hiZ
+  PendTar -> tarBeat bi
+  _ -> serializeX1 (shifter t) !! bi
 
 -- | Finish a bus op: advance PC, idle SCK. (GET writeback lands in Task 9.)
-complete :: State -> BusIn -> (State, BusOut, Maybe Ring)
-complete s _ =
-  let s' = (advance s){sck = 0, busPhase = 0, beatIx = 0}
-   in (s', busOut s', Nothing)
+complete :: State -> (State, BusOut, Maybe Ring)
+complete s = case pending s of
+  PendGet rd nbits crc ->
+    let byte = shifter s
+        crc' = if crc then crc8Update (rxCrc s) byte else rxCrc s
+        capW = captureWord (pack nbits) byte
+        (ptr', ovf', mw) = pushWord (ringPtr s) (ovf s) capW
+        s' =
+          (advance s)
+            { sck = 0
+            , busPhase = 0
+            , beatIx = 0
+            , pending = PendNone
+            , rxCrc = crc'
+            , regs = writeReg (regs s) rd (resize byte)
+            , ringPtr = ptr'
+            , ovf = ovf'
+            }
+     in (s', busOut s', mw)
+  _ ->
+    let s' =
+          (advance s)
+            { sck = 0
+            , busPhase = 0
+            , beatIx = 0
+            , pending = PendNone
+            }
+     in (s', busOut s', Nothing)
+
+-- | CAPTURE record word (tag 00, nbits, byte) - mirrors Trace.encodeRecord
+captureWord :: BitVector 4 -> BitVector 8 -> BitVector 32
+captureWord nbits byte = bitCoerce (0b00 :: BitVector 2, 0 :: BitVector 18, nbits, byte)
+
+-- | Push one word below the terminator; else latch overflow and drop (§7.1).
+pushWord :: Unsigned 12 -> Bool -> BitVector 32 -> (Unsigned 12, Bool, Maybe Ring)
+pushWord ptr ov w
+  | ov = (ptr, True, Nothing)
+  | ptr <= termAddr - 1 = (ptr + 1, False, Just (Ring ptr w))
+  | otherwise = (ptr, True, Nothing)
 
 -- | Advance to the next sequential instruction.
 advance :: State -> State
@@ -275,6 +321,10 @@ execInstr i s inp = case i of
   PutByteReg a -> startPut (truncateB (readReg (regs s) a)) 8
   PutBitsImm n b -> startPut b (fromIntegral n + 1)
   PutBitsReg a n -> startPut (truncateB (readReg (regs s) a)) (fromIntegral n + 1)
+  GetByte rd -> startGet rd 8 True
+  GetBits rd n -> startGet rd (fromIntegral n + 1) False
+  TarImm n -> startTar (unpack n)
+  TarReg a -> startTar (unpack (truncateB (readReg (regs s) a)))
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)
@@ -303,6 +353,32 @@ execInstr i s inp = case i of
             , lanes = serializeX1 byte !! (0 :: Unsigned 4)
             }
      in (s', busOut s', Nothing)
+  startGet rd total crc =
+    let s' =
+          s
+            { phase = BusBeat
+            , busPhase = 0
+            , beatIx = 0
+            , beatTot = total
+            , shifter = 0
+            , lanes = hiZ
+            , pending = PendGet rd total crc
+            }
+     in (s', busOut s', Nothing)
+  startTar n
+    | n == 0 = (advance s, busOut s, Nothing) --- 0 clocks = deliberate too-short TAR
+    | otherwise =
+        let s' =
+              s
+                { phase = BusBeat
+                , busPhase = 0
+                , beatIx = 0
+                , beatTot = n
+                , shifter = 0
+                , pending = PendTar
+                , lanes = tarBeat 0
+                }
+         in (s', busOut s', Nothing)
 
 operandRs1 :: Instr -> Reg
 operandRs1 = \case

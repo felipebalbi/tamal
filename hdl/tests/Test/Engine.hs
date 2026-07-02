@@ -14,6 +14,7 @@ import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Alu (dataResult)
 import Tamal.Bus.Serdes (hiZ)
+import Tamal.Crc (crc8Update)
 import Tamal.Engine
 import Tamal.Isa (Instr (..), Reg, encode)
 import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
@@ -103,6 +104,22 @@ tests =
               , sckOut b == 1
               ]
         atRising @?= toList (unpack 0xA5 :: Vec 8 Bit)
+    , testCase "GET_BYTE: rd=byte, rxCrc updated, CAPTURE emitted" $ do
+        let prog = [encode CsAssert, encode (GetByte 1), encode CsDeassert, encode (Halt 0)]
+            Run s ring _ = runGet 0xC3 prog
+        readReg (regs s) 1 @?= 0xC3
+        rxCrc s @?= crc8Update 0 0xC3
+        assertBool
+          "CAPTURE present (tag 00, byte 0xC3)"
+          (L.any (\(Ring _ w) -> slice d31 d30 w == 0 && slice d7 d0 w == 0xC3) ring)
+    , testCase "GET_BITS is CRC-neutral" $ do
+        let prog = [encode CsAssert, encode (GetBits 1 7), encode CsDeassert, encode (Halt 0)]
+            Run s _ _ = runGet 0xFF prog
+        rxCrc s @?= 0
+    , testCase "TAR n=2 clocks SCK twice"
+        $ risingEdges
+          (driveTrace 200 [encode CsAssert, encode (TarImm 2), encode CsDeassert, encode (Halt 0)])
+        @?= 2
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
@@ -163,6 +180,26 @@ risingEdges bos = L.length (L.filter id (L.zipWith rise scks (L.drop 1 scks)))
  where
   scks = L.map sckOut bos
   rise a b = a == 0 && b == 1
+
+{- | Drive a GET: a slave presents @b@ MSB-first on IO[1], advancing one bit per
+SCK rising edge (keyed off the engine's own 'sckOut'). The engine samples at the
+rising edge, before the slave advances, so the pre-increment bit is the one read.
+-}
+runGet :: BitVector 8 -> [BitVector 32] -> Run
+runGet b prog = go 0 initState 0 [] (0 :: Int) (0 :: Bit)
+ where
+  mem = memOf prog
+  bitsV = unpack b :: Vec 8 Bit
+  go !t !s !prevPc !ring !bitIx !prevSck
+    | phase s == Halted && t > 0 = Run s (L.reverse ring) t
+    | t >= 400 = Run s (L.reverse ring) t
+    | otherwise =
+        let curBit = if bitIx < 8 then bitsV !! bitIx else 0
+            io = replace (1 :: Index 4) curBit (repeat 0)
+            inp = BusIn (mem prevPc) io 0 (t == 0)
+            (s', bo, mr) = step s inp
+            bitIx' = if prevSck == 0 && sckOut bo == 1 then bitIx + 1 else bitIx
+         in go (t + 1) s' (pcOut bo) (maybe ring (: ring) mr) bitIx' (sckOut bo)
 
 -- | Read a register out of the engine's final state.
 readRegE :: State -> Reg -> BitVector 32
