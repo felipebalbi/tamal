@@ -13,6 +13,7 @@ import qualified Test.Alu
 import qualified Test.Branch
 import qualified Test.Config
 import qualified Test.Crc
+import qualified Test.Engine
 import Test.Gen (genByte)
 import qualified Test.Isa
 import qualified Test.RegFile
@@ -42,4 +43,5 @@ tests =
     , Test.Alu.tests
     , Test.RegFile.tests
     , Test.Uart.tests
+    , Test.Engine.tests
     ]
