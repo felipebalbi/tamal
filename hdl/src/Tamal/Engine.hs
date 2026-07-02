@@ -100,6 +100,7 @@ data Pending
   | PendGet Reg (Unsigned 4) Bool
   | PendMark (BitVector 32)
   | PendTar
+  | PendWait Reg
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
@@ -159,7 +160,7 @@ step s inp = case phase s of
   Exec -> stepExec s inp
   BusBeat -> stepBusBeat s inp
   TraceEmit -> stepTraceEmit s inp
-  _ -> (s, busOut s, Nothing) -- filled in by later tasks
+  WaitAlert -> stepWaitAlert s inp
 
 stepIdle :: State -> BusIn -> (State, BusOut, Maybe Ring)
 stepIdle s inp
@@ -214,6 +215,28 @@ stepTraceEmit s _ = case pending s of
             }
      in (s', busOut s', Just (Ring (ringPtr s) payload))
   _ -> (advance s, busOut s, Nothing)
+
+-- | WaitAlert: assert on ALERT# low; else count down ; on 0, timeout (rd=0).
+stepWaitAlert :: State -> BusIn -> (State, BusOut, Maybe Ring)
+stepWaitAlert s inp = case pending s of
+  PendWait rd
+    | asserted -> done rd 1
+    | waitTimer s == 0 -> done rd 0
+    | otherwise -> (s{waitTimer = waitTimer s - 1}, busOut s, Nothing)
+  _ -> (advance s, busOut s, Nothing)
+ where
+  b =
+    if cfgAlertSource (cfg s) == AlertPin
+      then alertIn inp
+      else ioIn inp !! 1
+  asserted = b == 0 -- ALERT#/IO[1] are both active low (§6.5)
+  done rd v =
+    let s' =
+          (advance s)
+            { regs = writeReg (regs s) rd v
+            , pending = PendNone
+            }
+     in (s', busOut s', Nothing)
 
 -- | SCK level for a phase: low {0,1,2}, high {3,4}.
 sckOf :: Index 5 -> Bit
@@ -357,7 +380,14 @@ execInstr i s inp = case i of
             , Just (Ring (ringPtr s) w0)
             )
           else (advance (s{ovf = True}), busOut s, Nothing) -- no 2 slots -> drop atomically
-  _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
+  WaitOn rd _ timeout ->
+    let s' =
+          s
+            { phase = WaitAlert
+            , waitTimer = timeout
+            , pending = PendWait rd
+            }
+     in (s', busOut s', Nothing)
  where
   rs1v = readReg (regs s) (operandRs1 i)
   rs2v = readReg (regs s) (operandRs2 i)

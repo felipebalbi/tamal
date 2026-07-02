@@ -144,6 +144,31 @@ tests =
               ]
             Run s _ _ = runGet2 msg crcByte prog
         readReg (regs s) 2 @?= 0
+    , testCase "WAIT_ON: timeout -> rd=0; alert asserted (low) -> rd=1" $ do
+        let prog = [encode (WaitOn 1 0 5), encode (Halt 0)]
+            rTimeout = drive 80 (memOf prog) (\t -> (repeat 0, 1, t == 0)) -- alert high = deasserted
+            rMet = drive 80 (memOf prog) (\t -> (repeat 0, 0, t == 0)) -- alert low = asserted
+        readReg (regs (runState rTimeout)) 1 @?= 0
+        readReg (regs (runState rMet)) 1 @?= 1
+    , testCase "reserved-group word traps (decode error, reason 1)" $ do
+        let Run _ ring _ = runProg 30 [0xC0000000, encode (Halt 0)]
+        haltReason (L.last ring) @?= (True, 1)
+    , testCase "re-run determinism: HALT then start re-runs byte-identically" $ do
+        let prog = [encode (LoadImm 1 7), encode (Addi 1 1 1), encode (Halt 0x22)]
+            mem = memOf prog
+            runTo s0 =
+              let go !s !pc !ring !t
+                    | phase s == Halted && t > 0 = (s, L.reverse ring)
+                    | t > 200 = (s, L.reverse ring)
+                    | otherwise =
+                        let inp = BusIn (mem pc) (repeat 0) 0 (t == 0)
+                            (s', bo, mr) = step s inp
+                         in go s' (pcOut bo) (maybe ring (: ring) mr) (t + 1)
+               in go s0 0 [] (0 :: Int)
+            (s1, r1) = runTo initState
+            (s2, r2) = runTo s1
+        fmap (readReg (regs s2)) [0 .. 15] @?= fmap (readReg (regs s1)) [0 .. 15]
+        r2 @?= r1
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
