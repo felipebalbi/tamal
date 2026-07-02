@@ -5,7 +5,7 @@ module Test.Wire (tests) where
 
 import Clash.Prelude
 import qualified Data.List as L
-import Hedgehog (Gen, forAll, property, (===))
+import Hedgehog (Gen, forAll, property, (/==), (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 import Test.Tasty
@@ -59,6 +59,22 @@ tests =
     , testCase "cobsDecode [] -> Nothing"
         $ cobsDecode []
         @?= (Nothing :: Maybe [BitVector 8])
+    , testCase "crc8 matches CRC-8/SMBUS check vector (0xF4)"
+        $ crc8 [fromIntegral (fromEnum c) | c <- "123456789"]
+        @?= 0xF4
+    , testProperty "frameDecode . frameEncode == Right" $ property $ do
+        xs <- forAll (Gen.list (Range.linear 0 64) genByte)
+        frameDecode (frameEncode xs) === Right xs
+    , testCase "frame ends in exactly one 0x00, none interior" $ do
+        let f = frameEncode [0x01, 0x00, 0x02]
+        L.last f @?= 0
+        L.length (L.filter (== 0) f) @?= 1
+    , testProperty "single-byte corruption is never a silent success" $ property $ do
+        xs <- forAll (Gen.list (Range.linear 1 32) genByte)
+        let f = frameEncode xs
+        i <- forAll (Gen.int (Range.linear 0 (L.length f - 1)))
+        let f' = [if j == i then x `xor` 1 else x | (j, x) <- L.zip [0 ..] f]
+        frameDecode f' /== Right xs
     ]
 
 -- A zero-dense byte generator: stresses COBS group boundaries far harder than
