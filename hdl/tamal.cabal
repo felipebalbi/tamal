@@ -110,6 +110,7 @@ library
     Tamal.Uart
     Tamal.Engine
     Tamal.Mem
+    Tamal.Wire
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.
@@ -157,6 +158,7 @@ test-suite test-library
     Test.Uart
     Test.Engine
     Test.Mem
+    Test.Wire
   build-depends:
     tamal,
     tasty >= 1.2 && < 1.6,

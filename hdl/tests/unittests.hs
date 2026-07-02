@@ -21,6 +21,7 @@ import qualified Test.RegFile
 import qualified Test.Serdes
 import qualified Test.Trace
 import qualified Test.Uart
+import qualified Test.Wire
 
 main :: IO ()
 main = defaultMain tests
@@ -46,4 +47,5 @@ tests =
     , Test.Uart.tests
     , Test.Engine.tests
     , Test.Mem.tests
+    , Test.Wire.tests
     ]
