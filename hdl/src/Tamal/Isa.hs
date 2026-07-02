@@ -23,8 +23,13 @@ module Tamal.Isa
 
 import Clash.Prelude
 
+-- | A 5-bit register selector (RISC-V-standard field width). v1 uses x0..x15.
 type Reg = BitVector 5
 
+{- | A decoded tamal instruction: one constructor per opcode across the three
+groups (BUS 00 / CTRL 01 / DATA 10). Fields hold the operands an opcode uses;
+unused fields are reserved-must-be-zero and enforced by 'decode'.
+-}
 data Instr
   = -- BUS group (group 00)
     CsAssert
@@ -68,6 +73,9 @@ data Instr
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
 
+{- | Why 'decode' rejected a 32-bit word: a reserved field was non-zero, the
+opcode is recognised but not yet implemented, or the opcode is illegal.
+-}
 data DecodeError
   = ReservedFieldNonZero
   | OpcodeUnimplemented
@@ -99,6 +107,10 @@ splitImm20 i20 = bitCoerce ((0 :: BitVector 1) ++# i20)
 joinImm20 :: BitVector 5 -> BitVector 5 -> BitVector 11 -> (BitVector 1, BitVector 20)
 joinImm20 rs1 rs2 imm = bitCoerce (rs1 ++# rs2 ++# imm)
 
+{- | Encode an instruction to its 32-bit word, packing operands into their fields
+and zeroing reserved fields. Total, and the exact inverse of a successful
+'decode' (@decode . encode == Right@).
+-}
 encode :: Instr -> BitVector 32
 encode = \case
   -- BUS group (00)
@@ -145,6 +157,11 @@ encode = \case
 
 -- Decode dispatches on the group, then the per-group decoder rebuilds the
 -- instruction and checks reserved fields.
+
+{- | Decode a 32-bit word: dispatch on the group field, rebuild the instruction,
+and verify every reserved field is zero. Total — any word yields either a
+canonical 'Instr' or a 'DecodeError'.
+-}
 decode :: BitVector 32 -> Either DecodeError Instr
 decode w =
   case grp of
@@ -155,10 +172,13 @@ decode w =
  where
   (grp, sub', rd, rs1, rs2, imm) = splitWord w
 
--- Accept an instruction only when its reserved fields are all zero.
+{- | Accept an instruction only when the guard (all its reserved fields zero)
+holds; otherwise reject with 'ReservedFieldNonZero'.
+-}
 only :: Bool -> Instr -> Either DecodeError Instr
 only ok r = if ok then Right r else Left ReservedFieldNonZero
 
+-- | Decode a BUS-group (group 00) word from its sub-opcode and operand fields.
 decodeBus ::
   BitVector 4 ->
   BitVector 5 ->
@@ -190,6 +210,7 @@ decodeBus sub' rd rs1 rs2 imm =
   immHi8 = slice d10 d8 imm -- imm[10:8]  (BitVector 3) reserved for PUT_BYTE
   immHi4 = slice d10 d4 imm -- imm[10:4]  (BitVector 7) reserved for TAR
 
+-- | Decode a CTRL-group (group 01) word from its sub-opcode and operand fields.
 decodeCtrl ::
   BitVector 4 ->
   BitVector 5 ->
@@ -216,6 +237,7 @@ decodeCtrl sub' rd rs1 rs2 imm =
   immHi8 = slice d10 d8 imm -- HALT: imm[10:8]  (BitVector 3) reserved
   immHi6 = slice d10 d6 imm -- SET_CONFIG: imm[10:6] (BitVector 5) reserved
 
+-- | Decode a DATA-group (group 10) word from its sub-opcode and operand fields.
 decodeData ::
   BitVector 4 ->
   BitVector 5 ->

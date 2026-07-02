@@ -28,10 +28,20 @@ import Clash.Prelude hiding (And, Xor)
 import Tamal.Isa (Instr)
 import qualified Tamal.Isa as Isa
 
+{- | The arithmetic/logic/shift operations of the DATA group. Register/immediate
+opcode pairs (e.g. @ADD@/@ADDI@) collapse to one 'AluOp'; 'dataResult' resolves
+the immediate before calling 'alu'. There is no reserved case, so 'alu' is
+total (the reserved shift op is trapped at decode).
+-}
 data AluOp = Add | Sub | And | Or | Xor | Sll | Srl | Sra
   deriving stock (Generic, Show, Eq, Enum, Bounded)
   deriving anyclass (NFDataX)
 
+{- | The thin, total, op-dispatched core: @op@ applied to two 32-bit register
+values. The shift amount is the low 5 bits of operand B (RISC-V-style masking,
+so a shift by ≥ 32 is well-defined). @Srl@ is logical (zero-fill); @Sra@ is
+arithmetic, reached by reinterpreting the operand as 'Signed' before shifting.
+-}
 alu :: AluOp -> BitVector 32 -> BitVector 32 -> BitVector 32
 alu op r1 r2 = case op of
   Add -> r1 + r2
@@ -46,8 +56,12 @@ alu op r1 r2 = case op of
   sh :: Int
   sh = fromIntegral (unpack (truncateB r2) :: Unsigned 5)
 
--- Complete DATA-group value semantics over register VALUES (rs1v, rs2v).
--- Total over Instr; non-DATA-compute constructors hit the documented default.
+{- | Complete DATA-group value semantics over register /values/ @rs1v@/@rs2v@.
+Resolves operand B (a register value or a sign-extended immediate), places
+'Isa.Lui'/'Isa.Mov'/'Isa.LoadImm' constants directly, and dispatches everything
+else to 'alu'. Total over 'Instr'; non-DATA-compute constructors (BUS, CTRL,
+@RDSR@) hit the @0@ default, which the Engine never routes here.
+-}
 dataResult :: Instr -> BitVector 32 -> BitVector 32 -> BitVector 32
 dataResult instr rs1v rs2v = case instr of
   Isa.LoadImm _ imm -> signExtend imm

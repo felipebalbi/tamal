@@ -22,7 +22,12 @@ module Tamal.Bus.Serdes
 
 import Clash.Prelude
 
-type Lane = (Bit, Bit) -- (output value, output enable)
+{- | One I/O lane's per-beat drive state: @(output value, output enable)@.
+@oe = 0@ means tri-stated (hi-Z).
+-}
+type Lane = (Bit, Bit)
+
+-- | The drive state of all four I/O lanes for one SCK beat.
 type Lanes = Vec 4 Lane
 
 -- | All four lanes tri-stated.

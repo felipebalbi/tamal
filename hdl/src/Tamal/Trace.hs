@@ -17,6 +17,10 @@ module Tamal.Trace
 import Clash.Prelude
 import qualified Data.List as L
 
+{- | A result-ring record. @Capture@ reports a sampled byte (with its valid bit
+count), @Mark@ carries a host↔trace correlation label plus a register payload,
+and @Halt@ terminates a run (with the sticky overflow flag and a status byte).
+-}
 data Record
   = Capture (BitVector 4) (BitVector 8) -- nbits (1..8), sampled byte
   | Mark (BitVector 14) (BitVector 32) -- label, payload

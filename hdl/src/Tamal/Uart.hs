@@ -17,6 +17,11 @@ import Tamal.Uart.BaudGen (oversampleTick)
 import Tamal.Uart.Rx (uartRx)
 import Tamal.Uart.Tx (uartTx)
 
+{- | The complete UART: one NCO oversample tick ('oversampleTick') shared by the
+receiver ('uartRx') and transmitter ('uartTx'). Takes the RX line and a TX byte
+request; returns @(received-byte strobe, framing error, TX line, TX ready)@. The
+@topEntity@ picks @baud@ (@SNat \@2_000_000@) and wires the four ports to pins.
+-}
 uart ::
   forall baud dom.
   (HiddenClockResetEnable dom, KnownDomain dom, KnownNat baud) =>

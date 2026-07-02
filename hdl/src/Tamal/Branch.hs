@@ -14,10 +14,18 @@ module Tamal.Branch
 
 import Clash.Prelude
 
+{- | The four v1 branch comparisons: equal, not-equal, and unsigned
+less-than / greater-or-equal. (Signed @BLT@/@BGE@ are reserved for later.)
+-}
 data BranchOp = Beq | Bne | Bltu | Bgeu
   deriving stock (Generic, Show, Eq, Enum, Bounded)
   deriving anyclass (NFDataX)
 
+{- | Is the branch taken? Compares two 32-bit register values under @op@. @Bltu@
+and @Bgeu@ use 'BitVector''s 'Ord', which is unsigned — exactly the semantics
+of @BLTU@/@BGEU@. Returns only the taken/not-taken decision; the PC and offset
+math belong to the Engine.
+-}
 branchTaken :: BranchOp -> BitVector 32 -> BitVector 32 -> Bool
 branchTaken op r1 r2 = case op of
   Beq -> r1 == r2
