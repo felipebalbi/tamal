@@ -102,22 +102,18 @@ ringRam = undefined -- implemented in the ring slice (plan Task 3)
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
 -- SPDX-License-Identifier: CERN-OHL-P-2.0
+{-# LANGUAGE NumericUnderscores #-}
 
 module Test.Mem (tests) where
 
 import Clash.Prelude
-import Data.Maybe (fromMaybe)
 import qualified Data.List as L
-import qualified Hedgehog as H
-import qualified Hedgehog.Gen as Gen
-import qualified Hedgehog.Range as Range
+import Data.Maybe (fromMaybe)
 import Test.Tasty
 import Test.Tasty.HUnit
-import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Domain (Dom100)
-import Tamal.Mem (instrRam, ringRam)
-import Test.Gen (genWord)
+import Tamal.Mem (instrRam)
 
 -- | Pure oracle mirroring 'blockRam' exactly: zero-init, 1-cycle read latency,
 -- read-before-write. Produces @[out 1, out 2, ..]@ (the undefined @out 0@ is
@@ -136,29 +132,34 @@ refRam addrs writes = go [] (L.zip addrs writes)
   push (Just (wa, wd)) m = (wa, wd) : m
 
 -- | Sample 'instrRam' over a stimulus, dropping the undefined cycle-0 output.
--- 'sampleN' supplies clock/reset/enable to the HiddenClockResetEnable signal;
--- the RAM is applied directly inside it (the Test.Uart idiom).
+-- 'sampleN' supplies clock/reset/enable; the inline @:: Signal Dom100 _@ pins the
+-- domain so @sampleN@ can solve @KnownDomain@ (the Test.Uart idiom).
 simInstr :: [Unsigned 10] -> [Maybe (Unsigned 10, BitVector 32)] -> [BitVector 32]
 simInstr addrs writes =
   L.drop 1 $
     sampleN
       (L.length addrs + 1)
-      (instrRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)))
+      ( instrRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing))
+          :: Signal Dom100 (BitVector 32)
+      )
 
 tests :: TestTree
 tests =
   testGroup
     "Mem"
-    [ testCase "instr: write then read-back, exactly 1-cycle latency" $
-        -- write 0xDEAD_BEEF to addr 5 at cycle 0, read addr 5 thereafter.
+    [ testCase "instr: write then read-back, exactly 1-cycle latency" $ do
         -- read-before-write: the cycle-0 read of addr 5 still sees 0 (out[1]);
-        -- the written value appears from out[2] onward.
-        simInstr
-          [0, 5, 5, 5]
-          [Just (5, 0xDEAD_BEEF), Nothing, Nothing, Nothing]
-          @?= [0, 0xDEAD_BEEF, 0xDEAD_BEEF, 0xDEAD_BEEF]
+        -- the written value appears from out[2] onward. Pin both the hardware
+        -- sampler and the reference oracle to the same concrete expectation.
+        let addrs = [0, 5, 5, 5]
+            writes = [Just (5, 0xDEAD_BEEF), Nothing, Nothing, Nothing]
+            expected = [0, 0xDEAD_BEEF, 0xDEAD_BEEF, 0xDEAD_BEEF]
+        simInstr addrs writes @?= expected
+        refRam addrs writes @?= expected
     ]
 ```
+
+> **Imports grow per task** to keep every commit `-Wall`-clean: Task 1 needs only the above; Task 3 adds `ringRam` to the `Tamal.Mem` import; Task 4 adds the Hedgehog imports (`qualified Hedgehog as H`, `Hedgehog.Gen`, `Hedgehog.Range`, `Test.Tasty.Hedgehog (testProperty)`) and `Test.Gen (genWord)`.
 
 - [ ] **Step 3: wire the build (cabal + runner)**
 
@@ -277,7 +278,7 @@ The ring's own red→green, its drain-sweep characterization (models the loader)
 
 - [ ] **Step 1 [assistant]: add the ring sampler and the first ring test (red)**
 
-Add the `simRing` sampler (below `simInstr`) in `hdl/tests/Test/Mem.hs`:
+Add `ringRam` to the `Tamal.Mem` import (`import Tamal.Mem (instrRam, ringRam)`), then add the `simRing` sampler (below `simInstr`) in `hdl/tests/Test/Mem.hs`:
 
 ```haskell
 -- | Sample 'ringRam' over a stimulus, dropping the undefined cycle-0 output.
@@ -286,7 +287,9 @@ simRing addrs writes =
   L.drop 1 $
     sampleN
       (L.length addrs + 1)
-      (ringRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing)))
+      ( ringRam (fromList (addrs <> L.repeat 0)) (fromList (writes <> L.repeat Nothing))
+          :: Signal Dom100 (BitVector 32)
+      )
 ```
 
 Add these two `testCase`s to the `Mem` list:
@@ -355,9 +358,20 @@ The exhaustive coverage: random sequences checked against `refRam`, and an indep
 **Files:**
 - Modify: `hdl/tests/Test/Mem.hs`
 
-- [ ] **Step 1 [assistant]: add the window/command generators**
+- [ ] **Step 1 [assistant]: add the Hedgehog imports + the window/command generators**
 
-Add these generators to `hdl/tests/Test/Mem.hs` (top level, below `refRam`):
+Extend the imports in `hdl/tests/Test/Mem.hs` (these are the ones deferred from Task 1):
+
+```haskell
+import qualified Hedgehog as H
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
+import Test.Tasty.Hedgehog (testProperty)
+
+import Test.Gen (genWord)
+```
+
+Add these generators (top level, below `refRam`):
 
 ```haskell
 -- | A read/write address in the window 0..15 (dense enough for read-after-write
