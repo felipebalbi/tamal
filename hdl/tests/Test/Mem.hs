@@ -60,4 +60,22 @@ tests =
             expected = [0, 0xDEAD_BEEF, 0xDEAD_BEEF, 0xDEAD_BEEF]
         simInstr addrs writes @?= expected
         refRam addrs writes @?= expected
+    , testCase "instr: read-before-write collision returns old then new"
+        $
+        -- at cycle 1, write 0x2222 to addr 3 WHILE reading addr 3: the read still
+        -- yields the old 0x1111 (out[2]); 0x2222 appears from out[3].
+        simInstr
+          [0, 3, 3, 3]
+          [Just (3, 0x1111), Just (3, 0x2222), Nothing, Nothing]
+        @?= [0, 0x1111, 0x2222, 0x2222]
+    , testCase "instr: address 0 is a normal slot (no x0 hardwiring here)"
+        $ simInstr
+          [0, 0, 0]
+          [Just (0, 0xCAFE_F00D), Nothing, Nothing]
+        @?= [0, 0xCAFE_F00D, 0xCAFE_F00D]
+    , testCase "instr: top address (maxBound = 1023) reads back"
+        $ simInstr
+          [0, maxBound, maxBound]
+          [Just (maxBound, 0x0BAD_C0DE), Nothing, Nothing]
+        @?= [0, 0x0BAD_C0DE, 0x0BAD_C0DE]
     ]
