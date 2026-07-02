@@ -17,6 +17,8 @@ module Tamal.Wire
   , frameDecode
   , encodeControl
   , decodeControl
+  , encodeResult
+  , decodeResult
   ) where
 
 import Clash.Prelude
@@ -105,6 +107,9 @@ opLoadProgram = 0x01
 opTrigger :: BitVector 8
 opTrigger = 0x02
 
+opTraceDrain :: BitVector 8
+opTraceDrain = 0x81
+
 -- | Encode a control message to its wire frame.
 encodeControl :: ControlMsg -> [BitVector 8]
 encodeControl (LoadProgram ws) =
@@ -133,3 +138,21 @@ bytesToWords [] = Right []
 bytesToWords (a : b : c : d : rest) =
   (bytesToWordLE (a :> b :> c :> d :> Nil) :) <$> bytesToWords rest
 bytesToWords _ = Left BadPayloadLen
+
+{- | Encode a drained ring word-stream (REVISION ++ records ++ HALT terminator,
+§8.3) as a TRACE_DRAIN wire frame.
+-}
+encodeResult ::
+  [BitVector 32] ->
+  [BitVector 8]
+encodeResult ws = frameEncode (opTraceDrain : L.concatMap (toList . wordToBytesLE) ws)
+
+-- | Decode a TRACE_DRAIN wire frame back to its ring word-stream.
+decodeResult :: [BitVector 8] -> Either WireError [BitVector 32]
+decodeResult wire = do
+  logical <- frameDecode wire
+  case logical of
+    [] -> Left ShortFrame
+    (op : payload)
+      | op == opTraceDrain -> bytesToWords payload
+      | otherwise -> Left (UnknownOpcode op)

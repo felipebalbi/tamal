@@ -90,6 +90,15 @@ tests =
     , testCase "empty logical frame -> ShortFrame"
         $ decodeControl (frameEncode [])
         @?= Left ShortFrame
+    , testProperty "decodeResult . encodeResult == Right" $ property $ do
+        ws <- forAll (Gen.list (Range.linear 0 64) genWord)
+        decodeResult (encodeResult ws) === Right ws
+    , testCase "result frame round-trips a REVISION-led word stream"
+        $ decodeResult (encodeResult [0x00010000, 0xAABBCCDD, 0xC0000011])
+        @?= Right [0x00010000, 0xAABBCCDD, 0xC0000011]
+    , testCase "control opcode is rejected by decodeResult"
+        $ decodeResult (encodeControl Trigger)
+        @?= Left (UnknownOpcode 0x02)
     ]
 
 -- A zero-dense byte generator: stresses COBS group boundaries far harder than
