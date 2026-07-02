@@ -216,6 +216,11 @@ execInstr i s _inp = case i of
   Xori rd _ _ -> dataWb rd
   Shift rd _ _ _ -> dataWb rd
   Halt st -> haltWith False 0 st s
+  Rdsr rd srn
+    | srn == 0 ->
+        let s' = (advance s){regs = writeReg (regs s) rd (zeroExtend (rxCrc s))}
+         in (s', busOut s', Nothing)
+    | otherwise -> haltWith True 3 0 (safePins s) -- reserved sr# -> reason 3
   _ -> (advance s, busOut s, Nothing) -- other opcodes: later tasks
  where
   rs1v = readReg (regs s) (operandRs1 i)

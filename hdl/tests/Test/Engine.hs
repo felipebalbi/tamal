@@ -45,6 +45,14 @@ tests =
         let regsE = fmap (readRegE s) [0 .. 15]
             regsR = fmap (readReg (refRegs prog)) [0 .. 15]
         regsE H.=== regsR
+    , testCase "RDSR sr=0 reads rxCrc into rd; sr/=0 traps (reason 3)" $ do
+        let ok = [encode (Rdsr 1 0), encode (Halt 0)]
+            Run s0 _ _ = runProg 40 ok
+        phase s0 @?= Halted
+        readReg (regs s0) 1 @?= 0
+        let bad = [encode (Rdsr 1 1), encode (Halt 0)]
+            Run _ ring _ = runProg 40 bad
+        haltReason (L.last ring) @?= (True, 3)
     ]
 
 -- | A run result: final state + ring writes (in emission order) + cycles used.
@@ -89,6 +97,10 @@ runProg budget prog = drive budget (memOf prog) inputs
 -- | Read a register out of the engine's final state.
 readRegE :: State -> Reg -> BitVector 32
 readRegE s = readReg (regs s)
+
+-- | Extract (trap, reason) from a HALT terminator word.
+haltReason :: Ring -> (Bool, BitVector 3)
+haltReason (Ring _ w) = (testBit w 9, slice d12 d10 w)
 
 -- | Instantaneous reference for straight-line DATA-compute programs.
 refRegs :: [Instr] -> Regs
