@@ -13,7 +13,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Wire
-import Tamal.Wire.Cobs (cobsEncode)
+import Tamal.Wire.Cobs (cobsDecode, cobsEncode)
 import Test.Gen (genByte, genWord)
 
 tests :: TestTree
@@ -47,6 +47,18 @@ tests =
     , testProperty "cobsEncode output contains no 0x00" $ property $ do
         xs <- forAll (Gen.list (Range.linear 0 300) genByteZeros)
         L.elem 0 (cobsEncode xs) === False
+    , testProperty "cobsDecode . cobsEncode == Just" $ property $ do
+        xs <- forAll (Gen.list (Range.linear 0 300) genByteZeros)
+        cobsDecode (cobsEncode xs) === Just xs
+    , testCase "cobsDecode truncated group -> Nothing"
+        $ cobsDecode [0x05, 0x11]
+        @?= Nothing
+    , testCase "cobsDecode interior zero -> Nothing"
+        $ cobsDecode [0x03, 0x11, 0x00]
+        @?= Nothing
+    , testCase "cobsDecode [] -> Nothing"
+        $ cobsDecode []
+        @?= (Nothing :: Maybe [BitVector 8])
     ]
 
 -- A zero-dense byte generator: stresses COBS group boundaries far harder than
