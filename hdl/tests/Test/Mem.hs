@@ -7,11 +7,16 @@ module Test.Mem (tests) where
 import Clash.Prelude
 import qualified Data.List as L
 import Data.Maybe (fromMaybe)
+import qualified Hedgehog as H
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Domain (Dom100)
 import Tamal.Mem (instrRam, ringRam)
+import Test.Gen (genWord)
 
 {- | Pure oracle mirroring 'Clash.Prelude.blockRam' exactly: zero-init, 1-cycle
 read latency, read-before-write. Produces @[out 1, out 2, ..]@ (the undefined
@@ -30,6 +35,16 @@ refRam addrs writes = go [] (L.zip addrs writes)
   go mem ((a, w) : zs) = fromMaybe 0 (L.lookup a mem) : go (push w mem) zs
   push Nothing m = m
   push (Just (wa, wd)) m = (wa, wd) : m
+
+{- | A read/write address in the window 0..15 — dense enough for read-after-write
+hits, and safe for both 'Unsigned 10' and 'Unsigned 12'.
+-}
+genWin :: (KnownNat n) => H.Gen (Unsigned n)
+genWin = fromIntegral <$> Gen.int (Range.linear 0 15)
+
+-- | One cycle of stimulus: a read address and a maybe-write (window addr + data).
+genCmd :: (KnownNat n) => H.Gen (Unsigned n, Maybe (Unsigned n, BitVector 32))
+genCmd = (,) <$> genWin <*> Gen.maybe ((,) <$> genWin <*> genWord)
 
 {- | Sample 'instrRam' over a stimulus, dropping the undefined cycle-0 output.
 'sampleN' supplies clock/reset/enable to the @HiddenClockResetEnable@ signal; the
@@ -105,4 +120,28 @@ tests =
             writes = [Just (base + i, v) | (i, v) <- L.zip [0 .. 3] blk] <> L.replicate 4 Nothing
             addrs = L.replicate 4 0 <> [base + i | i <- [0 .. 3]]
          in L.take 4 (L.drop 4 (simRing addrs writes)) @?= blk
+    , testProperty "instr: matches the reference model (random sequences)" $ H.property $ do
+        cmds <-
+          H.forAll
+            (Gen.list (Range.linear 0 64) (genCmd :: H.Gen (Unsigned 10, Maybe (Unsigned 10, BitVector 32))))
+        let addrs = fmap fst cmds
+            writes = fmap snd cmds
+        simInstr addrs writes H.=== refRam addrs writes
+    , testProperty "ring: matches the reference model (random sequences)" $ H.property $ do
+        cmds <-
+          H.forAll
+            (Gen.list (Range.linear 0 64) (genCmd :: H.Gen (Unsigned 12, Maybe (Unsigned 12, BitVector 32))))
+        let addrs = fmap fst cmds
+            writes = fmap snd cmds
+        simRing addrs writes H.=== refRam addrs writes
+    , testProperty "ring: sweep read-back = last write wins (independent oracle)" $ H.property $ do
+        ws <-
+          H.forAll
+            (Gen.list (Range.linear 0 40) ((,) <$> genWin <*> genWord) :: H.Gen [(Unsigned 12, BitVector 32)])
+        let win = [0 .. 15] :: [Unsigned 12]
+            writes = fmap Just ws <> L.replicate (L.length win) Nothing
+            addrs = L.replicate (L.length ws) 0 <> win
+            sweep = L.take (L.length win) (L.drop (L.length ws) (simRing addrs writes))
+            oracle = fmap (\a -> fromMaybe 0 (L.lookup a (L.reverse ws))) win
+        sweep H.=== oracle
     ]
