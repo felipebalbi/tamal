@@ -21,7 +21,24 @@ module Tamal.Top
 import Clash.Prelude
 
 import Tamal.Bus.Serdes (Lanes)
-import Tamal.Engine (BusIn (..), BusOut (..), Ring (..), State, initState, step)
+import Tamal.Engine
+  ( BusIn (..)
+  , BusOut (..)
+  , Ring (..)
+  , State
+  , initState
+  , step
+  )
+import Tamal.Loader
+  ( LoaderIn (..)
+  , LoaderOut (..)
+  , loader
+  )
+import Tamal.Mem
+  ( instrRam
+  , ringRam
+  )
+import Tamal.Uart (uart)
 
 -- | The mealy adapter: re-associates 'step' so it lifts with 'mealy'.
 stepM :: State -> BusIn -> (State, (BusOut, Maybe Ring))
@@ -63,4 +80,34 @@ system ::
   , Signal dom Bit -- rstOut
   , Signal dom Bit -- led
   )
-system = undefined
+system rxLine ioIn alertIn = (txLine, lanesO, csO, sckO, rstO, ledOut)
+ where
+  -- UART @ 2MBaud
+  (rxByte, _rxErr, txLine, txReady) = uart (SNat @2_000_000) rxLine txByteL
+
+  -- Loader FSM
+  lOut = loader (LoaderIn <$> rxByte <*> txReady <*> halted <*> ringPtrO <*> ringData)
+  txByteL = txByte <$> lOut
+  instrWrL = instrWr <$> lOut
+  ringAddrL = ringAddr <$> lOut
+  startO = startOut <$> lOut
+
+  -- Memories
+  instrWord = instrRam pcO instrWrL
+  ringData = ringRam ringAddrL (ringWrite <$> maybeRing)
+
+  -- Engine
+  (busOut, maybeRing) = unbundle (mealy stepM initState busInS)
+  busInS = BusIn <$> instrWord <*> ioIn <*> alertIn <*> startO
+  pcO = pcOut <$> busOut
+  lanesO = lanesOut <$> busOut
+  csO = csOut <$> busOut
+  sckO = sckOut <$> busOut
+  rstO = rstOut <$> busOut
+  halted = haltedOut <$> busOut
+  ringPtrO = ringPtrOut <$> busOut
+
+  -- Status LED
+  running = register False (mux startO (pure True) (mux halted (pure False) running))
+  ledCnt = register (0 :: Unsigned 26) (ledCnt + 1)
+  ledOut = ledPattern <$> (rigState <$> running <*> halted) <*> ledCnt
