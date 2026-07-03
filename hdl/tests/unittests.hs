@@ -15,6 +15,7 @@ import qualified Test.Config
 import qualified Test.Crc
 import qualified Test.Engine
 import Test.Gen (genByte)
+import qualified Test.Io
 import qualified Test.Isa
 import qualified Test.Loader
 import qualified Test.Mem
@@ -50,4 +51,5 @@ tests =
     , Test.Mem.tests
     , Test.Wire.tests
     , Test.Loader.tests
+    , Test.Io.tests
     ]
