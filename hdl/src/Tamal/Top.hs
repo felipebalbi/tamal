@@ -25,11 +25,13 @@ import Tamal.Engine (BusIn (..), BusOut (..), Ring (..), State, initState, step)
 
 -- | The mealy adapter: re-associates 'step' so it lifts with 'mealy'.
 stepM :: State -> BusIn -> (State, (BusOut, Maybe Ring))
-stepM = undefined
+stepM s i = (s', (bo, mr))
+ where
+  (s', bo, mr) = step s i
 
 -- | Project the engine's ring write to the BRAM write-port tuple.
 ringWrite :: Maybe Ring -> Maybe (Unsigned 12, BitVector 32)
-ringWrite = undefined
+ringWrite = fmap (\(Ring a d) -> (a, d))
 
 -- | Lifecycle state shown on the status LED.
 data RigState = Waiting | Running | Done
@@ -38,11 +40,15 @@ data RigState = Waiting | Running | Done
 
 -- | Pure status -> LED level over a free-running counter.
 ledPattern :: RigState -> Unsigned 26 -> Bit
-ledPattern = undefined
+ledPattern Waiting c = msb c
+ledPattern Running c = msb (c `shiftL` 3)
+ledPattern Done _ = high
 
 -- | Derive the LED state from the running latch + halted flag.
 rigState :: Bool -> Bool -> RigState
-rigState = undefined
+rigState _ True = Done
+rigState True False = Running
+rigState False False = Waiting
 
 -- | The whole design minus pin binding.
 system ::
