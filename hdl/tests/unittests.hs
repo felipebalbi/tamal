@@ -21,6 +21,7 @@ import qualified Test.Loader
 import qualified Test.Mem
 import qualified Test.RegFile
 import qualified Test.Serdes
+import qualified Test.Top
 import qualified Test.Trace
 import qualified Test.Uart
 import qualified Test.Wire
@@ -52,4 +53,5 @@ tests =
     , Test.Wire.tests
     , Test.Loader.tests
     , Test.Io.tests
+    , Test.Top.tests
     ]
