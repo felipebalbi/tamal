@@ -6,6 +6,7 @@ module Test.Loader (tests) where
 
 import Clash.Prelude
 import qualified Data.List as L
+import Data.Maybe (mapMaybe)
 import Hedgehog (Gen, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
@@ -13,9 +14,13 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
 
+import Tamal.Domain (Dom100)
 import Tamal.Engine (State (..), busOut, initState, ringPtrOut)
+import Tamal.Loader (LoaderIn (..), LoaderOut (..), loader)
 import Tamal.Loader.Cobs (DecSt, EncSt, cobsDecodeStep, cobsEncodeStep, initDec, initEnc)
+import Tamal.Wire (ControlMsg (..), encodeControl)
 import Tamal.Wire.Cobs (cobsEncode)
+import Test.Gen (genWord)
 
 tests :: TestTree
 tests =
@@ -35,6 +40,7 @@ tests =
         ]
     , decodeTests
     , encodeTests
+    , rxTests
     ]
 
 -- | A zero-dense byte generator: stresses COBS group boundaries (~1/4 zeros).
@@ -120,4 +126,45 @@ encodeTests =
     , testProperty "encode then decode round-trips (both streaming)" $ property $ do
         x <- forAll (Gen.list (Range.linear 1 300) genByteZeros)
         decDrive (encDrive x) === (x, False)
+    ]
+
+{- | Feed an rxByte stream (idle otherwise), collecting the instr-BRAM writes.
+The engine/ring inputs are quiescent (halted low, ring empty). The stream is
+led by one idle cycle: @sampleN@ asserts @resetGen@ on cycle 0 (Dom100 has an
+async reset), so a byte fed at cycle 0 would be lost — the line idles first,
+exactly as it does in hardware (cf. Test.Uart).
+-}
+simInstrWr :: [Maybe (BitVector 8)] -> [(Unsigned 10, BitVector 32)]
+simInstrWr rxs =
+  mapMaybe instrWr
+    $ sampleN
+      (L.length rxs + 9)
+      (loader (fromList (fmap mkIn (Nothing : (rxs <> L.repeat Nothing)))) :: Signal Dom100 LoaderOut)
+ where
+  mkIn r = LoaderIn{rxByte = r, txReady = True, halted = False, ringPtrIn = 0, ringData = 0}
+
+-- | Collect the startOut pulses over an rxByte stream (led by one idle cycle).
+simStartOut :: [Maybe (BitVector 8)] -> [Bool]
+simStartOut rxs =
+  fmap startOut
+    $ sampleN
+      (L.length rxs + 9)
+      (loader (fromList (fmap mkIn (Nothing : (rxs <> L.repeat Nothing)))) :: Signal Dom100 LoaderOut)
+ where
+  mkIn r = LoaderIn{rxByte = r, txReady = True, halted = False, ringPtrIn = 0, ringData = 0}
+
+rxTests :: TestTree
+rxTests =
+  testGroup
+    "Loader RX / load"
+    [ testProperty "LOAD_PROGRAM writes the exact words at 0,1,2,.." $ property $ do
+        ws <- forAll (Gen.list (Range.linear 0 20) genWord)
+        let bytes = encodeControl (LoadProgram ws)
+        simInstrWr (fmap Just bytes) === [(fromIntegral i, w) | (i, w) <- L.zip [0 :: Int ..] ws]
+    , testCase "LOAD_PROGRAM does not pulse startOut" $ do
+        let bytes = encodeControl (LoadProgram [0xDEAD_BEEF, 0x0000_0001])
+        L.filter id (simStartOut (fmap Just bytes)) @?= []
+    , testCase "TRIGGER pulses startOut exactly once, after the frame" $ do
+        let bytes = encodeControl Trigger
+        L.length (L.filter id (simStartOut (fmap Just bytes))) @?= 1
     ]

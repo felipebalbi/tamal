@@ -112,6 +112,7 @@ library
     Tamal.Mem
     Tamal.Wire
     Tamal.Wire.Cobs
+    Tamal.Loader
     Tamal.Loader.Cobs
   default-language: Haskell2010
 
