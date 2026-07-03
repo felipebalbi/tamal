@@ -14,7 +14,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog (testProperty)
 
 import Tamal.Engine (State (..), busOut, initState, ringPtrOut)
-import Tamal.Loader.Cobs (DecSt, cobsDecodeStep, initDec)
+import Tamal.Loader.Cobs (DecSt, EncSt, cobsDecodeStep, cobsEncodeStep, initDec, initEnc)
 import Tamal.Wire.Cobs (cobsEncode)
 
 tests :: TestTree
@@ -34,6 +34,7 @@ tests =
             @?= (maxBound :: Unsigned 12)
         ]
     , decodeTests
+    , encodeTests
     ]
 
 -- | A zero-dense byte generator: stresses COBS group boundaries (~1/4 zeros).
@@ -82,4 +83,41 @@ decodeTests =
     , testCase "code byte with no data -> malformed"
         $ snd (decDrive [0x03])
         @?= True
+    ]
+
+{- | Pure driver for the encode step: feed logical bytes (last one flagged),
+downstream always ready; advance the input only when readyIn (byte consumed).
+Collects the emitted COBS bytes (no delimiter).
+-}
+encDrive :: [BitVector 8] -> [BitVector 8]
+encDrive [] = []
+encDrive xs = go initEnc [(x, i == L.length xs - 1) | (i, x) <- L.zip [0 ..] xs]
+ where
+  go :: EncSt -> [(BitVector 8, Bool)] -> [BitVector 8]
+  go st inp =
+    let (feed, rest0) = case inp of
+          (t : ts) -> (Just t, ts)
+          [] -> (Nothing, [])
+        (st', (readyIn, mo, done)) = cobsEncodeStep st (feed, True)
+        inp' = if readyIn then rest0 else inp
+     in if done then [] else maybe (go st' inp') (: go st' inp') mo
+
+encodeTests :: TestTree
+encodeTests =
+  testGroup
+    "Loader.Cobs encode"
+    [ testProperty "streaming encode equals cobsEncode (non-empty)" $ property $ do
+        x <- forAll (Gen.list (Range.linear 1 300) genByteZeros)
+        encDrive x === cobsEncode x
+    , testCase "encode the [11,00,00,00] vector"
+        $ encDrive [0x11, 0x00, 0x00, 0x00]
+        @?= [0x02, 0x11, 0x01, 0x01, 0x01]
+    , testCase "encode the 254/255 boundary" $ do
+        encDrive (L.map fromIntegral [1 .. 254 :: Int])
+          @?= (0xFF : L.map fromIntegral [1 .. 254 :: Int])
+        encDrive (L.map fromIntegral [1 .. 255 :: Int])
+          @?= (0xFF : L.map fromIntegral [1 .. 254 :: Int]) <> [0x02, 255]
+    , testProperty "encode then decode round-trips (both streaming)" $ property $ do
+        x <- forAll (Gen.list (Range.linear 1 300) genByteZeros)
+        decDrive (encDrive x) === (x, False)
     ]

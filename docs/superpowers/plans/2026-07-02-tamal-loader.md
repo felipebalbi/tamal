@@ -139,7 +139,7 @@ git commit -m "feat(hdl): expose engine ringPtrOut (drain bound) + Test.Loader s
 
 ```haskell
 import qualified Data.List as L
-import Hedgehog (forAll, property, (===))
+import Hedgehog (Gen, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 import Test.Tasty.Hedgehog (testProperty)
@@ -152,7 +152,7 @@ Add these helpers to the module (after `tests`):
 
 ```haskell
 -- A zero-dense byte generator: stresses COBS group boundaries (~1/4 zeros).
-genByteZeros :: Gen.Gen (BitVector 8)
+genByteZeros :: Gen (BitVector 8)
 genByteZeros = Gen.frequency [(1, pure 0), (4, genB)]
  where
   genB = fromIntegral <$> Gen.int (Range.linear 0 255)
