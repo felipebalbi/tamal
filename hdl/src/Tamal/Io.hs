@@ -53,4 +53,15 @@ espiPads ::
   , Signal dom (Vec 4 Bit) -- @ioIn@    -> @BusIn.ioIn@
   , Signal dom Bit -- @alertIn@ -> @BusIn.alertIn@
   )
-espiPads = undefined
+espiPads lanesOut csOut sckOut rstOut alert padsIn =
+  (padsOut, csOut, sckOut, rstOut, ioIn, alert')
+ where
+  alert' = alertSync alert
+  laneSigs = unbundle lanesOut
+  padsOut = zipWith drive padsIn laneSigs
+  ioIn = bundle (map readFromBiSignal padsIn)
+  drive padIn laneSig = writeToBiSignal padIn (toDrive <$> laneSig)
+  toDrive (o, oe) =
+    if oe == 1
+      then Just o
+      else Nothing
