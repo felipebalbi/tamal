@@ -107,6 +107,7 @@ data BusOut = BusOut
   , rstOut :: Bit
   , lanesOut :: Lanes
   , haltedOut :: Bool
+  , ringPtrOut :: Unsigned 12
   }
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
@@ -175,6 +176,7 @@ busOut s =
     , rstOut = rstN s
     , lanesOut = lanes s
     , haltedOut = phase s == Halted
+    , ringPtrOut = ringPtr s
     }
 
 -- | Soft-init on 'startIn' (§8 / D9): reset run state.

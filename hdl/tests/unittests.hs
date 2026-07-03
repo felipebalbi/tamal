@@ -16,6 +16,7 @@ import qualified Test.Crc
 import qualified Test.Engine
 import Test.Gen (genByte)
 import qualified Test.Isa
+import qualified Test.Loader
 import qualified Test.Mem
 import qualified Test.RegFile
 import qualified Test.Serdes
@@ -48,4 +49,5 @@ tests =
     , Test.Engine.tests
     , Test.Mem.tests
     , Test.Wire.tests
+    , Test.Loader.tests
     ]

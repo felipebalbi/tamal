@@ -160,6 +160,7 @@ test-suite test-library
     Test.Engine
     Test.Mem
     Test.Wire
+    Test.Loader
   build-depends:
     tamal,
     tasty >= 1.2 && < 1.6,
