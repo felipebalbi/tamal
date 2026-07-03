@@ -17,25 +17,25 @@ built and hedgehog-tested too. The shell pieces built so far — the **instructi
 **UART load/drain loader** (`Tamal.Loader`) — are built and tested. What remains
 is IOBUF and the real `topEntity` that wires everything to the pins.
 
-| Module | Purpose | Status |
-|---|---|---|
-| `Tamal.Isa` | `Instr` ADT, total `encode`/`decode`, reserved-field trap | done, tested |
-| `Tamal.Crc` | `crc8Update` (poly 0x07, init 0x00, MSB-first) | done, tested |
-| `Tamal.Bus.Serdes` | x1 serialize/deserialize + `tarBeat` | done, tested |
-| `Tamal.Config` | `SET_CONFIG` decode | done, tested |
-| `Tamal.Trace` | ring record encode (+ trap flag/reason) + `ringPush` overflow | done, tested |
-| `Tamal.Alu` | `alu` core + `dataResult` wrapper (DATA group) | done, tested |
-| `Tamal.Branch` | `branchTaken` comparator (CTRL group, unsigned) | done, tested |
-| `Tamal.RegFile` | 16×32 register file, `x0` hardwired 0 | done, tested |
-| `Tamal.Uart.*` | 8N1 UART (NCO tick, RX, TX, umbrella) — host transport | done, tested |
-| `Tamal.Engine` | `step` Mealy: fetch/decode/datapath + SCK bus FSM + trace + HALT/TRAP; `ringPtrOut` drain-depth projection | done, tested |
-| `Tamal.Mem` | instr + ring memories (`blockRamPow2`; 1024×32, 4096×32) | done, tested |
-| `Tamal.Wire.Cobs` | COBS encode/decode (`0x00`-delimiter framing) | done, tested |
-| `Tamal.Wire` | LE word↔bytes, CRC-8 fold, control/result frame + message layer | done, tested |
-| `Tamal.Loader.Cobs` | streaming COBS decode/encode step functions (embedded in the loader mealy) | done, tested |
-| `Tamal.Loader` | UART load/drain lifecycle FSM (`RxControl→Run→Drain`) | done, tested |
-| `Tamal.Domain` | `Dom100` clock domain | done |
-| `Tamal` (top) | synthesis entry point | **placeholder heartbeat** (LED blink) |
+| Module              | Purpose                                                                                                    | Status                                |
+|---------------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|
+| `Tamal.Isa`         | `Instr` ADT, total `encode`/`decode`, reserved-field trap                                                  | done, tested                          |
+| `Tamal.Crc`         | `crc8Update` (poly 0x07, init 0x00, MSB-first)                                                             | done, tested                          |
+| `Tamal.Bus.Serdes`  | x1 serialize/deserialize + `tarBeat`                                                                       | done, tested                          |
+| `Tamal.Config`      | `SET_CONFIG` decode                                                                                        | done, tested                          |
+| `Tamal.Trace`       | ring record encode (+ trap flag/reason) + `ringPush` overflow                                              | done, tested                          |
+| `Tamal.Alu`         | `alu` core + `dataResult` wrapper (DATA group)                                                             | done, tested                          |
+| `Tamal.Branch`      | `branchTaken` comparator (CTRL group, unsigned)                                                            | done, tested                          |
+| `Tamal.RegFile`     | 16×32 register file, `x0` hardwired 0                                                                      | done, tested                          |
+| `Tamal.Uart.*`      | 8N1 UART (NCO tick, RX, TX, umbrella) — host transport                                                     | done, tested                          |
+| `Tamal.Engine`      | `step` Mealy: fetch/decode/datapath + SCK bus FSM + trace + HALT/TRAP; `ringPtrOut` drain-depth projection | done, tested                          |
+| `Tamal.Mem`         | instr + ring memories (`blockRamPow2`; 1024×32, 4096×32)                                                   | done, tested                          |
+| `Tamal.Wire.Cobs`   | COBS encode/decode (`0x00`-delimiter framing)                                                              | done, tested                          |
+| `Tamal.Wire`        | LE word↔bytes, CRC-8 fold, control/result frame + message layer                                            | done, tested                          |
+| `Tamal.Loader.Cobs` | streaming COBS decode/encode step functions (embedded in the loader mealy)                                 | done, tested                          |
+| `Tamal.Loader`      | UART load/drain lifecycle FSM (`RxControl→Run→Drain`)                                                      | done, tested                          |
+| `Tamal.Domain`      | `Dom100` clock domain                                                                                      | done                                  |
+| `Tamal` (top)       | synthesis entry point                                                                                      | **placeholder heartbeat** (LED blink) |
 
 Confirmed absent: the rest of the impure shell — IOBUF and the real
 `topEntity` (the Engine + BRAMs wired to the pins).
@@ -56,8 +56,8 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
 `topEntity` integrates everything and is deliberately last.
 
 ```
-   host ──UART──►┌─────────┐  start   ┌───────────┐  pcOut  ┌────────────┐
-                 │ loader  │─────────►│  Engine    │────────►│ instr BRAM │
+   host ──UART──►┌─────────┐  start   ┌────────────┐  pcOut   ┌────────────┐
+                 │ loader  │─────────►│  Engine    │─────────►│ instr BRAM │
                  │  FSM    │  halted  │  (mealy    │◄instrWord└────────────┘
                  │(load/   │◄─────────│   step)    │
                  │ drain)  │  ring rd │            │ Maybe   ┌────────────┐
