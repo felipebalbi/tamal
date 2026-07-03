@@ -202,6 +202,58 @@ resetFrame s =
     , lHadPay = False
     }
 
--- | Drain: completed in Task 5.
+-- | Drain: emit one TRACE_DRAIN frame from the ring, then return to RxControl.
 drainStep :: LoaderSt -> LoaderIn -> (LoaderSt, LoaderOut)
-drainStep s _ = (resetFrame s{lPhase = RxControl}, idleOut)
+drainStep s inp = case lDrn s of
+  DrOpcode ->
+    feedByte s inp 0x81 False (\s' -> s'{lDrn = DrFetch, lDrCnt = 0, lTerm = False})
+  DrWordByte ->
+    feedByte s inp (leByte (lWord s) (lWIx s)) False (afterWordByte inp)
+  DrCrcByte ->
+    feedByte s inp (lCrcTx s) True (\s' -> s'{lDrn = DrDrainOut})
+  DrFetch ->
+    let addr = if lTerm s then maxBound else lDrCnt s
+        (enc', (_, mOut, _)) = cobsEncodeStep (lEnc s) (Nothing, txReady inp)
+     in (s{lEnc = enc', lDrn = DrLatch}, idleOut{txByte = mOut, ringAddr = addr})
+  DrLatch ->
+    let addr = if lTerm s then maxBound else lDrCnt s
+        (enc', (_, mOut, _)) = cobsEncodeStep (lEnc s) (Nothing, txReady inp)
+     in ( s{lEnc = enc', lWord = ringData inp, lWIx = 0, lDrn = DrWordByte}
+        , idleOut{txByte = mOut, ringAddr = addr}
+        )
+  DrDrainOut ->
+    let (enc', (_, mOut, encDone)) = cobsEncodeStep (lEnc s) (Nothing, txReady inp)
+     in (s{lEnc = enc', lDrn = if encDone then DrDelim else DrDrainOut}, idleOut{txByte = mOut})
+  DrDelim ->
+    if txReady inp
+      then (resetFrame s{lPhase = RxControl}, idleOut{txByte = Just 0})
+      else (s, idleOut{txByte = Nothing})
+ where
+  afterWordByte i s'
+    | lWIx s' /= 3 = s'{lWIx = lWIx s' + 1}
+    | lTerm s' = s'{lDrn = DrCrcByte}
+    | lDrCnt s' + 1 >= ringPtrIn i = s'{lTerm = True, lDrn = DrFetch}
+    | otherwise = s'{lDrCnt = lDrCnt s' + 1, lDrn = DrFetch}
+
+{- | Present a logical byte to the encoder; when consumed (readyIn), fold it into
+the drain CRC (except the CRC byte itself, flagged @lst@) and advance the
+generator. Route the encoder's output to txByte.
+-}
+feedByte ::
+  LoaderSt -> LoaderIn -> BitVector 8 -> Bool -> (LoaderSt -> LoaderSt) -> (LoaderSt, LoaderOut)
+feedByte s inp b lst advance =
+  let (enc', (readyIn, mOut, _)) = cobsEncodeStep (lEnc s) (Just (b, lst), txReady inp)
+      s1 = s{lEnc = enc'}
+      s2 =
+        if readyIn
+          then advance s1{lCrcTx = if lst then lCrcTx s1 else crc8Update (lCrcTx s1) b}
+          else s1
+   in (s2, idleOut{txByte = mOut})
+
+-- | The little-endian byte @i@ (0..3) of a 32-bit word.
+leByte :: BitVector 32 -> Unsigned 2 -> BitVector 8
+leByte w i = case i of
+  0 -> slice d7 d0 w
+  1 -> slice d15 d8 w
+  2 -> slice d23 d16 w
+  _ -> slice d31 d24 w

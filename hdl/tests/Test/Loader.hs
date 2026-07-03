@@ -18,7 +18,7 @@ import Tamal.Domain (Dom100)
 import Tamal.Engine (State (..), busOut, initState, ringPtrOut)
 import Tamal.Loader (LoaderIn (..), LoaderOut (..), loader)
 import Tamal.Loader.Cobs (DecSt, EncSt, cobsDecodeStep, cobsEncodeStep, initDec, initEnc)
-import Tamal.Wire (ControlMsg (..), encodeControl)
+import Tamal.Wire (ControlMsg (..), encodeControl, encodeResult)
 import Tamal.Wire.Cobs (cobsEncode)
 import Test.Gen (genWord)
 
@@ -41,6 +41,7 @@ tests =
     , decodeTests
     , encodeTests
     , rxTests
+    , drainTests
     ]
 
 -- | A zero-dense byte generator: stresses COBS group boundaries (~1/4 zeros).
@@ -167,4 +168,70 @@ rxTests =
     , testCase "TRIGGER pulses startOut exactly once, after the frame" $ do
         let bytes = encodeControl Trigger
         L.length (L.filter id (simStartOut (fmap Just bytes))) @?= 1
+    ]
+
+{- | The loader with the ring-BRAM read loop closed (1-cycle latency via register).
+Feedback harnesses MUST be a function carrying (HiddenClockResetEnable dom) so
+sampleN can supply the hidden clock/reset/enable (the Test.Uart fastLoop idiom);
+a `where`-bound signal at the test level would have no clock in scope.
+-}
+drainRig ::
+  (HiddenClockResetEnable dom) =>
+  (Unsigned 12 -> BitVector 32) -> -- ring lookup (simulation-only, non-synthesizable)
+  Unsigned 12 -> -- ringPtr
+  Signal dom (Maybe (BitVector 8)) -> -- rxByte
+  Signal dom Bool -> -- txReady
+  Signal dom Bool -> -- halted
+  Signal dom (Maybe (BitVector 8)) -- txByte
+drainRig lookupRing ringPtrV rxs txr hlt = txByte <$> loaderOut
+ where
+  loaderOut = loader loaderIn
+  ringDataS = register 0 (lookupRing <$> (ringAddr <$> loaderOut))
+  loaderIn = LoaderIn <$> rxs <*> txr <*> hlt <*> pure ringPtrV <*> ringDataS
+
+-- | Ring model: word[0..ringPtr-1] = records (word0 = REVISION); word[termAddr] = term.
+ringModel :: [BitVector 32] -> BitVector 32 -> Unsigned 12 -> BitVector 32
+ringModel records term a
+  | a == maxBound = term
+  | fromIntegral a < L.length records = records L.!! fromIntegral a
+  | otherwise = 0
+
+{- | Drive TRIGGER -> Run -> (halted) -> Drain; collect the drained byte stream.
+@records@ are word[0..ringPtr-1] (word0 = REVISION); @term@ is the terminator.
+The rxByte stream leads with one idle cycle (sampleN/resetGen cycle-0 hazard).
+-}
+simDrain :: [BitVector 32] -> BitVector 32 -> [Bool] -> [BitVector 8]
+simDrain records term txReadyPat =
+  mapMaybe id
+    $ sampleN
+      2500
+      ( drainRig
+          (ringModel records term)
+          (fromIntegral (L.length records))
+          (fromList rxs)
+          (fromList (L.cycle txReadyPat))
+          (fromList halteds) ::
+          Signal Dom100 (Maybe (BitVector 8))
+      )
+ where
+  trig = encodeControl Trigger
+  rxs = Nothing : (fmap Just trig <> L.repeat Nothing)
+  halteds = L.replicate (L.length trig + 7) False <> L.repeat True
+
+drainTests :: TestTree
+drainTests =
+  testGroup
+    "Loader TX / drain"
+    [ testProperty "drain stream == encodeResult (records ++ terminator)" $ property $ do
+        records <- forAll (Gen.list (Range.linear 1 24) genWord)
+        term <- forAll genWord
+        simDrain records term [True] === encodeResult (records <> [term])
+    , testCase "minimal drain: REVISION + terminator only"
+        $ simDrain [0x0001_0000] 0xC000_0000 [True]
+        @?= encodeResult [0x0001_0000, 0xC000_0000]
+    , testProperty "drain is byte-identical under txReady backpressure" $ property $ do
+        records <- forAll (Gen.list (Range.linear 1 16) genWord)
+        term <- forAll genWord
+        simDrain records term [True, False, True, True, False]
+          === encodeResult (records <> [term])
     ]
