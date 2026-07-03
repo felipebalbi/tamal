@@ -466,23 +466,27 @@ Add a signal-level harness (after `encDrive`):
 
 ```haskell
 -- Feed an rxByte stream (idle otherwise), collecting the instr-BRAM writes.
--- The engine/ring inputs are quiescent (halted low, ring empty).
+-- The engine/ring inputs are quiescent (halted low, ring empty). The stream is
+-- LED BY ONE IDLE Nothing: sampleN asserts resetGen on cycle 0 and Dom100 has an
+-- async reset, so a byte fed at cycle 0 never latches (its decode-state update is
+-- lost, misaligning the frame). The line idles first, exactly as in hardware
+-- (cf. Test.Uart, which always leads with idle). See "Notes for the implementer".
 simInstrWr :: [Maybe (BitVector 8)] -> [(Unsigned 10, BitVector 32)]
 simInstrWr rxs =
   mapMaybe instrWr
     $ sampleN
-      (L.length rxs + 8)
-      (loader (fromList (fmap mkIn (rxs <> L.repeat Nothing))) :: Signal Dom100 LoaderOut)
+      (L.length rxs + 9)
+      (loader (fromList (fmap mkIn (Nothing : (rxs <> L.repeat Nothing)))) :: Signal Dom100 LoaderOut)
  where
   mkIn r = LoaderIn{rxByte = r, txReady = True, halted = False, ringPtrIn = 0, ringData = 0}
 
--- Collect the startOut pulses over an rxByte stream.
+-- Collect the startOut pulses over an rxByte stream (led by one idle cycle).
 simStartOut :: [Maybe (BitVector 8)] -> [Bool]
 simStartOut rxs =
   fmap startOut
     $ sampleN
-      (L.length rxs + 8)
-      (loader (fromList (fmap mkIn (rxs <> L.repeat Nothing))) :: Signal Dom100 LoaderOut)
+      (L.length rxs + 9)
+      (loader (fromList (fmap mkIn (Nothing : (rxs <> L.repeat Nothing)))) :: Signal Dom100 LoaderOut)
  where
   mkIn r = LoaderIn{rxByte = r, txReady = True, halted = False, ringPtrIn = 0, ringData = 0}
 ```
@@ -797,8 +801,10 @@ simDrain records term txReadyPat =
       )
  where
   trig = encodeControl Trigger
-  rxs = fmap Just trig <> L.repeat Nothing
-  halteds = L.replicate (L.length trig + 6) False <> L.repeat True
+  -- lead with one idle cycle (the sampleN/resetGen cycle-0 hazard — see the RX
+  -- harnesses + "Notes"); the TRIGGER byte fed at cycle 0 would otherwise be lost.
+  rxs = Nothing : (fmap Just trig <> L.repeat Nothing)
+  halteds = L.replicate (L.length trig + 7) False <> L.repeat True
 ```
 
 Add a `drainTests` group and include it (`, drainTests`):
@@ -963,11 +969,14 @@ simDrainTwice records term =
       )
  where
   trig = encodeControl Trigger
+  -- lead with one idle cycle (sampleN/resetGen cycle-0 hazard — see "Notes").
   rxs =
-    fmap Just trig
-      <> L.replicate (1000 - L.length trig) Nothing
-      <> fmap Just trig
-      <> L.repeat Nothing
+    Nothing
+      : ( fmap Just trig
+            <> L.replicate (1000 - L.length trig) Nothing
+            <> fmap Just trig
+            <> L.repeat Nothing
+        )
   halteds = L.replicate 30 False <> L.repeat True
 ```
 
@@ -1013,7 +1022,7 @@ git commit -m "docs(hdl): loader (Tamal.Loader) done + tested; IOBUF is next"
 - **The codec is pure step functions, not Signal blocks.** `Tamal.Loader.Cobs` exports `cobsDecodeStep`/`cobsEncodeStep :: st -> i -> (st, o)`. This is the spec's "isolated streaming codec" realized without Signal-feedback plumbing: the loader's `mealy` calls them inside `loaderStep`, and the tests iterate them purely against the `Tamal.Wire.Cobs` oracle. Both were validated out-of-band (edge vectors, 400 randomized zero-dense inputs each, the 254/255 boundary, malformed detection, and a full streaming round-trip) before this plan.
 - **`readyIn` means "consumed this cycle."** The encoder returns `readyIn = True` only in `EFilling` (the one mode that consumes input). `feedByte` relies on this to fold CRC + advance the generator exactly once per byte — do not "optimize" `readyIn` to be high on the Emitting→Filling transition cycle (it does not consume there).
 - **Port ownership (no BRAM collisions).** The loader drives the instr-BRAM *write* port (`instrWr`) and the ring-BRAM *read* address (`ringAddr`); the engine drives the instr *read* (`pcOut`) and ring *write* (`Maybe Ring`). Loads happen only in `RxControl`, drains only in `Drain` — never overlapping the engine's run-time accesses.
-- **`mealy` has no output register.** Unlike the `blockRam` tests (`Test.Mem`), there is no undefined cycle-0 output to `L.drop 1`; `sampleN` from cycle 0 is valid.
+- **Lead `mealy`+`sampleN` harnesses with one idle cycle (cycle-0 reset hazard).** `Dom100` has an **async active-high reset**, and `sampleN` asserts `resetGen` on cycle 0. The register cannot latch at that edge, so the effect of whatever you feed at cycle 0 is **lost** — for the loader, the first COBS byte's decode-state update vanishes and the whole frame decodes misaligned (no opcode → no CRC match → no pulse; misaligned payload → no word write). This was verified out-of-band: modelling "drop the cycle-0 state update" reproduces the exact `[]`/no-pulse failure, and prepending one idle `Nothing` fixes it. So every loader harness feeds `Nothing : (rxs <> L.repeat Nothing)` (the `Test.Uart` pattern; real hardware ties reset de-asserted and the line idles before a frame). Note `Test.Engine` never hit this because it drives the pure `step`, not the `mealy`.
 - **Lists vs `Vec`.** In `Test/Loader.hs` qualify list ops as `L.*`. In `src`, the only `Vec` is the encoder's `eBuf :: Vec 254` (with `replace`/`(!!)`), and `slice d7 d0` in `leByte`; everything else is `Maybe`/tuples/`Unsigned`/`BitVector`.
 - **Not in `topEntity` yet.** The codegen smoke (Task 6) only compiles the library; the loader is wired to the UART, BRAMs, engine, and IOBUFs in piece 5.
 
