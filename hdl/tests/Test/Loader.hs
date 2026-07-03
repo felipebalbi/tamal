@@ -42,6 +42,7 @@ tests =
     , encodeTests
     , rxTests
     , drainTests
+    , robustTests
     ]
 
 -- | A zero-dense byte generator: stresses COBS group boundaries (~1/4 zeros).
@@ -234,4 +235,63 @@ drainTests =
         term <- forAll genWord
         simDrain records term [True, False, True, True, False]
           === encodeResult (records <> [term])
+    ]
+
+{- | Two TRIGGER/halt cycles: the second TRIGGER at cycle 1000 (well after drain 1),
+halted held high, so the loader drains twice. Reuses drainRig + ringModel.
+The rxByte stream leads with one idle cycle (sampleN/resetGen cycle-0 hazard).
+-}
+simDrainTwice :: [BitVector 32] -> BitVector 32 -> [BitVector 8]
+simDrainTwice records term =
+  mapMaybe id
+    $ sampleN
+      2500
+      ( drainRig
+          (ringModel records term)
+          (fromIntegral (L.length records))
+          (fromList rxs)
+          (pure True)
+          (fromList halteds) ::
+          Signal Dom100 (Maybe (BitVector 8))
+      )
+ where
+  trig = encodeControl Trigger
+  rxs =
+    Nothing
+      : ( fmap Just trig
+            <> L.replicate (1000 - L.length trig) Nothing
+            <> fmap Just trig
+            <> L.repeat Nothing
+        )
+  halteds = L.replicate 30 False <> L.repeat True
+
+robustTests :: TestTree
+robustTests =
+  testGroup
+    "Loader robustness + lifecycle"
+    [ testProperty "single-byte corruption of a TRIGGER never triggers a run" $ property $ do
+        -- TRIGGER is the frame that *would* pulse startOut; corrupting any byte
+        -- (bad COBS/CRC, or an early 0x00) must be discarded (D4/D5) -> no pulse.
+        let frame = encodeControl Trigger
+        i <- forAll (Gen.int (Range.linear 0 (L.length frame - 1)))
+        let frame' = [if j == i then b `xor` 1 else b | (j, b) <- L.zip [0 :: Int ..] frame]
+        L.filter id (simStartOut (fmap Just frame')) === []
+    , testCase "a clean TRIGGER still pulses exactly once (control)"
+        $ L.length (L.filter id (simStartOut (fmap Just (encodeControl Trigger))))
+        @?= 1
+    , testCase "over-long LOAD saturates the write address at 1023" $ do
+        let ws = L.map fromIntegral [1 .. 1100 :: Int] :: [BitVector 32]
+            writes = simInstrWr (fmap Just (encodeControl (LoadProgram ws)))
+        L.length writes @?= 1024
+        fmap fst writes @?= [0 .. 1023]
+    , testCase "two LOADs each write from address 0 (overwrite)" $ do
+        let ws1 = [0x1111_1111, 0x2222_2222] :: [BitVector 32]
+            ws2 = [0xAAAA_AAAA] :: [BitVector 32]
+            bytes = encodeControl (LoadProgram ws1) <> encodeControl (LoadProgram ws2)
+        simInstrWr (fmap Just bytes)
+          @?= [(0, 0x1111_1111), (1, 0x2222_2222), (0, 0xAAAA_AAAA)]
+    , testCase "re-runnable: two TRIGGER/halt cycles drain twice" $ do
+        let recs = [0x0001_0000, 0x00AB_00CD] :: [BitVector 32]
+            term = 0xC000_0000 :: BitVector 32
+        simDrainTwice recs term @?= (encodeResult (recs <> [term]) <> encodeResult (recs <> [term]))
     ]
