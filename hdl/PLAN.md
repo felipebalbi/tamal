@@ -12,11 +12,12 @@ UART design (`.../2026-07-01-tamal-uart-design.md`).
 Every **pure leaf core** from the §10 module decomposition is built and
 hedgehog-tested — the compute layer (ALU + branch), the **register file**, and
 the **UART transport** included — and the keystone **`Engine.step`** Mealy is
-built and hedgehog-tested too. The shell pieces built so far — the **instruction
-+ ring BRAMs** (`Tamal.Mem`), the **wire-format core** (`Tamal.Wire`), and the
-**UART load/drain loader** (`Tamal.Loader`), and the **eSPI pad boundary**
-(`Tamal.Io`) — are built and tested. What remains is the real `topEntity` that
-wires everything to the pins.
+built and hedgehog-tested too. The impure shell is complete as well — the
+**instruction + ring BRAMs** (`Tamal.Mem`), the **wire-format core**
+(`Tamal.Wire`), the **UART load/drain loader** (`Tamal.Loader`), the **eSPI pad
+boundary** (`Tamal.Io`), and the **integration** (`Tamal.Top`'s `system` + the
+`topEntity` shell) — all built and tested, with a whole-system UART/eSPI cosim.
+tamal now builds to a v1 bitstream (controller role, x1 I/O, UART transport).
 
 | Module              | Purpose                                                                                                    | Status                                |
 |---------------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|
@@ -36,11 +37,13 @@ wires everything to the pins.
 | `Tamal.Loader.Cobs` | streaming COBS decode/encode step functions (embedded in the loader mealy)                                 | done, tested                          |
 | `Tamal.Loader`      | UART load/drain lifecycle FSM (`RxControl→Run→Drain`)                                                      | done, tested                          |
 | `Tamal.Io`          | eSPI pad boundary: per-lane `BiSignal` `IO[3:0]` tri-state + `CS#`/`SCK`/`RESET#` buffers + `ALERT#` sync   | done, tested                          |
+| `Tamal.Top`         | `system` (BRAMs + loader + UART + engine `mealy stepM`) + pure helpers (`stepM`/`ringWrite`/`rigState`/`ledPattern`) | done, tested (cosim)        |
 | `Tamal.Domain`      | `Dom100` clock domain                                                                                      | done                                  |
-| `Tamal` (top)       | synthesis entry point                                                                                      | **placeholder heartbeat** (LED blink) |
+| `Tamal` (top)       | synthesis entry point: clock + `espiPads` + named pins (4 scalar `inout` IO lanes)                          | done                                  |
 
-Confirmed absent: the last of the impure shell — the real
-`topEntity` (the Engine + BRAMs wired to the pins).
+Nothing absent: the full pipeline (host UART → loader → engine → eSPI pads →
+trace → drain) is wired and cosim-tested; `stack run clash -- Tamal --verilog`
+emits the top with four `inout` IO lanes (`io0`..`io3`).
 
 ## What remains: the impure `topEntity` shell
 
@@ -185,14 +188,26 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
   diverges in Clash `BiSignal` simulation, so the harnesses use single-driver nets
   bound to a throwaway idle pad (the engine drives XOR samples a lane anyway).
 
-### 5. topEntity — integration  *(LAST)*
+### 5. topEntity — integration  *(done — `Tamal.Top` + `Tamal` shell)*
 
-- **What:** the synthesis entry point. Instantiate BRAMs + loader + `engine`
-  (`mealy stepM initState`) + IOBUFs; wire the 100 MHz clock and all pins; extend
-  the XDC; retire the heartbeat placeholder.
+- **What:** the synthesis entry point, split into a cosim-testable `Tamal.Top`
+  `system` (BRAMs + loader + UART + `engine` `mealy stepM initState` + status LED)
+  and a thin `Tamal` shell (100 MHz clock + `espiPads` + named pins). `system` is
+  BiSignal-free so the whole integration is cosim-testable; the shell owns the
+  tri-state binding.
+- **Decisions made:** `espiPads` lives in the shell (keeps `system` plain-`Signal`);
+  the four IO lanes are **four scalar `inout` ports** (`io0`..`io3`) — Clash fuses a
+  per-lane `BiSignalIn` arg + `BiSignalOut` result into one `inout`, but a `Vec` of
+  BiSignals does not; 2 Mbaud UART; 3-state status LED (`ledPattern`); no-reset
+  power-up retained.
 - **Depends on:** all of the above.
-- **Testing:** `stack run clash -- Tamal --verilog` (codegen), then the full Vivado
-  flow (`cd hdl && make`) to a bitstream, then on-hardware bring-up.
+- **Tested:** `Test.Top` — pure helpers (`stepM`/`ringWrite`/`rigState`/`ledPattern`)
+  + a whole-system UART/eSPI **cosim** (serialize a `Tamal.Wire` `LOAD_PROGRAM`+
+  `TRIGGER` onto `rxLine`, run load→run→drain, decode `txLine`, assert the drained
+  trace + CS#/SCK activity). **Gotcha found + documented:** the UART RX drops truly
+  back-to-back bytes on the falling-edge resync, so the cosim's `serialize` leaves
+  one idle bit-time between bytes (a realistic transmitter). Codegen gate confirms
+  the four `inout` lanes; `cd hdl && make` → `tamal.bit` is the ultimate gate.
 
 ---
 
@@ -216,12 +231,12 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
 6. **Wire protocol** (`Tamal.Wire` COBS + CRC-8 framing core) — done, hedgehog-tested
 7. **Loader** (UART load/drain FSM; `Tamal.Loader` + `Tamal.Loader.Cobs`) — done, tested
 8. **IOBUF** (tri-state IO + sideband pins; `Tamal.Io`) — done, tested
-9. **`topEntity`** (integration; retire the heartbeat) ← next (last)
+9. **`topEntity`** (integration; `Tamal.Top` `system` + shell; retire the heartbeat) — done, cosim-tested
 
-Short version: the pure leaves, the Engine keystone, the **BRAM memories**
-(`Tamal.Mem`), the **wire-format core** (`Tamal.Wire.Cobs` + `Tamal.Wire`), the
-**UART load/drain loader** (`Tamal.Loader` + `Tamal.Loader.Cobs`), and the **eSPI
-pad boundary** (`Tamal.Io`) are all in place and tested. The last of the impure
-shell remains: the `topEntity` integration — its own spec → plan → TDD session,
-deliberately last.
+Short version: every piece is in place and tested — the pure leaves, the Engine
+keystone, the **BRAM memories** (`Tamal.Mem`), the **wire-format core**
+(`Tamal.Wire.Cobs` + `Tamal.Wire`), the **UART load/drain loader**
+(`Tamal.Loader` + `Tamal.Loader.Cobs`), the **eSPI pad boundary** (`Tamal.Io`),
+and the **integration** (`Tamal.Top` + the `topEntity` shell), which a
+whole-system UART/eSPI cosim exercises end to end. tamal v1 builds to a bitstream.
 
