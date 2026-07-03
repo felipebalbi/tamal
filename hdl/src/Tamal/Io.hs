@@ -23,7 +23,10 @@ alertSync ::
   (HiddenClockResetEnable dom) =>
   Signal dom Bit ->
   Signal dom Bit
-alertSync = undefined
+alertSync alert = alert''
+ where
+  alert' = register high alert
+  alert'' = register high alert'
 
 {- | The eSPI pad boundary. Per lane: drive @Just o@ when @oe == 1@ else @Nothing@
 (hi-Z); read the pad combinationally into @ioIn@. Sidebands pass through
