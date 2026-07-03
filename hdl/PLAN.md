@@ -14,8 +14,9 @@ hedgehog-tested — the compute layer (ALU + branch), the **register file**, and
 the **UART transport** included — and the keystone **`Engine.step`** Mealy is
 built and hedgehog-tested too. The shell pieces built so far — the **instruction
 + ring BRAMs** (`Tamal.Mem`), the **wire-format core** (`Tamal.Wire`), and the
-**UART load/drain loader** (`Tamal.Loader`) — are built and tested. What remains
-is IOBUF and the real `topEntity` that wires everything to the pins.
+**UART load/drain loader** (`Tamal.Loader`), and the **eSPI pad boundary**
+(`Tamal.Io`) — are built and tested. What remains is the real `topEntity` that
+wires everything to the pins.
 
 | Module              | Purpose                                                                                                    | Status                                |
 |---------------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|
@@ -34,10 +35,11 @@ is IOBUF and the real `topEntity` that wires everything to the pins.
 | `Tamal.Wire`        | LE word↔bytes, CRC-8 fold, control/result frame + message layer                                            | done, tested                          |
 | `Tamal.Loader.Cobs` | streaming COBS decode/encode step functions (embedded in the loader mealy)                                 | done, tested                          |
 | `Tamal.Loader`      | UART load/drain lifecycle FSM (`RxControl→Run→Drain`)                                                      | done, tested                          |
+| `Tamal.Io`          | eSPI pad boundary: per-lane `BiSignal` `IO[3:0]` tri-state + `CS#`/`SCK`/`RESET#` buffers + `ALERT#` sync   | done, tested                          |
 | `Tamal.Domain`      | `Dom100` clock domain                                                                                      | done                                  |
 | `Tamal` (top)       | synthesis entry point                                                                                      | **placeholder heartbeat** (LED blink) |
 
-Confirmed absent: the rest of the impure shell — IOBUF and the real
+Confirmed absent: the last of the impure shell — the real
 `topEntity` (the Engine + BRAMs wired to the pins).
 
 ## What remains: the impure `topEntity` shell
@@ -48,11 +50,11 @@ the board: memories, the host load/drain path, tri-state IO, and the top that
 wires it all to the pins.
 
 This shell decomposes into **five independently-startable pieces** (the first
-three — **BRAM**, the **wire protocol**, and the **loader** — are now complete).
-Each remaining one is meant
+four — **BRAM**, the **wire protocol**, the **loader**, and **IOBUF** — are now
+complete). Each remaining one is meant
 to be picked up in its own fresh session and taken through the repo's standard
 cycle — **brainstorming → writing-plans → TDD** (see "Per-piece workflow" below).
-Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBUF → topEntity**;
+Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBUF (done) → topEntity**;
 `topEntity` integrates everything and is deliberately last.
 
 ```
@@ -165,15 +167,23 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
   cycle 0 (Dom100 async reset), so a byte fed at cycle 0 is lost — `mealy`+`sampleN`
   harnesses must lead with one idle cycle (the `Test.Uart` pattern).
 
-### 4. IOBUF — tri-state IO + sideband pins
+### 4. IOBUF — tri-state IO + sideband pins  *(done — `Tamal.Io`)*
 
-- **What:** the bidirectional buffers for `IO[3:0]` (`oe → T`, `o → I`, pad
-  `O → sampler`), plus `CS#`/`SCK`/`RESET#` outputs and the `ALERT#` synchronizer.
-- **Decisions:** Clash `BiSignalIn`/`BiSignalOut` (`Clash.Signal.BiSignal`) vs
-  instantiating the Vivado `IOBUF` primitive — decide in its spec.
-- **Depends on:** engine `lanesOut` `(o, oe)` per lane; XDC pins.
-- **Testing:** minimal (a vendor primitive / bidir signal) — validated in
-  whole-top sim and on hardware.
+- **What:** the per-lane bidirectional buffers for `IO[3:0]` (`oe → T`, `o → I`,
+  pad `O → sampler`), plus `CS#`/`SCK`/`RESET#` outputs and the `ALERT#` synchronizer.
+- **Decisions made:** Clash `BiSignal` (`BiSignalIn`/`BiSignalOut`), `'PullUp`,
+  per-lane width-1 (independent OE — x1 drives IO[0] while IO[1..3] tri-state);
+  combinational IO sample (matches the engine's `ioIn` same-cycle contract); only
+  `ALERT#` synchronized (2-flop, init high); sideband outputs pass through
+  (already registered upstream); a dependency-free leaf (no `Tamal.Engine` import).
+- **Depends on:** engine `lanesOut` `(o, oe)` per lane; XDC pins (deferred to topEntity).
+- **Tested:** `Test.Io` — `alertSync` (2-cycle-delay model, calibrated to the
+  `sampleN` cycle-0 reset), sideband pass-through, and tri-state drive/sample via
+  `veryUnsafeToBiSignalIn` loopback harnesses (`simDrive`/`simSample`/`simSide`):
+  drive-out, sample-in, pull-up idle, per-lane independent OE (x1). **Gotcha found +
+  documented:** feeding espiPads's own drive back into the net it also reads
+  diverges in Clash `BiSignal` simulation, so the harnesses use single-driver nets
+  bound to a throwaway idle pad (the engine drives XOR samples a lane anyway).
 
 ### 5. topEntity — integration  *(LAST)*
 
@@ -205,13 +215,13 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
 5. **BRAM** (instr + ring `blockRamPow2`; ring = 4096, `termAddr = maxBound`) — done, hedgehog-tested
 6. **Wire protocol** (`Tamal.Wire` COBS + CRC-8 framing core) — done, hedgehog-tested
 7. **Loader** (UART load/drain FSM; `Tamal.Loader` + `Tamal.Loader.Cobs`) — done, tested
-8. **IOBUF** (tri-state IO + sideband pins) ← next
-9. **`topEntity`** (integration; retire the heartbeat) — last
+8. **IOBUF** (tri-state IO + sideband pins; `Tamal.Io`) — done, tested
+9. **`topEntity`** (integration; retire the heartbeat) ← next (last)
 
 Short version: the pure leaves, the Engine keystone, the **BRAM memories**
-(`Tamal.Mem`), the **wire-format core** (`Tamal.Wire.Cobs` + `Tamal.Wire`), and the
-**UART load/drain loader** (`Tamal.Loader` + `Tamal.Loader.Cobs`) are all in place
-and tested. The rest of the impure shell remains, decomposed into
-IOBUF → topEntity — each its own spec → plan → TDD session, with
-`topEntity` last.
+(`Tamal.Mem`), the **wire-format core** (`Tamal.Wire.Cobs` + `Tamal.Wire`), the
+**UART load/drain loader** (`Tamal.Loader` + `Tamal.Loader.Cobs`), and the **eSPI
+pad boundary** (`Tamal.Io`) are all in place and tested. The last of the impure
+shell remains: the `topEntity` integration — its own spec → plan → TDD session,
+deliberately last.
 
