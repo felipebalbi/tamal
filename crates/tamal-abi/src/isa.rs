@@ -996,7 +996,6 @@ mod tests {
         ])
     }
 
-    #[allow(dead_code)] // consumed by the all-groups laws in later work
     fn arb_instr() -> impl Strategy<Value = Instr> {
         prop_oneof![arb_bus_instr(), arb_ctrl_instr(), arb_data_instr()]
     }
@@ -1012,6 +1011,51 @@ mod tests {
         }
         #[test]
         fn data_round_trip(i in arb_data_instr()) {
+            prop_assert_eq!(Instr::decode(i.encode()), Ok(i));
+        }
+    }
+
+    #[test]
+    fn reserved_nonzero_field_traps() {
+        // CS_ASSERT is all-reserved; setting imm bit 0 must trap.
+        let cs_assert = Instr::CsAssert.encode();
+        assert_eq!(
+            Instr::decode(cs_assert + 1),
+            Err(DecodeError::ReservedFieldNonZero)
+        );
+    }
+
+    #[test]
+    fn reserved_shift_op_traps() {
+        // DATA sub 0xC with op field 0b11 (imm[10:9]) is the reserved SHIFT op.
+        let w = join_word(0b10, 0xC, 0, 0, 0, 0b11 << 9);
+        assert_eq!(Instr::decode(w), Err(DecodeError::ReservedFieldNonZero));
+    }
+
+    #[test]
+    fn reserved_group_is_illegal() {
+        let w = 0b11u32 << 30;
+        assert_eq!(Instr::decode(w), Err(DecodeError::IllegalOpcode));
+    }
+
+    #[test]
+    fn unknown_sub_opcode_is_illegal() {
+        // BUS sub 0xD is unassigned.
+        let w = join_word(0b00, 0xD, 0, 0, 0, 0);
+        assert_eq!(Instr::decode(w), Err(DecodeError::IllegalOpcode));
+    }
+
+    proptest! {
+        #[test]
+        fn any_word_decodes_canonical_or_traps(w in any::<u32>()) {
+            // A trap (`Err`) is always acceptable; a successful decode must be canonical.
+            if let Ok(i) = Instr::decode(w) {
+                prop_assert_eq!(i.encode(), w);
+            }
+        }
+
+        #[test]
+        fn combined_round_trip(i in arb_instr()) {
             prop_assert_eq!(Instr::decode(i.encode()), Ok(i));
         }
     }
