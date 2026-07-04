@@ -175,11 +175,14 @@ Operand *kind* (register vs immediate) disambiguates the imm/reg forms.
 writes `imm20` into bits `[31:12]`. For a target `V` (its 32-bit pattern):
 
 1. `V ∈ [-1024, 1023]` → `load_imm rd, V` (**1** word).
-2. Else `lui rd, hi` (top 20 bits, adjusted +1 when the low-12 residual exceeds
-   `2047`) followed by a **greedy chain of `addi`s** that sum to the residual
-   (residual ∈ `[-2048, 2047]`; each `addi` covers `[-1024, 1023]`). Common cases
-   are **2** words (`lui` + one `addi`); the residual `2047` needs three `addi`s,
-   so the worst case is `lui` + 3 `addi` = **4** words.
+2. Else seed the register — `lui rd, hi` (top 20 bits, `hi` bumped +1 when the
+   low-12 residual exceeds `2047`) when `hi ≠ 0`, otherwise `load_imm rd, chunk`
+   of the first residual chunk (so it **never emits a dead `lui rd, 0`**) —
+   followed by a **greedy chain of `addi`s** that sum to the residual (residual ∈
+   `[-2048, 2047]`; each `addi` covers `[-1024, 1023]`). Near-range values (e.g.
+   `1024`) are **2** words (`load_imm` + `addi`, no `lui`); `lui` + one `addi` is
+   **2**; the residual `2047` with a non-zero `lui` needs three `addi`s, so the
+   worst case is `lui` + 3 `addi` = **4** words.
 
 Note tamal's 11-bit immediate (vs RISC-V's 12-bit) is why the worst case is 4, not
 2 (RISC-V's `LUI`+`ADDI`): a residual of `0x7FF` cannot be reached by two 11-bit
