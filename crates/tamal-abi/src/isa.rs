@@ -163,6 +163,65 @@ pub(crate) fn join_word(group: u8, sub: u8, rd: u8, rs1: u8, rs2: u8, imm: u16) 
         | (imm as u32 & 0x7FF)
 }
 
+// --- Sub-field packers (imm interpretation per opcode). ---
+
+/// `PUT_BITS`/`GET_BITS`: `imm[10:8] = n-1`, `imm[7:0] = byte`.
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn pack_bits_imm(n_minus_1: u8, byte: u8) -> u16 {
+    ((n_minus_1 as u16 & 0x7) << 8) | byte as u16
+}
+
+/// Inverse of [`pack_bits_imm`].
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn unpack_bits_imm(imm: u16) -> (u8, u8) {
+    (((imm >> 8) & 0x7) as u8, (imm & 0xFF) as u8)
+}
+
+/// `LUI`: spread a 20-bit immediate across `rs1 ++ rs2 ++ imm` (bit 20 = 0).
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn split_imm20(i20: u32) -> (u8, u8, u16) {
+    (
+        ((i20 >> 16) & 0x1F) as u8,
+        ((i20 >> 11) & 0x1F) as u8,
+        (i20 & 0x7FF) as u16,
+    )
+}
+
+/// Inverse of [`split_imm20`]; `hi` is the reserved bit 20.
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn join_imm20(rs1: u8, rs2: u8, imm: u16) -> (u8, u32) {
+    let temp = ((rs1 as u32 & 0x1F) << 16) | ((rs2 as u32 & 0x1F) << 11) | (imm as u32 & 0x7FF);
+    (((temp >> 20) & 0x1) as u8, temp & 0xF_FFFF)
+}
+
+/// `WAIT_ON`: `imm = cond[10:9] ++ timeout[8:0]`.
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn wait_pack(cond: u8, timeout: u16) -> u16 {
+    ((cond as u16 & 0x3) << 9) | (timeout & 0x1FF)
+}
+
+/// Inverse of [`wait_pack`].
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn wait_unpack(imm: u16) -> (u8, u16) {
+    (((imm >> 9) & 0x3) as u8, imm & 0x1FF)
+}
+
+/// `SHIFT`: `imm = op[10:9] ++ 0[8:5] ++ amt[4:0]` (mid nibble reserved-zero).
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn shift_pack(op: u8, amt: u8) -> u16 {
+    ((op as u16 & 0x3) << 9) | (amt as u16 & 0x1F)
+}
+
+/// Inverse of [`shift_pack`]; returns `(op, mid, amt)` so `decode` can check `mid == 0`.
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn shift_unpack(imm: u16) -> (u8, u8, u8) {
+    (
+        ((imm >> 9) & 0x3) as u8,
+        ((imm >> 5) & 0xF) as u8,
+        (imm & 0x1F) as u8,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,11 +288,63 @@ mod tests {
         assert_eq!(f.imm, 0x555);
     }
 
+    #[test]
+    fn bits_imm_layout() {
+        // n-1 in imm[10:8], byte in imm[7:0]
+        assert_eq!(pack_bits_imm(0x7, 0xAB), 0x7AB);
+        assert_eq!(unpack_bits_imm(0x7AB), (0x7, 0xAB));
+    }
+
+    #[test]
+    fn imm20_spread_reconstructs() {
+        // i20 = 0x12345 -> rs1=0x01, rs2=0x04, imm=0x345
+        let (rs1, rs2, imm) = split_imm20(0x12345);
+        assert_eq!((rs1, rs2, imm), (0x01, 0x04, 0x345));
+        let (hi, i20) = join_imm20(rs1, rs2, imm);
+        assert_eq!((hi, i20), (0, 0x12345));
+    }
+
+    #[test]
+    fn imm20_join_reports_reserved_bit20() {
+        // rs1 bit4 set -> hi = 1 (the reserved bit)
+        let (hi, _) = join_imm20(0b1_0000, 0, 0);
+        assert_eq!(hi, 1);
+    }
+
+    #[test]
+    fn wait_layout() {
+        // cond in imm[10:9], timeout in imm[8:0]
+        assert_eq!(wait_pack(0b1, 0x64), 0x264);
+        assert_eq!(wait_unpack(0x264), (0b1, 0x64));
+    }
+
+    #[test]
+    fn shift_layout() {
+        // op in imm[10:9], reserved mid imm[8:5], amt imm[4:0]
+        assert_eq!(shift_pack(0b10, 0x03), 0x403);
+        assert_eq!(shift_unpack(0x403), (0b10, 0, 0x03));
+        // a set mid bit is surfaced for the reserved-field check
+        assert_eq!(shift_unpack(0x020), (0, 0b0001, 0));
+    }
+
     proptest! {
         #[test]
         fn join_split_round_trip(w in any::<u32>()) {
             let f = split_word(w);
             prop_assert_eq!(join_word(f.group, f.sub, f.rd, f.rs1, f.rs2, f.imm), w);
+        }
+
+        #[test]
+        fn imm20_round_trip(i20 in 0u32..=0xF_FFFF) {
+            let (rs1, rs2, imm) = split_imm20(i20);
+            let (hi, back) = join_imm20(rs1, rs2, imm);
+            prop_assert_eq!(hi, 0);
+            prop_assert_eq!(back, i20);
+        }
+
+        #[test]
+        fn wait_round_trip(cond in 0u8..=0x3, timeout in 0u16..=0x1FF) {
+            prop_assert_eq!(wait_unpack(wait_pack(cond, timeout)), (cond, timeout));
         }
     }
 }
