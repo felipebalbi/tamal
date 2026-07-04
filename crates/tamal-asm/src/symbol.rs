@@ -44,7 +44,6 @@ impl SymbolTable {
 
 /// Pass 0: evaluate `.equ` directives in source order (value = number or an
 /// already-defined symbol). Collects every problem rather than failing fast.
-#[allow(dead_code)]
 pub(crate) fn collect_equs(lines: &[Line]) -> (SymbolTable, Vec<Diagnostic>) {
     let mut syms = SymbolTable::new();
     let mut diags = Vec::new();
@@ -93,7 +92,6 @@ pub(crate) fn collect_equs(lines: &[Line]) -> (SymbolTable, Vec<Diagnostic>) {
 /// Pass 1: assign each label the address of the next instruction word, summing
 /// per-instruction word counts. Returns the total word count and any duplicate
 /// diagnostics.
-#[allow(dead_code)]
 pub(crate) fn assign_addresses(lines: &[Line], syms: &mut SymbolTable) -> (usize, Vec<Diagnostic>) {
     let mut addr: usize = 0;
     let mut diags = Vec::new();

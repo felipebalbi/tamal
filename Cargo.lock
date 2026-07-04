@@ -634,7 +634,6 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "tamal-abi",
- "thiserror",
 ]
 
 [[package]]

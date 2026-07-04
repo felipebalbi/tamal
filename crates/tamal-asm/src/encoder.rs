@@ -11,9 +11,6 @@ use crate::parser::{Operand, OperandKind};
 use crate::symbol::{Sym, SymbolTable};
 
 /// Map a register name (`xN` or an ABI name) to its x-number, or `None`.
-// `allow(dead_code)`: the lowering pass that calls these lands in a later task;
-// remove the attributes once `resolve_*` are wired into instruction encoding.
-#[allow(dead_code)]
 fn reg_number(name: &str) -> Option<u8> {
     if let Some(rest) = name.strip_prefix('x') {
         if let Ok(n) = rest.parse::<u16>() {
@@ -58,7 +55,6 @@ fn reg_number(name: &str) -> Option<u8> {
 }
 
 /// Resolve a register operand to a v1 `Reg` (x0-x15), else a diagnostic.
-#[allow(dead_code)]
 pub(crate) fn resolve_reg(op: &Operand) -> Result<Reg, Diagnostic> {
     let name = match &op.kind {
         OperandKind::Ident(s) => s.as_str(),
@@ -82,7 +78,6 @@ pub(crate) fn resolve_reg(op: &Operand) -> Result<Reg, Diagnostic> {
 }
 
 /// Resolve an immediate operand (number or `.equ`) to an `i64`, else a diagnostic.
-#[allow(dead_code)]
 pub(crate) fn resolve_imm(op: &Operand, syms: &SymbolTable) -> Result<i64, Diagnostic> {
     match &op.kind {
         OperandKind::Num(n) => Ok(*n),
@@ -101,9 +96,6 @@ pub(crate) fn resolve_imm(op: &Operand, syms: &SymbolTable) -> Result<i64, Diagn
 }
 
 /// Range-check `value` into `[lo, hi]`, else a diagnostic naming `what`.
-// `allow(dead_code)`: the lowering pass that calls the `li`/range helpers lands
-// in a later task; remove the attributes once they are wired into encoding.
-#[allow(dead_code)]
 pub(crate) fn checked(
     value: i64,
     lo: i64,
@@ -122,14 +114,12 @@ pub(crate) fn checked(
 }
 
 /// An 11-bit immediate from a signed value in `[-1024, 1023]` (two's complement).
-#[allow(dead_code)]
 fn imm11(v: i32) -> Imm11 {
     Imm11::new((v as u32 & 0x7FF) as u16).expect("11-bit pattern always fits")
 }
 
 /// Build the `li` instruction sequence for any 32-bit `value` (1–4 instructions),
 /// minimal — one `load_imm` for signed-11 values, and never a dead `lui rd, 0`.
-#[allow(dead_code)]
 pub(crate) fn tile_li(rd: Reg, value: i32) -> Vec<Instr> {
     // 1 instruction when the value fits the sign-extended 11-bit immediate.
     if (-1024..=1023).contains(&value) {
@@ -162,7 +152,6 @@ pub(crate) fn tile_li(rd: Reg, value: i32) -> Vec<Instr> {
 }
 
 /// Resolve + range-check an `li` value into its 32-bit pattern (as `i32`).
-#[allow(dead_code)]
 pub(crate) fn li_value(op: &Operand, syms: &SymbolTable) -> Result<i32, Diagnostic> {
     let v = resolve_imm(op, syms)?;
     if !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&v) {
@@ -175,7 +164,6 @@ pub(crate) fn li_value(op: &Operand, syms: &SymbolTable) -> Result<i32, Diagnost
 }
 
 /// Number of instruction words an `li` of `value` expands to (1–4).
-#[allow(dead_code)]
 pub(crate) fn li_word_count(value: i32) -> u16 {
     tile_li(Reg::new(0).expect("x0"), value).len() as u16
 }
@@ -427,7 +415,6 @@ fn zero() -> Reg {
 }
 
 /// Lower one instruction line to its `Instr` sequence (most = 1; `li` = 1–4).
-#[allow(dead_code)]
 pub(crate) fn encode_line(
     mnemonic: &str,
     operands: &[Operand],
