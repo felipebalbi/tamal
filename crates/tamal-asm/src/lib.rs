@@ -8,7 +8,9 @@
 #![forbid(unsafe_code)]
 
 pub mod diagnostics;
+pub mod encoder;
 pub mod lexer;
 pub mod parser;
+pub mod symbol;
 
 pub use diagnostics::{Diagnostic, Severity, Span};
