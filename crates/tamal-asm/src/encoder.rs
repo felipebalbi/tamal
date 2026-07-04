@@ -177,6 +177,19 @@ pub(crate) fn li_word_count(value: i32) -> u16 {
     tile_li(Reg::new(0).expect("x0"), value).len() as u16
 }
 
+/// Word count of one instruction line, for pass-1 addressing. Infallible: only
+/// `li` varies (1–4 words, from its constant); everything else is 1 word. When a
+/// `li` value can't be sized (bad arity / undefined symbol), assume 1 — pass 2
+/// reports the real error and assembly fails anyway.
+pub(crate) fn instr_word_count(mnemonic: &str, operands: &[Operand], syms: &SymbolTable) -> u16 {
+    if mnemonic == "li" && operands.len() == 2 {
+        if let Ok(v) = li_value(&operands[1], syms) {
+            return li_word_count(v);
+        }
+    }
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
