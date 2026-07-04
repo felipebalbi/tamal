@@ -80,7 +80,7 @@ a parse crash)**
 | D7 | **`mv` lowers to the native `Mov` instruction** (not `addi rd,rs,0`). | Reconciles ISA §6.3's `mv=addi` note: tamal has a native `Mov` op; one instruction and clearer intent. `nop` stays `addi x0,x0,0`. |
 | D8 | **Branch offset = `target_addr − branch_addr` in words**, encoded as raw two's-complement `Imm11`. | Byte-matches the built engine (`Engine.hs`: taken → `pc = pc s + off`, where `pc s` is the branch's own address; not-taken → `pc + 1`). |
 | D9 | **`Program` carries `Instr`s + per-instruction source spans**; `to_le_bytes` via the abi helper; `listing`/`disasm` share one `Instr → text` renderer. | The renderer is the inverse of the parse table, so the round-trip tests exercise both directions. |
-| D10 | **`li` tiling is value-derived and sized in pass 1.** | `li`'s 1/2/3-word expansion depends only on the (address-independent) constant, so label addresses are correct before pass 2. |
+| D10 | **`li` tiling is value-derived and sized in pass 1.** | `li`'s 1–4-word expansion depends only on the (address-independent) constant, so label addresses are correct before pass 2. |
 
 ## 4. Pipeline & module layout
 
@@ -109,7 +109,7 @@ by ariadne in the CLI.
    already-defined symbol; no forward refs, no expressions); record `.globl`
    names.
 3. **Pass 1 — address assignment**: walk lines; each instruction occupies a known
-   word count (1 for most; `li` is 1/2/3 from its now-known constant). Assign each
+   word count (1 for most; `li` is 1–4 from its now-known constant). Assign each
    label the address of the next instruction. Accumulate the total word count.
 4. **Pass 2 — encode** (collect-all): lower each instruction to `Instr`(s),
    resolving label refs to branch offsets and symbols to immediates, range- and
@@ -246,7 +246,7 @@ This replaces the placeholder `assemble(_) -> Result<Vec<u8>, AssembleError>`;
 - **Per-module units.** lexer (tokens + spans, both `#`/`;` comments, blank
   lines); parser (each line kind + representative syntax errors); symbol (two-pass
   addresses, `.equ`, `li` sizing feeding label addresses); encoder (every mnemonic
-  → exact `Instr`/word; pseudo-op lowering; `li` tiling 1/2/3-word incl. the gap
+  → exact `Instr`/word; pseudo-op lowering; `li` tiling 1–4-word incl. the gap
   band; branch offset sign + range; register-window rejection; `set_config` v1
   validation).
 - **Golden — the four examples.** Each `examples/*.s` assembles `Ok` and matches
@@ -270,7 +270,7 @@ This replaces the placeholder `assemble(_) -> Result<Vec<u8>, AssembleError>`;
 
 - **workspace `Cargo.toml`:** add `ariadne` to `[workspace.dependencies]`
   (`proptest` already present).
-- **`crates/tamal-asm` (lib):** deps `tamal-abi`, `thiserror` (both present) — **no
+- **`crates/tamal-asm` (lib):** dep `tamal-abi` (present) — **no
   ariadne** (stays rendering-agnostic); dev-dep `proptest`.
 - **`crates/tamal-asm-cli`:** deps `tamal-abi`, `tamal-asm`, `clap`, `color-eyre`
   (present) + `ariadne`.

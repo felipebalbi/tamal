@@ -17,3 +17,4 @@ tamal-abi.workspace = true
 tamal-asm.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
+ariadne.workspace = true
