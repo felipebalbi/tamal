@@ -1,7 +1,10 @@
 //! Lowering: mnemonics + pseudo-ops -> tamal_abi::isa::Instr, with resolution,
 //! `li` tiling, branch offsets, and range checks.
 
-use tamal_abi::isa::{Imm11, Imm20, Instr, Reg};
+use tamal_abi::config::{AlertSource, Config, ConfigError, IoMode, Role, Sck, decode_config};
+use tamal_abi::isa::{
+    Amt5, BitCount, Imm11, Imm20, Instr, Reg, ShiftOp, Sr5, Tar4, WaitCond, WaitTimeout,
+};
 
 use crate::diagnostics::{Diagnostic, Span};
 use crate::parser::{Operand, OperandKind};
@@ -190,10 +193,425 @@ pub(crate) fn instr_word_count(mnemonic: &str, operands: &[Operand], syms: &Symb
     1
 }
 
+fn is_register(op: &Operand) -> bool {
+    matches!(&op.kind, OperandKind::Ident(s) if reg_number(s).is_some())
+}
+
+fn args_exact(operands: &[Operand], n: usize, span: &Span, mnem: &str) -> Result<(), Diagnostic> {
+    if operands.len() == n {
+        Ok(())
+    } else {
+        Err(Diagnostic::error(
+            span.clone(),
+            format!("`{mnem}` takes {n} operand(s), got {}", operands.len()),
+        ))
+    }
+}
+
+fn field_u8(op: &Operand, syms: &SymbolTable, what: &str) -> Result<u8, Diagnostic> {
+    Ok(checked(resolve_imm(op, syms)?, 0, 255, &op.span, what)? as u8)
+}
+fn field_imm11(op: &Operand, syms: &SymbolTable) -> Result<Imm11, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, -1024, 1023, &op.span, "immediate")?;
+    Ok(Imm11::new((v as u32 & 0x7FF) as u16).unwrap())
+}
+fn field_bitcount(op: &Operand, syms: &SymbolTable) -> Result<BitCount, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 1, 8, &op.span, "bit count")?;
+    Ok(BitCount::new(v as u8).unwrap())
+}
+fn field_tar4(op: &Operand, syms: &SymbolTable) -> Result<Tar4, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 15, &op.span, "TAR count")?;
+    Ok(Tar4::new(v as u8).unwrap())
+}
+fn field_amt5(op: &Operand, syms: &SymbolTable) -> Result<Amt5, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 31, &op.span, "shift amount")?;
+    Ok(Amt5::new(v as u8).unwrap())
+}
+fn field_imm20(op: &Operand, syms: &SymbolTable) -> Result<Imm20, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 0xF_FFFF, &op.span, "immediate")?;
+    Ok(Imm20::new(v as u32).unwrap())
+}
+fn field_mark_tag(op: &Operand, syms: &SymbolTable) -> Result<Imm11, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 2047, &op.span, "mark tag")?;
+    Ok(Imm11::new(v as u16).unwrap())
+}
+fn field_wait_cond(op: &Operand, syms: &SymbolTable) -> Result<WaitCond, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 3, &op.span, "wait condition")?;
+    Ok(WaitCond::new(v as u8).unwrap())
+}
+fn field_wait_timeout(op: &Operand, syms: &SymbolTable) -> Result<WaitTimeout, Diagnostic> {
+    let v = checked(resolve_imm(op, syms)?, 0, 511, &op.span, "wait timeout")?;
+    Ok(WaitTimeout::new(v as u16).unwrap())
+}
+
+fn resolve_sr(op: &Operand, syms: &SymbolTable) -> Result<Sr5, Diagnostic> {
+    if let OperandKind::Ident(s) = &op.kind {
+        if s.eq_ignore_ascii_case("crc") {
+            return Ok(Sr5::new(0).unwrap());
+        }
+    }
+    let v = checked(resolve_imm(op, syms)?, 0, 31, &op.span, "special register")?;
+    Ok(Sr5::new(v as u8).unwrap())
+}
+
+fn resolve_branch_target(op: &Operand, addr: u16, syms: &SymbolTable) -> Result<Imm11, Diagnostic> {
+    let name = match &op.kind {
+        OperandKind::Ident(s) => s,
+        OperandKind::Num(_) => {
+            return Err(Diagnostic::error(
+                op.span.clone(),
+                "branch target must be a label",
+            ));
+        }
+    };
+    let target = match syms.get(name) {
+        Some(Sym::Label(t)) => i32::from(t),
+        Some(Sym::Equ(_)) => {
+            return Err(Diagnostic::error(
+                op.span.clone(),
+                format!("`{name}` is a constant; a branch target must be a label"),
+            ));
+        }
+        None => {
+            return Err(Diagnostic::error(
+                op.span.clone(),
+                format!("undefined label `{name}`"),
+            ));
+        }
+    };
+    let off = target - i32::from(addr);
+    checked(i64::from(off), -1024, 1023, &op.span, "branch offset")?;
+    Ok(Imm11::new((off as u32 & 0x7FF) as u16).unwrap())
+}
+
+fn encode_set_config(operands: &[Operand], span: &Span) -> Result<Instr, Diagnostic> {
+    args_exact(operands, 4, span, "set_config")?;
+    let kw = |op: &Operand| -> Result<String, Diagnostic> {
+        match &op.kind {
+            OperandKind::Ident(s) => Ok(s.to_ascii_lowercase()),
+            OperandKind::Num(_) => Err(Diagnostic::error(op.span.clone(), "expected a keyword")),
+        }
+    };
+    let role = match kw(&operands[0])?.as_str() {
+        "controller" => Role::Controller,
+        "target" => Role::Target,
+        other => {
+            return Err(Diagnostic::error(
+                operands[0].span.clone(),
+                format!("unknown role `{other}` (controller|target)"),
+            ));
+        }
+    };
+    let io_mode = match kw(&operands[1])?.as_str() {
+        "x1" => IoMode::X1,
+        "x2" => IoMode::X2,
+        "x4" => IoMode::X4,
+        other => {
+            return Err(Diagnostic::error(
+                operands[1].span.clone(),
+                format!("unknown IO mode `{other}` (x1|x2|x4)"),
+            ));
+        }
+    };
+    let sck = match kw(&operands[2])?.as_str() {
+        "sck20" => Sck::Sck20,
+        "sck33" => Sck::Sck33,
+        "sck50" => Sck::Sck50,
+        "sck66" => Sck::Sck66,
+        other => {
+            return Err(Diagnostic::error(
+                operands[2].span.clone(),
+                format!("unknown SCK `{other}` (sck20|sck33|sck50|sck66)"),
+            ));
+        }
+    };
+    let alert_source = match kw(&operands[3])?.as_str() {
+        "alert_pin" => AlertSource::AlertPin,
+        "alert_io1" => AlertSource::AlertIo1,
+        other => {
+            return Err(Diagnostic::error(
+                operands[3].span.clone(),
+                format!("unknown alert source `{other}` (alert_pin|alert_io1)"),
+            ));
+        }
+    };
+    let cfg = Config {
+        role,
+        io_mode,
+        sck,
+        alert_source,
+    };
+    let payload = cfg.pack();
+    if let Err(e) = decode_config(payload) {
+        let (sp, msg): (Span, &str) = match e {
+            ConfigError::UnsupportedRole => (
+                operands[0].span.clone(),
+                "role `target` is not available in v1 (controller only)",
+            ),
+            ConfigError::UnsupportedIoMode => (
+                operands[1].span.clone(),
+                "IO mode `x2`/`x4` is not available in v1 (x1 only)",
+            ),
+            ConfigError::UnsupportedSck => (
+                operands[2].span.clone(),
+                "SCK `sck33`/`sck50`/`sck66` is not available in v1 (sck20 only)",
+            ),
+        };
+        return Err(Diagnostic::error(sp, msg));
+    }
+    Ok(Instr::SetConfig(payload))
+}
+
+fn rrr(
+    operands: &[Operand],
+    span: &Span,
+    mnem: &str,
+    ctor: fn(Reg, Reg, Reg) -> Instr,
+) -> Result<Vec<Instr>, Diagnostic> {
+    args_exact(operands, 3, span, mnem)?;
+    Ok(vec![ctor(
+        resolve_reg(&operands[0])?,
+        resolve_reg(&operands[1])?,
+        resolve_reg(&operands[2])?,
+    )])
+}
+
+fn rri(
+    operands: &[Operand],
+    span: &Span,
+    mnem: &str,
+    syms: &SymbolTable,
+    ctor: fn(Reg, Reg, Imm11) -> Instr,
+) -> Result<Vec<Instr>, Diagnostic> {
+    args_exact(operands, 3, span, mnem)?;
+    Ok(vec![ctor(
+        resolve_reg(&operands[0])?,
+        resolve_reg(&operands[1])?,
+        field_imm11(&operands[2], syms)?,
+    )])
+}
+
+fn shift(
+    operands: &[Operand],
+    span: &Span,
+    mnem: &str,
+    syms: &SymbolTable,
+    op: ShiftOp,
+) -> Result<Vec<Instr>, Diagnostic> {
+    args_exact(operands, 3, span, mnem)?;
+    Ok(vec![Instr::Shift(
+        resolve_reg(&operands[0])?,
+        resolve_reg(&operands[1])?,
+        op,
+        field_amt5(&operands[2], syms)?,
+    )])
+}
+
+fn branch(
+    operands: &[Operand],
+    span: &Span,
+    mnem: &str,
+    addr: u16,
+    syms: &SymbolTable,
+    ctor: fn(Reg, Reg, Imm11) -> Instr,
+) -> Result<Vec<Instr>, Diagnostic> {
+    args_exact(operands, 3, span, mnem)?;
+    let rs1 = resolve_reg(&operands[0])?;
+    let rs2 = resolve_reg(&operands[1])?;
+    let off = resolve_branch_target(&operands[2], addr, syms)?;
+    Ok(vec![ctor(rs1, rs2, off)])
+}
+
+fn zero() -> Reg {
+    Reg::new(0).expect("x0")
+}
+
+/// Lower one instruction line to its `Instr` sequence (most = 1; `li` = 1–4).
+#[allow(dead_code)]
+pub(crate) fn encode_line(
+    mnemonic: &str,
+    operands: &[Operand],
+    span: &Span,
+    addr: u16,
+    syms: &SymbolTable,
+) -> Result<Vec<Instr>, Diagnostic> {
+    match mnemonic {
+        "cs_assert" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::CsAssert])
+        }
+        "cs_deassert" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::CsDeassert])
+        }
+        "rst_assert" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::RstAssert])
+        }
+        "rst_deassert" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::RstDeassert])
+        }
+        "crc_reset" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::CrcReset])
+        }
+        "put_byte" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            if is_register(&operands[0]) {
+                Ok(vec![Instr::PutByteReg(resolve_reg(&operands[0])?)])
+            } else {
+                Ok(vec![Instr::PutByteImm(field_u8(
+                    &operands[0],
+                    syms,
+                    "byte",
+                )?)])
+            }
+        }
+        "get_byte" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            Ok(vec![Instr::GetByte(resolve_reg(&operands[0])?)])
+        }
+        "put_bits" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            if is_register(&operands[0]) {
+                Ok(vec![Instr::PutBitsReg(
+                    resolve_reg(&operands[0])?,
+                    field_bitcount(&operands[1], syms)?,
+                )])
+            } else {
+                Ok(vec![Instr::PutBitsImm(
+                    field_bitcount(&operands[0], syms)?,
+                    field_u8(&operands[1], syms, "byte")?,
+                )])
+            }
+        }
+        "get_bits" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::GetBits(
+                resolve_reg(&operands[0])?,
+                field_bitcount(&operands[1], syms)?,
+            )])
+        }
+        "tar" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            if is_register(&operands[0]) {
+                Ok(vec![Instr::TarReg(resolve_reg(&operands[0])?)])
+            } else {
+                Ok(vec![Instr::TarImm(field_tar4(&operands[0], syms)?)])
+            }
+        }
+        "get_alert" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            Ok(vec![Instr::GetAlert(resolve_reg(&operands[0])?)])
+        }
+        "halt" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            Ok(vec![Instr::Halt(field_u8(
+                &operands[0],
+                syms,
+                "halt status",
+            )?)])
+        }
+        "wait_on" => {
+            args_exact(operands, 3, span, mnemonic)?;
+            Ok(vec![Instr::WaitOn(
+                resolve_reg(&operands[0])?,
+                field_wait_cond(&operands[1], syms)?,
+                field_wait_timeout(&operands[2], syms)?,
+            )])
+        }
+        "set_config" => Ok(vec![encode_set_config(operands, span)?]),
+        "mark" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::Mark(
+                field_mark_tag(&operands[0], syms)?,
+                resolve_reg(&operands[1])?,
+            )])
+        }
+        "load_imm" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::LoadImm(
+                resolve_reg(&operands[0])?,
+                field_imm11(&operands[1], syms)?,
+            )])
+        }
+        "lui" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::Lui(
+                resolve_reg(&operands[0])?,
+                field_imm20(&operands[1], syms)?,
+            )])
+        }
+        "mov" | "mv" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::Mov(
+                resolve_reg(&operands[0])?,
+                resolve_reg(&operands[1])?,
+            )])
+        }
+        "add" => rrr(operands, span, mnemonic, Instr::Add),
+        "sub" => rrr(operands, span, mnemonic, Instr::Sub),
+        "and" => rrr(operands, span, mnemonic, Instr::And),
+        "or" => rrr(operands, span, mnemonic, Instr::Or),
+        "xor" => rrr(operands, span, mnemonic, Instr::Xor),
+        "addi" => rri(operands, span, mnemonic, syms, Instr::Addi),
+        "andi" => rri(operands, span, mnemonic, syms, Instr::Andi),
+        "ori" => rri(operands, span, mnemonic, syms, Instr::Ori),
+        "xori" => rri(operands, span, mnemonic, syms, Instr::Xori),
+        "sll" => shift(operands, span, mnemonic, syms, ShiftOp::Sll),
+        "srl" => shift(operands, span, mnemonic, syms, ShiftOp::Srl),
+        "sra" => shift(operands, span, mnemonic, syms, ShiftOp::Sra),
+        "rdsr" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            Ok(vec![Instr::Rdsr(
+                resolve_reg(&operands[0])?,
+                resolve_sr(&operands[1], syms)?,
+            )])
+        }
+        "beq" => branch(operands, span, mnemonic, addr, syms, Instr::Beq),
+        "bne" => branch(operands, span, mnemonic, addr, syms, Instr::Bne),
+        "bltu" => branch(operands, span, mnemonic, addr, syms, Instr::Bltu),
+        "bgeu" => branch(operands, span, mnemonic, addr, syms, Instr::Bgeu),
+        "nop" => {
+            args_exact(operands, 0, span, mnemonic)?;
+            Ok(vec![Instr::Addi(zero(), zero(), Imm11::new(0).unwrap())])
+        }
+        "li" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            let rd = resolve_reg(&operands[0])?;
+            let v = li_value(&operands[1], syms)?;
+            Ok(tile_li(rd, v))
+        }
+        "j" => {
+            args_exact(operands, 1, span, mnemonic)?;
+            let off = resolve_branch_target(&operands[0], addr, syms)?;
+            Ok(vec![Instr::Beq(zero(), zero(), off)])
+        }
+        "beqz" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            let rs = resolve_reg(&operands[0])?;
+            let off = resolve_branch_target(&operands[1], addr, syms)?;
+            Ok(vec![Instr::Beq(rs, zero(), off)])
+        }
+        "bnez" => {
+            args_exact(operands, 2, span, mnemonic)?;
+            let rs = resolve_reg(&operands[0])?;
+            let off = resolve_branch_target(&operands[1], addr, syms)?;
+            Ok(vec![Instr::Bne(rs, zero(), off)])
+        }
+        other => Err(Diagnostic::error(
+            span.clone(),
+            format!("unknown instruction `{other}`"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{Operand, OperandKind};
+    use crate::lexer::lex;
+    use crate::parser::{LineKind, Operand, OperandKind, parse};
     use crate::symbol::{Sym, SymbolTable};
 
     fn ident(s: &str) -> Operand {
@@ -333,6 +751,137 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("undefined")
+        );
+    }
+
+    fn enc(src: &str, addr: u16, syms: &SymbolTable) -> Result<Vec<Instr>, Diagnostic> {
+        let ls = parse(&lex(src).unwrap()).unwrap();
+        for l in &ls {
+            if let LineKind::Instr { mnemonic, operands } = &l.kind {
+                return encode_line(mnemonic, operands, &l.span, addr, syms);
+            }
+        }
+        panic!("no instruction in `{src}`");
+    }
+
+    fn empty() -> SymbolTable {
+        SymbolTable::new()
+    }
+
+    #[test]
+    fn bus_and_data_ops() {
+        assert_eq!(
+            enc("cs_assert\n", 0, &empty()).unwrap(),
+            vec![Instr::CsAssert]
+        );
+        assert_eq!(
+            enc("put_byte 0x64\n", 0, &empty()).unwrap(),
+            vec![Instr::PutByteImm(0x64)]
+        );
+        assert_eq!(
+            enc("put_byte t0\n", 0, &empty()).unwrap(),
+            vec![Instr::PutByteReg(r(5))]
+        );
+        assert_eq!(
+            enc("get_byte t0\n", 0, &empty()).unwrap(),
+            vec![Instr::GetByte(r(5))]
+        );
+        assert_eq!(
+            enc("tar 2\n", 0, &empty()).unwrap(),
+            vec![Instr::TarImm(Tar4::new(2).unwrap())]
+        );
+        assert_eq!(
+            enc("halt 0x11\n", 0, &empty()).unwrap(),
+            vec![Instr::Halt(0x11)]
+        );
+        assert_eq!(
+            enc("addi t0, t0, 0x0F\n", 0, &empty()).unwrap(),
+            vec![Instr::Addi(r(5), r(5), i11(15))]
+        );
+        assert_eq!(
+            enc("sra x5, x6, 3\n", 0, &empty()).unwrap(),
+            vec![Instr::Shift(
+                r(5),
+                r(6),
+                ShiftOp::Sra,
+                Amt5::new(3).unwrap()
+            )]
+        );
+        assert_eq!(
+            enc("nop\n", 0, &empty()).unwrap(),
+            vec![Instr::Addi(r(0), r(0), i11(0))]
+        );
+        assert_eq!(
+            enc("mv t0, t1\n", 0, &empty()).unwrap(),
+            vec![Instr::Mov(r(5), r(6))]
+        );
+    }
+
+    #[test]
+    fn set_config_v1_and_rejects_non_v1() {
+        // controller / x1 / sck20 / alert_pin packs to 0x00 -> word 0x58000000
+        assert_eq!(
+            enc("set_config controller, x1, sck20, alert_pin\n", 0, &empty()).unwrap()[0].encode(),
+            0x5800_0000
+        );
+        let e = enc("set_config controller, x2, sck20, alert_pin\n", 0, &empty()).unwrap_err();
+        assert!(e.message.contains("x2"));
+    }
+
+    #[test]
+    fn rdsr_crc() {
+        assert_eq!(
+            enc("rdsr t2, CRC\n", 0, &empty()).unwrap(),
+            vec![Instr::Rdsr(r(7), Sr5::new(0).unwrap())]
+        );
+    }
+
+    #[test]
+    fn branches_and_pseudo_offsets() {
+        let mut t = empty();
+        t.insert("here", Sym::Label(2), 0..1).unwrap();
+        // beq at addr 0 -> off = 2 - 0 = 2
+        assert_eq!(
+            enc("beq t0, t1, here\n", 0, &t).unwrap(),
+            vec![Instr::Beq(r(5), r(6), i11(2))]
+        );
+        // j at addr 5 -> off = 2 - 5 = -3
+        assert_eq!(
+            enc("j here\n", 5, &t).unwrap(),
+            vec![Instr::Beq(r(0), r(0), i11(-3))]
+        );
+        // bnez at addr 4 -> off = 2 - 4 = -2
+        assert_eq!(
+            enc("bnez t2, here\n", 4, &t).unwrap(),
+            vec![Instr::Bne(r(7), r(0), i11(-2))]
+        );
+    }
+
+    #[test]
+    fn error_cases() {
+        assert!(
+            enc("add x20, x0, x0\n", 0, &empty())
+                .unwrap_err()
+                .message
+                .contains("x20")
+        );
+        assert!(
+            enc("put_byte 0x100\n", 0, &empty())
+                .unwrap_err()
+                .message
+                .contains("range")
+        );
+        assert!(
+            enc("frobnicate\n", 0, &empty())
+                .unwrap_err()
+                .message
+                .contains("unknown instruction")
+        );
+        assert!(
+            enc("beq t0, t1, missing\n", 0, &empty())
+                .unwrap_err()
+                .message
+                .contains("undefined label")
         );
     }
 }
