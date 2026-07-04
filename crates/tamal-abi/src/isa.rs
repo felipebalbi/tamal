@@ -57,6 +57,76 @@ bounded!(/// A 2-bit `WAIT_ON` condition selector.
 bounded!(/// A 9-bit `WAIT_ON` timeout.
     WaitTimeout, u16, 9);
 
+/// A `PUT_BITS`/`GET_BITS` bit count, `1..=8`. Stored as `n-1` (a 3-bit field)
+/// to match the HDL `Index 8`, but constructed and read as the semantic count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BitCount(u8);
+
+impl BitCount {
+    /// Construct from a count in `1..=8`, else `None`.
+    ///
+    /// (Not `const`: the idiomatic `(1..=8).contains(&count)` is not a `const fn`,
+    /// and a hand-written two-sided comparison trips `clippy::manual_range_contains`.)
+    pub fn new(count: u8) -> Option<Self> {
+        if (1..=8).contains(&count) {
+            Some(Self(count - 1))
+        } else {
+            None
+        }
+    }
+
+    /// The semantic count, `1..=8`.
+    pub const fn count(self) -> u8 {
+        self.0 + 1
+    }
+
+    /// The stored `n-1` field value, `0..=7`.
+    #[allow(dead_code)] // consumed by encode/decode in later work
+    pub(crate) const fn stored(self) -> u8 {
+        self.0
+    }
+
+    /// Construct from a stored `n-1` field (masks to 3 bits).
+    #[allow(dead_code)] // consumed by encode/decode in later work
+    pub(crate) const fn from_stored(s: u8) -> Self {
+        Self(s & 0x7)
+    }
+}
+
+/// A `SHIFT` operation. The reserved `0b11` encoding is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShiftOp {
+    /// Logical shift left (`0b00`).
+    Sll,
+    /// Logical shift right (`0b01`).
+    Srl,
+    /// Arithmetic shift right (`0b10`).
+    Sra,
+}
+
+impl ShiftOp {
+    /// The 2-bit field encoding.
+    #[allow(dead_code)] // consumed by encode/decode in later work
+    pub(crate) const fn bits(self) -> u8 {
+        match self {
+            ShiftOp::Sll => 0b00,
+            ShiftOp::Srl => 0b01,
+            ShiftOp::Sra => 0b10,
+        }
+    }
+
+    /// Decode a 2-bit field; the reserved `0b11` yields `None`.
+    #[allow(dead_code)] // consumed by encode/decode in later work
+    pub(crate) const fn from_bits(v: u8) -> Option<Self> {
+        match v & 0x3 {
+            0b00 => Some(ShiftOp::Sll),
+            0b01 => Some(ShiftOp::Srl),
+            0b10 => Some(ShiftOp::Sra),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +153,29 @@ mod tests {
         assert_eq!(Amt5::from_bits(0x1F).bits(), 0x1F);
         assert_eq!(WaitCond::from_bits(0x3).bits(), 0x3);
         assert_eq!(Sr5::from_bits(0).bits(), 0);
+    }
+
+    #[test]
+    fn bit_count_is_one_to_eight_stored_as_n_minus_one() {
+        assert_eq!(BitCount::new(0), None);
+        assert_eq!(BitCount::new(9), None);
+        let one = BitCount::new(1).unwrap();
+        let eight = BitCount::new(8).unwrap();
+        assert_eq!(one.count(), 1);
+        assert_eq!(one.stored(), 0);
+        assert_eq!(eight.count(), 8);
+        assert_eq!(eight.stored(), 7);
+        assert_eq!(BitCount::from_stored(7).count(), 8);
+    }
+
+    #[test]
+    fn shift_op_maps_to_two_bits_and_rejects_reserved() {
+        assert_eq!(ShiftOp::Sll.bits(), 0b00);
+        assert_eq!(ShiftOp::Srl.bits(), 0b01);
+        assert_eq!(ShiftOp::Sra.bits(), 0b10);
+        assert_eq!(ShiftOp::from_bits(0b00), Some(ShiftOp::Sll));
+        assert_eq!(ShiftOp::from_bits(0b01), Some(ShiftOp::Srl));
+        assert_eq!(ShiftOp::from_bits(0b10), Some(ShiftOp::Sra));
+        assert_eq!(ShiftOp::from_bits(0b11), None);
     }
 }
