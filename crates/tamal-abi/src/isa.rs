@@ -318,6 +318,79 @@ pub enum DecodeError {
     IllegalOpcode,
 }
 
+impl Instr {
+    /// Encode this instruction to its 32-bit word. Total and infallible — the
+    /// exact inverse of a successful [`Instr::decode`].
+    pub fn encode(&self) -> u32 {
+        use Instr::*;
+        match *self {
+            // BUS group (00)
+            CsAssert => join_word(0b00, 0x0, 0, 0, 0, 0),
+            CsDeassert => join_word(0b00, 0x1, 0, 0, 0, 0),
+            PutByteImm(b) => join_word(0b00, 0x2, 0, 0, 0, b as u16),
+            PutByteReg(rs) => join_word(0b00, 0x3, 0, rs.bits(), 0, 0),
+            GetByte(rd) => join_word(0b00, 0x4, rd.bits(), 0, 0, 0),
+            PutBitsImm(n, b) => join_word(0b00, 0x5, 0, 0, 0, pack_bits_imm(n.stored(), b)),
+            PutBitsReg(rs, n) => {
+                join_word(0b00, 0x6, 0, rs.bits(), 0, pack_bits_imm(n.stored(), 0))
+            }
+            GetBits(rd, n) => join_word(0b00, 0x7, rd.bits(), 0, 0, pack_bits_imm(n.stored(), 0)),
+            TarImm(n) => join_word(0b00, 0x8, 0, 0, 0, n.bits() as u16),
+            TarReg(rs) => join_word(0b00, 0x9, 0, rs.bits(), 0, 0),
+            RstAssert => join_word(0b00, 0xA, 0, 0, 0, 0),
+            RstDeassert => join_word(0b00, 0xB, 0, 0, 0, 0),
+            GetAlert(rd) => join_word(0b00, 0xC, rd.bits(), 0, 0, 0),
+            // CTRL group (01)
+            Halt(s) => join_word(0b01, 0x0, 0, 0, 0, s as u16),
+            Beq(a, b, off) => join_word(0b01, 0x1, 0, a.bits(), b.bits(), off.bits()),
+            Bne(a, b, off) => join_word(0b01, 0x2, 0, a.bits(), b.bits(), off.bits()),
+            Bltu(a, b, off) => join_word(0b01, 0x3, 0, a.bits(), b.bits(), off.bits()),
+            Bgeu(a, b, off) => join_word(0b01, 0x4, 0, a.bits(), b.bits(), off.bits()),
+            WaitOn(rd, c, t) => {
+                join_word(0b01, 0x5, rd.bits(), 0, 0, wait_pack(c.bits(), t.bits()))
+            }
+            SetConfig(p) => join_word(0b01, 0x6, 0, 0, 0, p.bits() as u16),
+            Mark(lbl, rs) => join_word(0b01, 0x7, 0, rs.bits(), 0, lbl.bits()),
+            CrcReset => join_word(0b01, 0x8, 0, 0, 0, 0),
+            // DATA group (10)
+            LoadImm(rd, i) => join_word(0b10, 0x0, rd.bits(), 0, 0, i.bits()),
+            Lui(rd, i20) => {
+                let (rs1, rs2, imm) = split_imm20(i20.bits());
+                join_word(0b10, 0x1, rd.bits(), rs1, rs2, imm)
+            }
+            Mov(rd, rs) => join_word(0b10, 0x2, rd.bits(), rs.bits(), 0, 0),
+            Add(rd, a, b) => join_word(0b10, 0x3, rd.bits(), a.bits(), b.bits(), 0),
+            Addi(rd, a, i) => join_word(0b10, 0x4, rd.bits(), a.bits(), 0, i.bits()),
+            Sub(rd, a, b) => join_word(0b10, 0x5, rd.bits(), a.bits(), b.bits(), 0),
+            And(rd, a, b) => join_word(0b10, 0x6, rd.bits(), a.bits(), b.bits(), 0),
+            Andi(rd, a, i) => join_word(0b10, 0x7, rd.bits(), a.bits(), 0, i.bits()),
+            Or(rd, a, b) => join_word(0b10, 0x8, rd.bits(), a.bits(), b.bits(), 0),
+            Ori(rd, a, i) => join_word(0b10, 0x9, rd.bits(), a.bits(), 0, i.bits()),
+            Xor(rd, a, b) => join_word(0b10, 0xA, rd.bits(), a.bits(), b.bits(), 0),
+            Xori(rd, a, i) => join_word(0b10, 0xB, rd.bits(), a.bits(), 0, i.bits()),
+            Shift(rd, a, op, amt) => join_word(
+                0b10,
+                0xC,
+                rd.bits(),
+                a.bits(),
+                0,
+                shift_pack(op.bits(), amt.bits()),
+            ),
+            Rdsr(rd, sr) => join_word(0b10, 0xD, rd.bits(), 0, 0, sr.bits() as u16),
+        }
+    }
+}
+
+/// Encode a program to little-endian bytes (`0xAABBCCDD → [DD, CC, BB, AA]`),
+/// ready for a `LOAD_PROGRAM` frame or a bytecode file (ISA §4 / wire §7).
+pub fn program_to_le_bytes(program: &[Instr]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(program.len() * 4);
+    for instr in program {
+        out.extend_from_slice(&instr.encode().to_le_bytes());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +528,74 @@ mod tests {
             DecodeError::IllegalOpcode
         );
         assert_ne!(DecodeError::OpcodeUnimplemented, DecodeError::IllegalOpcode);
+    }
+
+    fn golden_encode_vectors() -> Vec<(Instr, u32)> {
+        vec![
+            (Instr::CsAssert, 0x0000_0000),
+            (Instr::CsDeassert, 0x0400_0000),
+            (Instr::PutByteImm(0x64), 0x0800_0064),
+            (Instr::GetByte(Reg::new(5).unwrap()), 0x10A0_0000),
+            (
+                Instr::PutBitsImm(BitCount::new(8).unwrap(), 0xAB),
+                0x1400_07AB,
+            ),
+            (Instr::TarImm(Tar4::new(2).unwrap()), 0x2000_0002),
+            (Instr::Halt(0x11), 0x4000_0011),
+            (
+                Instr::Beq(
+                    Reg::new(5).unwrap(),
+                    Reg::new(6).unwrap(),
+                    Imm11::new(4).unwrap(),
+                ),
+                0x4405_3004,
+            ),
+            (
+                Instr::WaitOn(
+                    Reg::new(5).unwrap(),
+                    WaitCond::new(1).unwrap(),
+                    WaitTimeout::new(0x64).unwrap(),
+                ),
+                0x54A0_0264,
+            ),
+            (Instr::SetConfig(Cfg6::new(0).unwrap()), 0x5800_0000),
+            (Instr::CrcReset, 0x6000_0000),
+            (
+                Instr::LoadImm(Reg::new(5).unwrap(), Imm11::new(0x0F).unwrap()),
+                0x80A0_000F,
+            ),
+            (
+                Instr::Lui(Reg::new(5).unwrap(), Imm20::new(0x12345).unwrap()),
+                0x84A1_2345,
+            ),
+            (
+                Instr::Shift(
+                    Reg::new(5).unwrap(),
+                    Reg::new(6).unwrap(),
+                    ShiftOp::Sra,
+                    Amt5::new(3).unwrap(),
+                ),
+                0xB0A6_0403,
+            ),
+            (
+                Instr::Rdsr(Reg::new(7).unwrap(), Sr5::new(0).unwrap()),
+                0xB4E0_0000,
+            ),
+        ]
+    }
+
+    #[test]
+    fn encode_matches_golden_words() {
+        for (instr, word) in golden_encode_vectors() {
+            assert_eq!(instr.encode(), word, "encode mismatch for {instr:?}");
+        }
+    }
+
+    #[test]
+    fn program_to_le_bytes_is_little_endian() {
+        // 0x0800_0064 -> [0x64, 0x00, 0x00, 0x08]
+        let bytes = program_to_le_bytes(&[Instr::PutByteImm(0x64)]);
+        assert_eq!(bytes, vec![0x64, 0x00, 0x00, 0x08]);
     }
 
     proptest! {
