@@ -203,6 +203,17 @@ mod tests {
             decode_config(Cfg6::new(0x02).unwrap()),
             Err(ConfigError::UnsupportedSck)
         );
+        // overlapping fields pin the role->io->sck arm ordering:
+        // 0x28 sets role (bit5) AND io=X2 (bit3); role must win.
+        assert_eq!(
+            decode_config(Cfg6::new(0x28).unwrap()),
+            Err(ConfigError::UnsupportedRole)
+        );
+        // 0x0A sets io=X2 (bit3) AND sck=Sck33 (bit1), role=0; io must win over sck.
+        assert_eq!(
+            decode_config(Cfg6::new(0x0A).unwrap()),
+            Err(ConfigError::UnsupportedIoMode)
+        );
     }
 
     #[test]

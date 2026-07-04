@@ -27,7 +27,6 @@ macro_rules! bounded {
             }
 
             /// Construct from an already width-limited field value (masks defensively).
-            #[allow(dead_code)] // consumed by `decode`/`config` in later work
             pub(crate) const fn from_bits(v: $repr) -> Self {
                 Self(v & Self::MAX)
             }
@@ -81,13 +80,11 @@ impl BitCount {
     }
 
     /// The stored `n-1` field value, `0..=7`.
-    #[allow(dead_code)] // consumed by encode/decode in later work
     pub(crate) const fn stored(self) -> u8 {
         self.0
     }
 
     /// Construct from a stored `n-1` field (masks to 3 bits).
-    #[allow(dead_code)] // consumed by encode/decode in later work
     pub(crate) const fn from_stored(s: u8) -> Self {
         Self(s & 0x7)
     }
@@ -106,7 +103,6 @@ pub enum ShiftOp {
 
 impl ShiftOp {
     /// The 2-bit field encoding.
-    #[allow(dead_code)] // consumed by encode/decode in later work
     pub(crate) const fn bits(self) -> u8 {
         match self {
             ShiftOp::Sll => 0b00,
@@ -116,7 +112,6 @@ impl ShiftOp {
     }
 
     /// Decode a 2-bit field; the reserved `0b11` yields `None`.
-    #[allow(dead_code)] // consumed by encode/decode in later work
     pub(crate) const fn from_bits(v: u8) -> Option<Self> {
         match v & 0x3 {
             0b00 => Some(ShiftOp::Sll),
@@ -129,7 +124,6 @@ impl ShiftOp {
 
 /// The six raw instruction fields, before per-opcode interpretation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) struct Fields {
     pub(crate) group: u8, // [31:30]
     pub(crate) sub: u8,   // [29:26]
@@ -140,7 +134,6 @@ pub(crate) struct Fields {
 }
 
 /// Split a 32-bit word into its raw fields (the Rust analog of `bitCoerce`).
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn split_word(w: u32) -> Fields {
     Fields {
         group: ((w >> 30) & 0x3) as u8,
@@ -153,7 +146,6 @@ pub(crate) fn split_word(w: u32) -> Fields {
 }
 
 /// Join raw fields into a 32-bit word (masking each to its width).
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn join_word(group: u8, sub: u8, rd: u8, rs1: u8, rs2: u8, imm: u16) -> u32 {
     ((group as u32 & 0x3) << 30)
         | ((sub as u32 & 0xF) << 26)
@@ -166,19 +158,16 @@ pub(crate) fn join_word(group: u8, sub: u8, rd: u8, rs1: u8, rs2: u8, imm: u16) 
 // --- Sub-field packers (imm interpretation per opcode). ---
 
 /// `PUT_BITS`/`GET_BITS`: `imm[10:8] = n-1`, `imm[7:0] = byte`.
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn pack_bits_imm(n_minus_1: u8, byte: u8) -> u16 {
     ((n_minus_1 as u16 & 0x7) << 8) | byte as u16
 }
 
 /// Inverse of [`pack_bits_imm`].
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn unpack_bits_imm(imm: u16) -> (u8, u8) {
     (((imm >> 8) & 0x7) as u8, (imm & 0xFF) as u8)
 }
 
 /// `LUI`: spread a 20-bit immediate across `rs1 ++ rs2 ++ imm` (bit 20 = 0).
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn split_imm20(i20: u32) -> (u8, u8, u16) {
     (
         ((i20 >> 16) & 0x1F) as u8,
@@ -188,32 +177,27 @@ pub(crate) fn split_imm20(i20: u32) -> (u8, u8, u16) {
 }
 
 /// Inverse of [`split_imm20`]; `hi` is the reserved bit 20.
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn join_imm20(rs1: u8, rs2: u8, imm: u16) -> (u8, u32) {
     let temp = ((rs1 as u32 & 0x1F) << 16) | ((rs2 as u32 & 0x1F) << 11) | (imm as u32 & 0x7FF);
     (((temp >> 20) & 0x1) as u8, temp & 0xF_FFFF)
 }
 
 /// `WAIT_ON`: `imm = cond[10:9] ++ timeout[8:0]`.
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn wait_pack(cond: u8, timeout: u16) -> u16 {
     ((cond as u16 & 0x3) << 9) | (timeout & 0x1FF)
 }
 
 /// Inverse of [`wait_pack`].
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn wait_unpack(imm: u16) -> (u8, u16) {
     (((imm >> 9) & 0x3) as u8, imm & 0x1FF)
 }
 
 /// `SHIFT`: `imm = op[10:9] ++ 0[8:5] ++ amt[4:0]` (mid nibble reserved-zero).
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn shift_pack(op: u8, amt: u8) -> u16 {
     ((op as u16 & 0x3) << 9) | (amt as u16 & 0x1F)
 }
 
 /// Inverse of [`shift_pack`]; returns `(op, mid, amt)` so `decode` can check `mid == 0`.
-#[allow(dead_code)] // consumed by encode/decode in later work
 pub(crate) fn shift_unpack(imm: u16) -> (u8, u8, u8) {
     (
         ((imm >> 9) & 0x3) as u8,
@@ -297,7 +281,7 @@ pub enum Instr {
     Xor(Reg, Reg, Reg),
     /// `rd <- rs1 ^ sext(imm)`.
     Xori(Reg, Reg, Imm11),
-    /// `rd <- rs1 shifted by `amt` per [`ShiftOp`].
+    /// `rd <- rs1` shifted by `amt` per [`ShiftOp`].
     Shift(Reg, Reg, ShiftOp, Amt5),
     /// Read special register `sr#` into `rd` (`sr=0` is the RX CRC-8).
     Rdsr(Reg, Sr5),
