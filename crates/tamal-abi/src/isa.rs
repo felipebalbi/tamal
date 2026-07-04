@@ -381,6 +381,248 @@ impl Instr {
     }
 }
 
+impl Instr {
+    /// Decode a 32-bit word: dispatch on the group, rebuild the instruction, and
+    /// verify every reserved field is zero. Total — any word yields `Ok(Instr)`
+    /// or `Err(DecodeError)`. Does **not** reject register fields >= 16.
+    pub fn decode(w: u32) -> Result<Instr, DecodeError> {
+        let f = split_word(w);
+        match f.group {
+            0b00 => decode_bus(f),
+            0b01 => decode_ctrl(f),
+            0b10 => decode_data(f),
+            _ => Err(DecodeError::IllegalOpcode), // group 0b11 reserved
+        }
+    }
+}
+
+/// Accept `i` only when every reserved field is zero, else `ReservedFieldNonZero`.
+fn only(reserved_zero: bool, i: Instr) -> Result<Instr, DecodeError> {
+    if reserved_zero {
+        Ok(i)
+    } else {
+        Err(DecodeError::ReservedFieldNonZero)
+    }
+}
+
+fn decode_bus(f: Fields) -> Result<Instr, DecodeError> {
+    use Instr::*;
+    let Fields {
+        sub,
+        rd,
+        rs1,
+        rs2,
+        imm,
+        ..
+    } = f;
+    let (n3, byte) = unpack_bits_imm(imm);
+    let imm_hi8 = (imm >> 8) & 0x7; // imm[10:8]
+    let imm_hi4 = (imm >> 4) & 0x7F; // imm[10:4]
+    match sub {
+        0x0 => only(rd == 0 && rs1 == 0 && rs2 == 0 && imm == 0, CsAssert),
+        0x1 => only(rd == 0 && rs1 == 0 && rs2 == 0 && imm == 0, CsDeassert),
+        0x2 => only(
+            rd == 0 && rs1 == 0 && rs2 == 0 && imm_hi8 == 0,
+            PutByteImm(byte),
+        ),
+        0x3 => only(
+            rd == 0 && rs2 == 0 && imm == 0,
+            PutByteReg(Reg::from_bits(rs1)),
+        ),
+        0x4 => only(
+            rs1 == 0 && rs2 == 0 && imm == 0,
+            GetByte(Reg::from_bits(rd)),
+        ),
+        0x5 => only(
+            rd == 0 && rs1 == 0 && rs2 == 0,
+            PutBitsImm(BitCount::from_stored(n3), byte),
+        ),
+        0x6 => only(
+            rd == 0 && rs2 == 0 && byte == 0,
+            PutBitsReg(Reg::from_bits(rs1), BitCount::from_stored(n3)),
+        ),
+        0x7 => only(
+            rs1 == 0 && rs2 == 0 && byte == 0,
+            GetBits(Reg::from_bits(rd), BitCount::from_stored(n3)),
+        ),
+        0x8 => only(
+            rd == 0 && rs1 == 0 && rs2 == 0 && imm_hi4 == 0,
+            TarImm(Tar4::from_bits((imm & 0xF) as u8)),
+        ),
+        0x9 => only(rd == 0 && rs2 == 0 && imm == 0, TarReg(Reg::from_bits(rs1))),
+        0xA => only(rd == 0 && rs1 == 0 && rs2 == 0 && imm == 0, RstAssert),
+        0xB => only(rd == 0 && rs1 == 0 && rs2 == 0 && imm == 0, RstDeassert),
+        0xC => only(
+            rs1 == 0 && rs2 == 0 && imm == 0,
+            GetAlert(Reg::from_bits(rd)),
+        ),
+        _ => Err(DecodeError::IllegalOpcode),
+    }
+}
+
+fn decode_ctrl(f: Fields) -> Result<Instr, DecodeError> {
+    use Instr::*;
+    let Fields {
+        sub,
+        rd,
+        rs1,
+        rs2,
+        imm,
+        ..
+    } = f;
+    let (cond, timeout) = wait_unpack(imm);
+    let imm_hi8 = (imm >> 8) & 0x7; // imm[10:8]
+    let imm_hi6 = (imm >> 6) & 0x1F; // imm[10:6]
+    match sub {
+        0x0 => only(
+            rd == 0 && rs1 == 0 && rs2 == 0 && imm_hi8 == 0,
+            Halt((imm & 0xFF) as u8),
+        ),
+        0x1 => only(
+            rd == 0,
+            Beq(
+                Reg::from_bits(rs1),
+                Reg::from_bits(rs2),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x2 => only(
+            rd == 0,
+            Bne(
+                Reg::from_bits(rs1),
+                Reg::from_bits(rs2),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x3 => only(
+            rd == 0,
+            Bltu(
+                Reg::from_bits(rs1),
+                Reg::from_bits(rs2),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x4 => only(
+            rd == 0,
+            Bgeu(
+                Reg::from_bits(rs1),
+                Reg::from_bits(rs2),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x5 => only(
+            rs1 == 0 && rs2 == 0,
+            WaitOn(
+                Reg::from_bits(rd),
+                WaitCond::from_bits(cond),
+                WaitTimeout::from_bits(timeout),
+            ),
+        ),
+        0x6 => only(
+            rd == 0 && rs1 == 0 && rs2 == 0 && imm_hi6 == 0,
+            SetConfig(Cfg6::from_bits((imm & 0x3F) as u8)),
+        ),
+        0x7 => only(
+            rd == 0 && rs2 == 0,
+            Mark(Imm11::from_bits(imm), Reg::from_bits(rs1)),
+        ),
+        0x8 => only(rd == 0 && rs1 == 0 && rs2 == 0 && imm == 0, CrcReset),
+        _ => Err(DecodeError::IllegalOpcode),
+    }
+}
+
+fn decode_data(f: Fields) -> Result<Instr, DecodeError> {
+    use Instr::*;
+    let Fields {
+        sub,
+        rd,
+        rs1,
+        rs2,
+        imm,
+        ..
+    } = f;
+    let (hi, i20) = join_imm20(rs1, rs2, imm);
+    let (sh_op, sh_mid, sh_amt) = shift_unpack(imm);
+    let imm_hi5 = (imm >> 5) & 0x3F; // imm[10:5]
+    match sub {
+        0x0 => only(
+            rs1 == 0 && rs2 == 0,
+            LoadImm(Reg::from_bits(rd), Imm11::from_bits(imm)),
+        ),
+        0x1 => only(hi == 0, Lui(Reg::from_bits(rd), Imm20::from_bits(i20))),
+        0x2 => only(
+            rs2 == 0 && imm == 0,
+            Mov(Reg::from_bits(rd), Reg::from_bits(rs1)),
+        ),
+        0x3 => only(
+            imm == 0,
+            Add(Reg::from_bits(rd), Reg::from_bits(rs1), Reg::from_bits(rs2)),
+        ),
+        0x4 => only(
+            rs2 == 0,
+            Addi(
+                Reg::from_bits(rd),
+                Reg::from_bits(rs1),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x5 => only(
+            imm == 0,
+            Sub(Reg::from_bits(rd), Reg::from_bits(rs1), Reg::from_bits(rs2)),
+        ),
+        0x6 => only(
+            imm == 0,
+            And(Reg::from_bits(rd), Reg::from_bits(rs1), Reg::from_bits(rs2)),
+        ),
+        0x7 => only(
+            rs2 == 0,
+            Andi(
+                Reg::from_bits(rd),
+                Reg::from_bits(rs1),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0x8 => only(
+            imm == 0,
+            Or(Reg::from_bits(rd), Reg::from_bits(rs1), Reg::from_bits(rs2)),
+        ),
+        0x9 => only(
+            rs2 == 0,
+            Ori(
+                Reg::from_bits(rd),
+                Reg::from_bits(rs1),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0xA => only(
+            imm == 0,
+            Xor(Reg::from_bits(rd), Reg::from_bits(rs1), Reg::from_bits(rs2)),
+        ),
+        0xB => only(
+            rs2 == 0,
+            Xori(
+                Reg::from_bits(rd),
+                Reg::from_bits(rs1),
+                Imm11::from_bits(imm),
+            ),
+        ),
+        0xC => match ShiftOp::from_bits(sh_op) {
+            Some(op) if rs2 == 0 && sh_mid == 0 => Ok(Shift(
+                Reg::from_bits(rd),
+                Reg::from_bits(rs1),
+                op,
+                Amt5::from_bits(sh_amt),
+            )),
+            _ => Err(DecodeError::ReservedFieldNonZero),
+        },
+        0xD => only(
+            rs1 == 0 && rs2 == 0 && imm_hi5 == 0,
+            Rdsr(Reg::from_bits(rd), Sr5::from_bits((imm & 0x1F) as u8)),
+        ),
+        _ => Err(DecodeError::IllegalOpcode),
+    }
+}
+
 /// Encode a program to little-endian bytes (`0xAABBCCDD → [DD, CC, BB, AA]`),
 /// ready for a `LOAD_PROGRAM` frame or a bytecode file (ISA §4 / wire §7).
 pub fn program_to_le_bytes(program: &[Instr]) -> Vec<u8> {
@@ -616,6 +858,161 @@ mod tests {
         #[test]
         fn wait_round_trip(cond in 0u8..=0x3, timeout in 0u16..=0x1FF) {
             prop_assert_eq!(wait_unpack(wait_pack(cond, timeout)), (cond, timeout));
+        }
+    }
+
+    use proptest::strategy::Union;
+
+    fn arb_reg() -> impl Strategy<Value = Reg> {
+        (0u8..=31).prop_map(Reg::from_bits)
+    }
+    fn arb_imm11() -> impl Strategy<Value = Imm11> {
+        (0u16..=0x7FF).prop_map(Imm11::from_bits)
+    }
+    fn arb_imm20() -> impl Strategy<Value = Imm20> {
+        (0u32..=0xF_FFFF).prop_map(Imm20::from_bits)
+    }
+    fn arb_tar4() -> impl Strategy<Value = Tar4> {
+        (0u8..=0xF).prop_map(Tar4::from_bits)
+    }
+    fn arb_cfg6() -> impl Strategy<Value = Cfg6> {
+        (0u8..=0x3F).prop_map(Cfg6::from_bits)
+    }
+    fn arb_sr5() -> impl Strategy<Value = Sr5> {
+        (0u8..=0x1F).prop_map(Sr5::from_bits)
+    }
+    fn arb_amt5() -> impl Strategy<Value = Amt5> {
+        (0u8..=0x1F).prop_map(Amt5::from_bits)
+    }
+    fn arb_bit_count() -> impl Strategy<Value = BitCount> {
+        (1u8..=8).prop_map(|n| BitCount::new(n).unwrap())
+    }
+    fn arb_shift_op() -> impl Strategy<Value = ShiftOp> {
+        prop_oneof![Just(ShiftOp::Sll), Just(ShiftOp::Srl), Just(ShiftOp::Sra)]
+    }
+    fn arb_wait_cond() -> impl Strategy<Value = WaitCond> {
+        (0u8..=0x3).prop_map(WaitCond::from_bits)
+    }
+    fn arb_wait_timeout() -> impl Strategy<Value = WaitTimeout> {
+        (0u16..=0x1FF).prop_map(WaitTimeout::from_bits)
+    }
+
+    fn arb_bus_instr() -> impl Strategy<Value = Instr> {
+        // `Union::new` (not `prop_oneof!`) because there are more than 10 arms.
+        Union::new(vec![
+            Just(Instr::CsAssert).boxed(),
+            Just(Instr::CsDeassert).boxed(),
+            any::<u8>().prop_map(Instr::PutByteImm).boxed(),
+            arb_reg().prop_map(Instr::PutByteReg).boxed(),
+            arb_reg().prop_map(Instr::GetByte).boxed(),
+            (arb_bit_count(), any::<u8>())
+                .prop_map(|(n, b)| Instr::PutBitsImm(n, b))
+                .boxed(),
+            (arb_reg(), arb_bit_count())
+                .prop_map(|(r, n)| Instr::PutBitsReg(r, n))
+                .boxed(),
+            (arb_reg(), arb_bit_count())
+                .prop_map(|(r, n)| Instr::GetBits(r, n))
+                .boxed(),
+            arb_tar4().prop_map(Instr::TarImm).boxed(),
+            arb_reg().prop_map(Instr::TarReg).boxed(),
+            Just(Instr::RstAssert).boxed(),
+            Just(Instr::RstDeassert).boxed(),
+            arb_reg().prop_map(Instr::GetAlert).boxed(),
+        ])
+    }
+
+    fn arb_ctrl_instr() -> impl Strategy<Value = Instr> {
+        Union::new(vec![
+            any::<u8>().prop_map(Instr::Halt).boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(a, b, o)| Instr::Beq(a, b, o))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(a, b, o)| Instr::Bne(a, b, o))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(a, b, o)| Instr::Bltu(a, b, o))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(a, b, o)| Instr::Bgeu(a, b, o))
+                .boxed(),
+            (arb_reg(), arb_wait_cond(), arb_wait_timeout())
+                .prop_map(|(r, c, t)| Instr::WaitOn(r, c, t))
+                .boxed(),
+            arb_cfg6().prop_map(Instr::SetConfig).boxed(),
+            (arb_imm11(), arb_reg())
+                .prop_map(|(l, r)| Instr::Mark(l, r))
+                .boxed(),
+            Just(Instr::CrcReset).boxed(),
+        ])
+    }
+
+    fn arb_data_instr() -> impl Strategy<Value = Instr> {
+        // `Union::new` (not `prop_oneof!`) because there are more than 10 arms.
+        Union::new(vec![
+            (arb_reg(), arb_imm11())
+                .prop_map(|(r, i)| Instr::LoadImm(r, i))
+                .boxed(),
+            (arb_reg(), arb_imm20())
+                .prop_map(|(r, i)| Instr::Lui(r, i))
+                .boxed(),
+            (arb_reg(), arb_reg())
+                .prop_map(|(d, s)| Instr::Mov(d, s))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_reg())
+                .prop_map(|(d, a, b)| Instr::Add(d, a, b))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(d, a, i)| Instr::Addi(d, a, i))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_reg())
+                .prop_map(|(d, a, b)| Instr::Sub(d, a, b))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_reg())
+                .prop_map(|(d, a, b)| Instr::And(d, a, b))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(d, a, i)| Instr::Andi(d, a, i))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_reg())
+                .prop_map(|(d, a, b)| Instr::Or(d, a, b))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(d, a, i)| Instr::Ori(d, a, i))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_reg())
+                .prop_map(|(d, a, b)| Instr::Xor(d, a, b))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_imm11())
+                .prop_map(|(d, a, i)| Instr::Xori(d, a, i))
+                .boxed(),
+            (arb_reg(), arb_reg(), arb_shift_op(), arb_amt5())
+                .prop_map(|(d, a, op, amt)| Instr::Shift(d, a, op, amt))
+                .boxed(),
+            (arb_reg(), arb_sr5())
+                .prop_map(|(r, s)| Instr::Rdsr(r, s))
+                .boxed(),
+        ])
+    }
+
+    #[allow(dead_code)] // consumed by the all-groups laws in later work
+    fn arb_instr() -> impl Strategy<Value = Instr> {
+        prop_oneof![arb_bus_instr(), arb_ctrl_instr(), arb_data_instr()]
+    }
+
+    proptest! {
+        #[test]
+        fn bus_round_trip(i in arb_bus_instr()) {
+            prop_assert_eq!(Instr::decode(i.encode()), Ok(i));
+        }
+        #[test]
+        fn ctrl_round_trip(i in arb_ctrl_instr()) {
+            prop_assert_eq!(Instr::decode(i.encode()), Ok(i));
+        }
+        #[test]
+        fn data_round_trip(i in arb_data_instr()) {
+            prop_assert_eq!(Instr::decode(i.encode()), Ok(i));
         }
     }
 }
