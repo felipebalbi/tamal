@@ -222,6 +222,102 @@ pub(crate) fn shift_unpack(imm: u16) -> (u8, u8, u8) {
     )
 }
 
+/// A decoded tamal instruction — one variant per opcode across the three groups
+/// (BUS `00` / CTRL `01` / DATA `10`). A 1:1 mirror of the HDL `Tamal.Isa.Instr`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Instr {
+    // BUS group (00)
+    /// Assert `CS#` (begin a frame).
+    CsAssert,
+    /// Deassert `CS#` (end a frame).
+    CsDeassert,
+    /// Shift an 8-bit immediate onto the bus, MSB-first.
+    PutByteImm(u8),
+    /// Shift `rs1[7:0]` onto the bus.
+    PutByteReg(Reg),
+    /// Sample a byte into `rd` (updates the RX CRC).
+    GetByte(Reg),
+    /// Shift `n` bits of an immediate byte.
+    PutBitsImm(BitCount, u8),
+    /// Shift `n` bits from `rs1`.
+    PutBitsReg(Reg, BitCount),
+    /// Sample `n` bits into `rd` (CRC-neutral).
+    GetBits(Reg, BitCount),
+    /// Turn the bus around for an immediate count of clocks.
+    TarImm(Tar4),
+    /// Turn the bus around for `rs1` clocks.
+    TarReg(Reg),
+    /// Drive `RESET#` asserted.
+    RstAssert,
+    /// Drive `RESET#` deasserted.
+    RstDeassert,
+    /// Sample `ALERT#` into `rd[0]`.
+    GetAlert(Reg),
+    // CTRL group (01)
+    /// End the program, writing the status byte to the trace ring.
+    Halt(u8),
+    /// Branch if `rs1 == rs2`.
+    Beq(Reg, Reg, Imm11),
+    /// Branch if `rs1 != rs2`.
+    Bne(Reg, Reg, Imm11),
+    /// Branch if `rs1 < rs2` (unsigned).
+    Bltu(Reg, Reg, Imm11),
+    /// Branch if `rs1 >= rs2` (unsigned).
+    Bgeu(Reg, Reg, Imm11),
+    /// Block until a condition or timeout; `rd` records met/timed-out.
+    WaitOn(Reg, WaitCond, WaitTimeout),
+    /// Set the engine configuration (raw 6-bit payload; see [`crate::config`]).
+    SetConfig(Cfg6),
+    /// Write a MARK record (label + `rs1` payload) to the trace ring.
+    Mark(Imm11, Reg),
+    /// Reset the RX CRC-8 accumulator.
+    CrcReset,
+    // DATA group (10)
+    /// `rd <- sext(imm)`.
+    LoadImm(Reg, Imm11),
+    /// `rd <- imm << 12`.
+    Lui(Reg, Imm20),
+    /// `rd <- rs1`.
+    Mov(Reg, Reg),
+    /// `rd <- rs1 + rs2`.
+    Add(Reg, Reg, Reg),
+    /// `rd <- rs1 + sext(imm)`.
+    Addi(Reg, Reg, Imm11),
+    /// `rd <- rs1 - rs2`.
+    Sub(Reg, Reg, Reg),
+    /// `rd <- rs1 & rs2`.
+    And(Reg, Reg, Reg),
+    /// `rd <- rs1 & sext(imm)`.
+    Andi(Reg, Reg, Imm11),
+    /// `rd <- rs1 | rs2`.
+    Or(Reg, Reg, Reg),
+    /// `rd <- rs1 | sext(imm)`.
+    Ori(Reg, Reg, Imm11),
+    /// `rd <- rs1 ^ rs2`.
+    Xor(Reg, Reg, Reg),
+    /// `rd <- rs1 ^ sext(imm)`.
+    Xori(Reg, Reg, Imm11),
+    /// `rd <- rs1 shifted by `amt` per [`ShiftOp`].
+    Shift(Reg, Reg, ShiftOp, Amt5),
+    /// Read special register `sr#` into `rd` (`sr=0` is the RX CRC-8).
+    Rdsr(Reg, Sr5),
+}
+
+/// Why [`Instr::decode`] rejected a 32-bit word. Mirrors the HDL `DecodeError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DecodeError {
+    /// A reserved instruction field held a non-zero value.
+    #[error("a reserved instruction field held a non-zero value")]
+    ReservedFieldNonZero,
+    /// The opcode is recognised but not implemented (kept for HDL parity; not
+    /// produced by the current decoder).
+    #[error("opcode recognised but not implemented")]
+    OpcodeUnimplemented,
+    /// The opcode is illegal: a reserved group or an unknown sub-opcode.
+    #[error("illegal opcode (reserved group or unknown sub-opcode)")]
+    IllegalOpcode,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +421,40 @@ mod tests {
         assert_eq!(shift_unpack(0x403), (0b10, 0, 0x03));
         // a set mid bit is surfaced for the reserved-field check
         assert_eq!(shift_unpack(0x020), (0, 0b0001, 0));
+    }
+
+    #[test]
+    fn instr_and_error_types_exist() {
+        // Constructing representative variants proves the field types line up.
+        let _ = Instr::CsAssert;
+        let _ = Instr::PutByteImm(0x64);
+        let _ = Instr::GetByte(Reg::new(5).unwrap());
+        let _ = Instr::PutBitsImm(BitCount::new(8).unwrap(), 0xAB);
+        let _ = Instr::TarImm(Tar4::new(2).unwrap());
+        let _ = Instr::Beq(
+            Reg::new(5).unwrap(),
+            Reg::new(6).unwrap(),
+            Imm11::new(4).unwrap(),
+        );
+        let _ = Instr::WaitOn(
+            Reg::new(5).unwrap(),
+            WaitCond::new(1).unwrap(),
+            WaitTimeout::new(0x64).unwrap(),
+        );
+        let _ = Instr::SetConfig(Cfg6::new(0).unwrap());
+        let _ = Instr::Lui(Reg::new(5).unwrap(), Imm20::new(0x12345).unwrap());
+        let _ = Instr::Shift(
+            Reg::new(5).unwrap(),
+            Reg::new(6).unwrap(),
+            ShiftOp::Sra,
+            Amt5::new(3).unwrap(),
+        );
+        let _ = Instr::Rdsr(Reg::new(7).unwrap(), Sr5::new(0).unwrap());
+        assert_ne!(
+            DecodeError::ReservedFieldNonZero,
+            DecodeError::IllegalOpcode
+        );
+        assert_ne!(DecodeError::OpcodeUnimplemented, DecodeError::IllegalOpcode);
     }
 
     proptest! {
