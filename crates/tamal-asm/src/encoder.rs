@@ -600,6 +600,11 @@ pub(crate) fn encode_line(
             let off = resolve_branch_target(&operands[1], addr, syms)?;
             Ok(vec![Instr::Bne(rs, zero(), off)])
         }
+        "la" | "call" | "ret" => Err(Diagnostic::error(
+            span.clone(),
+            format!("`{mnemonic}` is not supported in tamal-asm v1"),
+        )
+        .with_help("v1 has no `la` or subroutine linkage (call/ret)")),
         other => Err(Diagnostic::error(
             span.clone(),
             format!("unknown instruction `{other}`"),
