@@ -98,7 +98,7 @@ tamal/
     bin/                  Clash.hs Clashi.hs (Clash.Main wrappers)
     src/                  Tamal.hs (heartbeat top) + Tamal/Domain.hs
     tests/                unittests.hs (trivial tasty placeholder)
-    tamal.cabal stack.yaml hie.yaml
+    tamal.cabal cabal.project hie.yaml
   docs/superpowers/specs/ design + plan docs (this file)
 ```
 
@@ -137,7 +137,7 @@ whole implementation in a **single non-project flow** (`vivado/build.tcl`, one
 Vivado launch) — Vivado's tool-startup cost dominates a design this size — while
 still writing intermediate checkpoints/reports so each stage stays inspectable:
 
-1. **Clash -> Verilog** (`stack run clash -- Tamal --verilog`) ->
+1. **Clash -> Verilog** (`cabal run clash -- Tamal --verilog`) ->
    `verilog/Tamal.topEntity/`.
 2. Stage the HDL into `_build/Tamal/01-hdl/`.
 3. **build** (`vivado -mode batch -source vivado/build.tcl`): synth -> opt ->
@@ -145,10 +145,10 @@ still writing intermediate checkpoints/reports so each stage stays inspectable:
    `post_route.dcp`, timing/util/DRC reports, and `tamal.bit`.
 4. **`make program`** (`vivado -mode batch -source vivado/program.tcl`) -> JTAG.
 
-Tool paths live in `build.cfg` (`VIVADO = vivado`, `CLASH = stack run clash --`,
-`TEST = stack test`), overridable via gitignored `build.cfg.local`. Constraints
+Tool paths live in `build.cfg` (`VIVADO = vivado`, `CLASH = cabal run clash --`,
+`TEST = cabal test`), overridable via gitignored `build.cfg.local`. Constraints
 are a hand-written Vivado **XDC** (clock + pins). The Windows/nushell Makefile
-notes and the Clash 1.10 `stack.yaml` pin carry over from molcajete verbatim.
+notes and the Clash 1.10 `cabal.project` pin carry over from molcajete verbatim.
 
 The current top entity is a **placeholder heartbeat** (`Tamal.hs`): a
 free-running counter whose MSB blinks the board LED, so the Clash -> Vivado

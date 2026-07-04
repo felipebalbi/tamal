@@ -6,7 +6,7 @@
 
 **Architecture:** The loader is `mealy loaderStep initLoader` over a pure step function (matching the engine's lift). The "isolated streaming-COBS codec" is realized as two **pure step functions** in `Tamal.Loader.Cobs` (`cobsDecodeStep`, `cobsEncodeStep`) — cleaner than separate Signal blocks (no feedback plumbing) and property-tested by pure iteration against the pure `Tamal.Wire.Cobs` oracle. `loaderStep` embeds their state (`DecSt`/`EncSt`) and calls them; the frame/message layer (one-byte holdback, CRC-8, opcode dispatch, LE word (dis)assembly, the drain generator) lives in `loaderStep`, exactly as `Tamal.Wire` sits above `Tamal.Wire.Cobs`. The loader reproduces the pure `Tamal.Wire` model byte-for-byte.
 
-**Tech Stack:** Clash 1.10 (`clash-prelude`), tasty + tasty-hunit + tasty-hedgehog. Build/test with `stack` from `hdl/`.
+**Tech Stack:** Clash 1.10 (`clash-prelude`), tasty + tasty-hunit + tasty-hedgehog. Build/test with `cabal` from `hdl/`.
 
 **Collaboration model (TDD ping-pong, per spec §11.2 / decision D6):** For each slice the **assistant writes the failing test** (the test code in this plan is authoritative and complete), the **author writes the Clash under `src/`** to make it pass (the implementation code blocks are a correct reference target — the streaming state machines were validated out-of-band against the pure `Tamal.Wire` reference before this plan; refine together in the green step), then both **refactor**. This is a Clash learning exercise.
 
@@ -19,7 +19,7 @@
   -- SPDX-FileCopyrightText: 2026 Felipe Balbi
   -- SPDX-License-Identifier: CERN-OHL-P-2.0
   ```
-- `make format` before each commit; `stack test` must stay green.
+- `make format` before each commit; `cabal test` must stay green.
 - **List gotcha:** `Clash.Prelude` re-exports `map`/`(++)`/`reverse`/`foldl'` as the **`Vec`** versions. In `tests/`, for `[BitVector 8]` list work use `import qualified Data.List as L` (`L.length`, `L.filter`, `L.zip`, `L.repeat`, `L.replicate`, `L.take`, `L.drop`, `(L.!!)`), the list `(<>)`/`(:)`, and list comprehensions. `Data.Maybe (mapMaybe, fromMaybe, isJust)` for the stream collectors.
 - **Signal-level test idiom** (from `Test.Mem`/`Test.Uart`): `sampleN n (block (fromList (xs <> L.repeat pad)) :: Signal Dom100 _)`, with an inline `:: Signal Dom100 _` annotation so `sampleN` can solve `KnownDomain`. `mealy` has no output register, so (unlike `blockRam`) there is **no** cycle-0 value to drop.
 
@@ -115,8 +115,8 @@ tests =
 
 - [ ] **Step 6: Run** (author).
 
-Run: `stack test --test-arguments '-p "/Loader/"'`
-Expected: PASS (3 cases). Run `stack test` too — all existing groups (incl. `Engine`) stay green (adding a `BusOut` field does not touch any accessor-only test).
+Run: `cabal test --test-options '-p "/Loader/"'`
+Expected: PASS (3 cases). Run `cabal test` too — all existing groups (incl. `Engine`) stay green (adding a `BusOut` field does not touch any accessor-only test).
 
 - [ ] **Step 7: Format and commit.**
 
@@ -203,7 +203,7 @@ Also add `import Test.Tasty.HUnit` items already present; ensure `genByte` isn't
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Loader/"'`
+Run: `cabal test --test-options '-p "/Loader/"'`
 Expected: FAIL — `Tamal.Loader.Cobs` / `cobsDecodeStep` not in scope (module missing).
 
 - [ ] **Step 3: Create `hdl/src/Tamal/Loader/Cobs.hs`** (author) with the decode step (encode added in Task 3). This state machine was validated against the pure `cobsDecode` reference:
@@ -286,7 +286,7 @@ cobsDecodeStep s (mIn, frameEnd)
 
 - [ ] **Step 5: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Loader.Cobs decode/"'`
+Run: `cabal test --test-options '-p "/Loader.Cobs decode/"'`
 Expected: PASS (round-trip over zero-dense inputs + boundary + malformed vectors).
 
 - [ ] **Step 6: Format and commit.**
@@ -358,7 +358,7 @@ encodeTests =
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Loader.Cobs encode/"'`
+Run: `cabal test --test-options '-p "/Loader.Cobs encode/"'`
 Expected: FAIL — `cobsEncodeStep`/`initEnc`/`EncSt` not in scope.
 
 - [ ] **Step 3: Add the encode step** (author). Widen the export list to include `EncSt`, `initEnc`, `cobsEncodeStep`, and add (this machine was validated against the pure `cobsEncode`; `readyIn` is `True` iff the byte is consumed this cycle — i.e. only in `EFilling`):
@@ -430,7 +430,7 @@ cobsEncodeStep s (mIn, dsReady) = case eMode s of
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Loader.Cobs/"'`
+Run: `cabal test --test-options '-p "/Loader.Cobs/"'`
 Expected: PASS (encode == oracle over zero-dense inputs, boundary vectors, and the streaming round-trip).
 
 - [ ] **Step 5: Format and commit.**
@@ -513,7 +513,7 @@ rxTests =
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Loader RX/"'`
+Run: `cabal test --test-options '-p "/Loader RX/"'`
 Expected: FAIL — `Tamal.Loader` / `LoaderIn` / `loader` not in scope.
 
 - [ ] **Step 3: Create `hdl/src/Tamal/Loader.hs`** (author) with the types, the `mealy` lift, and the `RxControl`/`Run` branches of `loaderStep` (the `Drain` branch is a stub here, completed in Task 5). The RX holdback+CRC+word-assembly was validated against `decodeControl`:
@@ -729,7 +729,7 @@ drainStep s _ = (resetFrame s{lPhase = RxControl}, idleOut)
 
 - [ ] **Step 5: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Loader RX/"'`
+Run: `cabal test --test-options '-p "/Loader RX/"'`
 Expected: PASS (exact-words property, no-pulse for LOAD, one-pulse for TRIGGER).
 
 - [ ] **Step 6: Format and commit.**
@@ -831,7 +831,7 @@ drainTests =
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Loader TX/"'`
+Run: `cabal test --test-options '-p "/Loader TX/"'`
 Expected: FAIL — the `drainStep` stub emits nothing, so the drained stream is empty (`[] /= encodeResult …`).
 
 - [ ] **Step 3: Replace `drainStep`** (author) with the real drain generator and its helpers. This produces the logical stream `opcode ++ ring-words-LE ++ CRC`, feeds it through `cobsEncodeStep` (gated by `readyIn`), and appends the `0x00` delimiter — validated to equal `encodeResult`:
@@ -895,7 +895,7 @@ leByte w i = case i of
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Loader TX/"'`
+Run: `cabal test --test-options '-p "/Loader TX/"'`
 Expected: PASS (drain == `encodeResult`, minimal drain, and byte-identical under backpressure).
 
 - [ ] **Step 5: Format and commit.**
@@ -982,17 +982,17 @@ simDrainTwice records term =
 
 - [ ] **Step 2: Run to verify** (assistant/author).
 
-Run: `stack test --test-arguments '-p "/Loader robustness/"'`
+Run: `cabal test --test-options '-p "/Loader robustness/"'`
 Expected: PASS (corruption never triggers; overflow caps at 1023; overwrite; two drains).
 
 - [ ] **Step 3: Run the whole suite** (author).
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — all groups (`Crc`, `Isa`, `Config`, `Serdes`, `Trace`, `Branch`, `Alu`, `RegFile`, `Uart`, `Engine`, `Mem`, `Wire`, `Loader`).
 
 - [ ] **Step 4: Clash codegen smoke** — `Tamal.Loader` is synthesizable but not yet in `topEntity`; this confirms it compiles under the Clash executable path.
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: succeeds (generates `verilog/Tamal.topEntity/`; the placeholder heartbeat top is still the entity — the loader is wired to pins in piece 5).
 
 - [ ] **Step 5: Format check.**
@@ -1030,4 +1030,4 @@ git commit -m "docs(hdl): loader (Tamal.Loader) done + tested; IOBUF is next"
 
 ## Execution note
 
-Tasks are strictly ordered by dependency: the engine projection (1) and the two codec steps (2, 3) before the loader that embeds them (4, 5), and robustness/integration last (6). Each task is self-contained (its own red → green → refactor → commit) and leaves `stack test` green, so they are **not** parallelizable — run them in sequence.
+Tasks are strictly ordered by dependency: the engine projection (1) and the two codec steps (2, 3) before the loader that embeds them (4, 5), and robustness/integration last (6). Each task is self-contained (its own red → green → refactor → commit) and leaves `cabal test` green, so they are **not** parallelizable — run them in sequence.

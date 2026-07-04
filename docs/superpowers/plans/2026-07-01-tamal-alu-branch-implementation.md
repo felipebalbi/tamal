@@ -8,7 +8,7 @@
 
 **Architecture:** Two new pure leaf modules under `hdl/src/Tamal/`, mirroring the existing `Isa`/`Crc`/`Config`/`Serdes`/`Trace` layout. `Tamal.Alu` layers a thin `Op`-dispatched `alu` core under a `dataResult` wrapper that owns immediate/`LUI`/`MOV` glue and takes register *values* (no register file). `Tamal.Branch` is a 4-way comparator returning only "taken?". Both are property-tested in isolation before the Engine assembles them. Neither is referenced by `topEntity` yet, so this ships as library + tests only.
 
-**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Stack; tasty + tasty-hunit + tasty-hedgehog + hedgehog + clash-prelude-hedgehog. Source of truth: `docs/superpowers/specs/2026-07-01-tamal-alu-branch-design.md`.
+**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Cabal; tasty + tasty-hunit + tasty-hedgehog + hedgehog + clash-prelude-hedgehog. Source of truth: `docs/superpowers/specs/2026-07-01-tamal-alu-branch-design.md`.
 
 ---
 
@@ -69,7 +69,7 @@ In `hdl/tests/Test/Isa.hs`, add a new `testCase` to the `testGroup "Isa"` list (
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `stack test --ta '-p "reserved SHIFT op"'`
+Run: `cabal test --test-options '-p "reserved SHIFT op"'`
 Expected: FAIL — the assertion reports `Right (Shift 0 0 0b11 0)` where `Left ReservedFieldNonZero` was expected (the current decoder at `Isa.hs:227` only checks `z rs2 && shMid == 0`).
 
 - [ ] **Step 3: Tighten the decode guard**
@@ -82,8 +82,8 @@ In `hdl/src/Tamal/Isa.hs`, edit the `0xc` arm of `decodeData` (line 227). `shOp`
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `stack test --ta '-p "reserved SHIFT op"'`
-Expected: PASS. Then run the whole ISA group to confirm no regression: `stack test --ta '-p "Isa"'` — all green (the "any 32-bit word: decode is canonical or traps" property still holds because such words now take the trap branch; `genDataInstr` never emits `0b11`, so the round-trip properties are unaffected).
+Run: `cabal test --test-options '-p "reserved SHIFT op"'`
+Expected: PASS. Then run the whole ISA group to confirm no regression: `cabal test --test-options '-p "Isa"'` — all green (the "any 32-bit word: decode is canonical or traps" property still holds because such words now take the trap branch; `genDataInstr` never emits `0b11`, so the round-trip properties are unaffected).
 
 - [ ] **Step 5: Commit**
 
@@ -149,7 +149,7 @@ In the `library` `exposed-modules` list (currently ends at `Tamal.Trace`, line 1
 
 - [ ] **Step 3: Confirm the library builds with the stub**
 
-Run: `stack build`
+Run: `cabal build`
 Expected: PASS (the `errorX` stub type-checks; `-Wall` is on but not `-Werror`, so warnings do not fail the build).
 
 - [ ] **Step 4: Create `hdl/tests/Test/Branch.hs`**
@@ -238,7 +238,7 @@ and append `Test.Branch.tests` to the `testGroup "tamal"` list (after `Test.Trac
 
 - [ ] **Step 6: Run the suite to confirm Branch is RED**
 
-Run: `stack test --ta '-p "Branch"'`
+Run: `cabal test --test-options '-p "Branch"'`
 Expected: FAIL — every Branch case errors with the `errorX` message `Tamal.Branch.branchTaken: unimplemented (Task 3)` (hedgehog forces the result and catches the exception). **Do not commit.** Proceed to Task 3.
 
 ---
@@ -272,12 +272,12 @@ branchTaken op a b = case op of
 
 - [ ] **Step 2: Run the Branch suite to verify GREEN**
 
-Run: `stack test --ta '-p "Branch"'`
+Run: `cabal test --test-options '-p "Branch"'`
 Expected: PASS — all four properties and three concrete cases green.
 
 - [ ] **Step 3: Confirm nothing else regressed**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — the whole suite (smoke, Crc, Isa, Config, Serdes, Trace, Branch) green.
 
 - [ ] **Step 4: Commit the Branch feature (scaffold + tests + impl together)**
@@ -375,7 +375,7 @@ Add `Tamal.Alu` to the `library` `exposed-modules` list (after `Tamal.Branch` fr
 
 - [ ] **Step 3: Confirm the library builds with the `alu` stub**
 
-Run: `stack build`
+Run: `cabal build`
 Expected: PASS. `dataResult` is fully written but compiles against the `alu` stub (the stub's type is correct). This also proves the qualified-import clash resolution works.
 
 - [ ] **Step 4: Create `hdl/tests/Test/Alu.hs`**
@@ -549,7 +549,7 @@ and append `Test.Alu.tests` to the tree (after `Test.Branch.tests`):
 
 - [ ] **Step 6: Run the suite to confirm Alu is RED**
 
-Run: `stack test --ta '-p "Alu"'`
+Run: `cabal test --test-options '-p "Alu"'`
 Expected: FAIL — the `alu core` group and every `dataResult` case that routes through `alu` error with `Tamal.Alu.alu: unimplemented (Task 5)`. (`Mov`, `LoadImm`, and `Lui` bypass `alu`, so those three `dataResult` properties pass even now — that is expected; the group as a whole is RED.) **Do not commit.** Proceed to Task 5.
 
 ---
@@ -597,12 +597,12 @@ alu op a b = case op of
 
 - [ ] **Step 2: Run the Alu suite to verify GREEN**
 
-Run: `stack test --ta '-p "Alu"'`
+Run: `cabal test --test-options '-p "Alu"'`
 Expected: PASS — both `alu core` and `dataResult wrapper` groups green.
 
 - [ ] **Step 3: Confirm the whole suite is green**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — smoke, Crc, Isa, Config, Serdes, Trace, Branch, Alu all green.
 
 - [ ] **Step 4: Commit the ALU feature (scaffold + wrapper + tests + core together)**
@@ -632,17 +632,17 @@ If any of these still says `ORI` or a bare `ext(imm)`, fix it to match (`li` = `
 
 - [ ] **Step 2: Full build**
 
-Run: `stack build`
+Run: `cabal build`
 Expected: PASS (cold Clash/GHC builds are slow — expected; caching is load-bearing).
 
 - [ ] **Step 3: Full test suite**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — all groups green, including the new `Branch` and `Alu` groups and the tightened `Isa` decode case.
 
 - [ ] **Step 4: Clash codegen smoke**
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: PASS — confirms the two new pure modules are Clash-clean even though `topEntity` does not reference them yet (this exercises library compilation under Clash, not new gateware).
 
 - [ ] **Step 5: Commit the doc fix if Step 1 required one**
@@ -662,7 +662,7 @@ If Step 1 required no edit, skip this commit.
 
 - `Tamal.Alu` (`AluOp`, `alu`, `dataResult`) and `Tamal.Branch` (`BranchOp`, `branchTaken`) exist under `hdl/src/Tamal/`, each with the SPDX/REUSE header.
 - `decodeData` rejects the reserved `SHIFT` op `0b11` with `Left ReservedFieldNonZero`.
-- `Test.Alu`, `Test.Branch`, and the new `Test.Isa` case pass under `stack test`; the full suite is green.
-- `stack run clash -- Tamal --verilog` succeeds (codegen smoke).
+- `Test.Alu`, `Test.Branch`, and the new `Test.Isa` case pass under `cabal test`; the full suite is green.
+- `cabal run clash -- Tamal --verilog` succeeds (codegen smoke).
 - Commits: (1) decode trap, (2) Branch feature, (3) ALU feature, (+ optional doc fix).
 - Out of scope, unchanged: register file, `Engine.step`, `RDSR`, BUS-op execution, signed branches, `li` constant-tiling (spec §2, §14).

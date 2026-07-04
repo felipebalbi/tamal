@@ -42,7 +42,7 @@ tamal now builds to a v1 bitstream (controller role, x1 I/O, UART transport).
 | `Tamal` (top)       | synthesis entry point: clock + `espiPads` + named pins (4 scalar `inout` IO lanes)                          | done                                  |
 
 Nothing absent: the full pipeline (host UART → loader → engine → eSPI pads →
-trace → drain) is wired and cosim-tested; `stack run clash -- Tamal --verilog`
+trace → drain) is wired and cosim-tested; `cabal run clash -- Tamal --verilog`
 emits the top with four `inout` IO lanes (`io0`..`io3`).
 
 ## What remains: the impure `topEntity` shell
@@ -216,8 +216,8 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
 1. **brainstorming** skill → design doc at
    `docs/superpowers/specs/YYYY-MM-DD-tamal-<piece>-design.md`, committed.
 2. **writing-plans** skill → TDD plan at `docs/superpowers/plans/`.
-3. Execute the plan test-first. Everything runs from `hdl/`: `stack test`,
-   `make format` before each commit, `stack run clash -- Tamal --verilog` as a
+3. Execute the plan test-first. Everything runs from `hdl/`: `cabal test`,
+   `make format` before each commit, `cabal run clash -- Tamal --verilog` as a
    codegen smoke. Keep the split-license headers on new `hdl/**/*.hs` files
    (CERN-OHL-P-2.0).
 

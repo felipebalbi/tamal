@@ -86,9 +86,10 @@ Split-licensed along the same `crates/` vs `hdl/` boundary:
 Every `hdl/**/*.hs` file carries a REUSE-style header
 (`SPDX-FileCopyrightText` + `SPDX-License-Identifier: CERN-OHL-P-2.0`) — keep it
 on any new HDL file. `hdl/tamal.cabal` uses `license: LicenseRef-CERN-OHL-P-2.0`
-(not the bare `CERN-OHL-P-2.0`) **only** because the pinned Cabal 3.12 predates
-the SPDX-list entry added in Cabal-syntax 3.14; switch to the bare id once the
-`stack.yaml` snapshot moves to Cabal ≥ 3.14. Note `CERN_OHL_P_2_0` (underscores)
+(not the bare `CERN-OHL-P-2.0`) **only** because older Cabal-syntax versions
+predate the SPDX-list entry added in Cabal-syntax 3.14; switch to the bare id
+once the pinned toolchain (`cabal.project` `with-compiler`) ships Cabal-syntax
+≥ 3.14. Note `CERN_OHL_P_2_0` (underscores)
 is just the Haskell constructor in `Distribution.SPDX.LicenseId` — the cabal
 field and SPDX headers use the hyphenated string.
 
@@ -108,7 +109,7 @@ field and SPDX headers use the hyphenated string.
 Two stages, mirroring the sibling Clash/Quartus examples but retargeted to
 Vivado's Tcl-batch model (no discrete `map/fit/asm` binaries):
 
-1. **Clash → Verilog:** `stack run clash -- Tamal --verilog` →
+1. **Clash → Verilog:** `cabal run clash -- Tamal --verilog` →
    `verilog/Tamal.topEntity/`.
 2. **Verilog → bitstream:** stage HDL into `_build/Tamal/01-hdl/`, then a
    **single non-project flow** (`vivado/build.tcl`, one Vivado launch) under
@@ -134,7 +135,7 @@ Vivado's Tcl-batch model (no discrete `map/fit/asm` binaries):
   (`unsafeFromActiveHigh (pure False)`), relying on power-up `init`, like the
   sibling examples; Clash then emits no `reset` port.
 - The `common-options` ghc-options in `tamal.cabal` are load-bearing for
-  Clash — don't trim them. Don't bump Clash off the `stack.yaml` pin without
+  Clash — don't trim them. Don't bump Clash off the `cabal.project` pin without
   updating the `clash-prelude` bound.
 
 ## Implementation phases (north star)

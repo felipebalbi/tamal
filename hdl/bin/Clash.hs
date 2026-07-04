@@ -5,7 +5,7 @@
 
    Generate Verilog with:
 
-       stack run clash -- Tamal --verilog
+       cabal run clash -- Tamal --verilog
 
    The HDL lands in verilog/Tamal.topEntity/. This file is taken verbatim
    from the upstream clash-starters projects. -}

@@ -6,7 +6,7 @@
 
 **Architecture:** Three pure layers, each with its own round-trip property (spec §4). `Tamal.Wire.Cobs` is a dependency-free leaf (`cobsEncode`/`cobsDecode :: -> Maybe`). `Tamal.Wire` sits above it: `wordToBytesLE`/`bytesToWordLE`, a `crc8` fold reusing `Tamal.Crc`, a framing layer (`frameEncode`/`frameDecode` = COBS + CRC + `0x00` delimiter), and a message layer (`encodeControl`/`decodeControl`, `encodeResult`/`decodeResult`) over the `ControlMsg`/`WireError` ADTs. Everything is `[BitVector 8]` **list** reference model — like `Trace.encodeRecord`, not synthesizable; the streaming realization is the piece-3 loader.
 
-**Tech Stack:** Clash 1.10 (`clash-prelude`), tasty + tasty-hunit + tasty-hedgehog, `clash-prelude-hedgehog`. Build/test with `stack` from `hdl/`.
+**Tech Stack:** Clash 1.10 (`clash-prelude`), tasty + tasty-hunit + tasty-hedgehog, `clash-prelude-hedgehog`. Build/test with `cabal` from `hdl/`.
 
 **Collaboration model (TDD ping-pong, per spec §9 / decision D9):** For each slice the **assistant writes the failing test** (the test code in this plan is authoritative and complete), the **author writes the Clash under `src/`** to make it pass (the implementation code blocks are a correct reference target — refine together in the green step), then both **refactor**. This is a Clash learning exercise.
 
@@ -19,7 +19,7 @@
   -- SPDX-FileCopyrightText: 2026 Felipe Balbi
   -- SPDX-License-Identifier: CERN-OHL-P-2.0
   ```
-- `make format` before each commit; `stack test` must stay green.
+- `make format` before each commit; `cabal test` must stay green.
 - **List gotcha:** `Clash.Prelude` re-exports `map`/`(++)`/`reverse`/`foldl'` as the **`Vec`** versions. For `[BitVector 8]` list work use `import qualified Data.List as L` (`L.length`, `L.foldl'`, `L.concatMap`, `L.last`, `L.init`, `L.null`, `L.elem`, `L.zip`), the list `(<>)`/`(:)`, and list comprehensions — never the bare `Vec` ones. `reverse`/`unpack`/`pack`/`toList` on a `Vec` come from `Clash.Prelude` unqualified.
 
 ---
@@ -114,8 +114,8 @@ tests =
 
 - [ ] **Step 5: Run the suite** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
-Expected: PASS (2 cases). Run `stack build` too, to confirm the library compiles.
+Run: `cabal test --test-options '-p "/Wire/"'`
+Expected: PASS (2 cases). Run `cabal build` too, to confirm the library compiles.
 
 - [ ] **Step 6: Format and commit.**
 
@@ -183,7 +183,7 @@ Add these cases to the `testGroup` list:
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: FAIL — `Tamal.Wire.Cobs` does not exist / `cobsEncode` not in scope (module won't compile).
 
 - [ ] **Step 3: Create `hdl/src/Tamal/Wire/Cobs.hs`** (author) with `cobsEncode`:
@@ -229,7 +229,7 @@ cobsEncode = go []
 
 - [ ] **Step 5: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: PASS (LE cases + 5 encode vectors + no-zero property).
 
 - [ ] **Step 6: Format and commit.**
@@ -270,7 +270,7 @@ Add to the `testGroup` list:
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: FAIL — `cobsDecode` not in scope (not yet exported/defined).
 
 - [ ] **Step 3: Add `cobsDecode`** (author). Widen the export list to `( cobsEncode, cobsDecode )` and add:
@@ -311,7 +311,7 @@ takeExactly k (x : xs) = do
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: PASS (round-trip over zero-dense inputs + 3 malformed cases).
 
 - [ ] **Step 5: Format and commit.**
@@ -360,7 +360,7 @@ Add to the `testGroup` list:
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: FAIL — `crc8`/`frameEncode`/`frameDecode`/`WireError` not in scope.
 
 - [ ] **Step 3: Implement the framing layer** (author). Update `Tamal.Wire`'s imports, module export list, and add the definitions:
@@ -430,7 +430,7 @@ splitLastByte xs
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: PASS (CRC vector, frame round-trip, delimiter invariant, corruption).
 
 - [ ] **Step 5: Format and commit.**
@@ -467,7 +467,7 @@ git commit -m "feat(hdl): Wire framing layer (CRC-8 + COBS + delimiter) and Wire
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: FAIL — `ControlMsg`/`encodeControl`/`decodeControl` not in scope.
 
 - [ ] **Step 3: Implement the control message layer** (author). Add `ControlMsg (..)`, `encodeControl`, `decodeControl` to the export list, and:
@@ -516,7 +516,7 @@ bytesToWords _ = Left BadPayloadLen
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: PASS (control round-trips + error taxonomy).
 
 - [ ] **Step 5: Format and commit.**
@@ -550,7 +550,7 @@ git commit -m "feat(hdl): Wire control messages (LOAD_PROGRAM/TRIGGER) + error t
 
 - [ ] **Step 2: Run to verify it fails** (assistant).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: FAIL — `encodeResult`/`decodeResult` not in scope.
 
 - [ ] **Step 3: Implement the result layer** (author). Add `encodeResult`, `decodeResult` to the export list, and:
@@ -576,7 +576,7 @@ decodeResult wire = do
 
 - [ ] **Step 4: Run to verify it passes** (author).
 
-Run: `stack test --test-arguments '-p "/Wire/"'`
+Run: `cabal test --test-options '-p "/Wire/"'`
 Expected: PASS (result round-trips + cross-direction rejection).
 
 - [ ] **Step 5: Format and commit.**
@@ -596,12 +596,12 @@ git commit -m "feat(hdl): Wire result frames (TRACE_DRAIN word stream)"
 
 - [ ] **Step 1: Run the whole test suite** (author/assistant).
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — all groups (`Crc`, `Isa`, `Config`, `Serdes`, `Trace`, `Branch`, `Alu`, `RegFile`, `Uart`, `Engine`, `Mem`, `Wire`).
 
 - [ ] **Step 2: Clash codegen smoke** — the wire core is a pure `[BitVector 8]` reference model (not in `topEntity`, and list-returning like `Tamal.Trace`), so this only confirms the library still compiles under the Clash executable path.
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: succeeds (generates `verilog/Tamal.topEntity/`; the placeholder heartbeat top is still the entity — the loader wires the wire core in later).
 
 - [ ] **Step 3: Format check.**
@@ -636,4 +636,4 @@ git commit -m "docs(hdl): wire format (Tamal.Wire) done + tested; loader is next
 
 ## Execution note
 
-Each task is self-contained (its own red → green → refactor → commit) and leaves `stack test` green. Tasks are strictly ordered by dependency (`Cobs` before the framing layer; the framing layer before the message layers), so they are **not** parallelizable — run them in sequence.
+Each task is self-contained (its own red → green → refactor → commit) and leaves `cabal test` green. Tasks are strictly ordered by dependency (`Cobs` before the framing layer; the framing layer before the message layers), so they are **not** parallelizable — run them in sequence.

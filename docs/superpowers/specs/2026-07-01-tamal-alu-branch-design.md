@@ -481,9 +481,9 @@ From `hdl/` (cold Clash/GHC builds are slow — expected; caching is load-bearin
 in CI):
 
 ```
-stack build
-stack test                       # hedgehog: Test.Alu, Test.Branch, Test.Isa (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — confirms the new modules are
+cabal build
+cabal test                       # hedgehog: Test.Alu, Test.Branch, Test.Isa (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — confirms the new modules are
                                      # Clash-clean even though they aren't in topEntity yet
 ```
 

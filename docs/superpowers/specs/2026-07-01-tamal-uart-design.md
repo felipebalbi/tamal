@@ -306,9 +306,9 @@ resetGen enableGen`) rather than the pure-function style. New `Test.Uart` module
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog: Test.Uart (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — the UART modules are Clash-clean
+cabal build
+cabal test                           # hedgehog: Test.Uart (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — the UART modules are Clash-clean
 make format-check                    # fourmolu style gate
 ```
 

@@ -392,9 +392,9 @@ loader is wired to pins in piece 5.
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog + HUnit: Test.Loader (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — Tamal.Loader compiles under Clash
+cabal build
+cabal test                           # hedgehog + HUnit: Test.Loader (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — Tamal.Loader compiles under Clash
 make format-check                    # fourmolu style gate
 ```
 

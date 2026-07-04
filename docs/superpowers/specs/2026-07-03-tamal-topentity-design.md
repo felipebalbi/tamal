@@ -310,7 +310,7 @@ cycle (the Dom100 `sampleN` cycle-0 reset idiom, per `hdl/PLAN.md`).
 
 ### 6.3 Codegen + build gates
 
-- `stack run clash -- Tamal --verilog` succeeds; **inspect the port list** for the
+- `cabal run clash -- Tamal --verilog` succeeds; **inspect the port list** for the
   intended `inout` `io` (decision 9) + `uart_rx`/`uart_tx`/`cs_n`/`sck`/`reset_n`/
   `alert_n`/`led`/`clk`. Resolve the port shape here **before** finalizing the XDC.
 - `cd hdl && make` → `tamal.bit` (full Vivado non-project flow) is the ultimate gate;
@@ -341,8 +341,8 @@ No engine/leaf changes.
 From `hdl/`:
 
 ```
-stack test                           # hedgehog + HUnit: Test.Top (+ existing)
-stack run clash -- Tamal --verilog   # codegen gate — confirm inout/ports
+cabal test                           # hedgehog + HUnit: Test.Top (+ existing)
+cabal run clash -- Tamal --verilog   # codegen gate — confirm inout/ports
 make format-check                    # fourmolu (make format to fix)
 make                                 # full Vivado -> tamal.bit (toolchain-dependent)
 ```

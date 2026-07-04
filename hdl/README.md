@@ -34,24 +34,24 @@ The module-by-module map and roadmap live in [`PLAN.md`](PLAN.md).
 ```sh
 make                 # Clash -> Verilog -> Vivado synth/place/route -> tamal.bit
 make program         # flash the Arty A7 over JTAG
-make test            # Haskell unit + cosim tests (stack test)
+make test            # Haskell unit + cosim tests (cabal test)
 make format          # fourmolu (in place)
 make format-check    # fourmolu style gate
 make clean
 ```
 
-Two stages (both under `_build/Tamal/`): (1) `stack run clash -- Tamal --verilog`
+Two stages (both under `_build/Tamal/`): (1) `cabal run clash -- Tamal --verilog`
 emits `verilog/Tamal.topEntity/`; (2) a single non-project Vivado flow
 (`vivado/build.tcl`) synthesizes to `tamal.bit`, writing timing/util/DRC reports
 for inspection. Tool paths come from `build.cfg` (copy to `build.cfg.local` to
 override; `VIVADO` defaults to `vivado` on `PATH`). Needs GNU Make, a Unix-ish
-shell, `stack`, and Vivado.
+shell, GHC 9.10.3 + `cabal` (e.g. via `ghcup`), and Vivado.
 
-Interactive Clash REPL: `stack run clashi` (e.g. `sampleN`, `:verilog <expr>`).
+Interactive Clash REPL: `cabal run clashi` (e.g. `sampleN`, `:verilog <expr>`).
 
 ## Testing
 
-`stack test` runs the tasty suite (hedgehog + HUnit). Each pure leaf and the
+`cabal test` runs the tasty suite (hedgehog + HUnit). Each pure leaf and the
 engine keystone are property-tested against reference models. The integration is
 covered by:
 
@@ -60,7 +60,7 @@ covered by:
   `TRIGGER` onto the UART line, run load → run → drain, decode the UART output, and
   assert the drained trace (`REVISION` + records + `HALT` terminator) plus eSPI pin
   activity. This exercises UART → loader → engine → eSPI → ring → drain in one shot.
-- **Codegen gate** — `stack run clash -- Tamal --verilog` must emit the top with
+- **Codegen gate** — `cabal run clash -- Tamal --verilog` must emit the top with
   the four `inout` IO lanes; then `make` (Vivado) is the ultimate gate.
 
 ## Pin map (Arty A7-100T)

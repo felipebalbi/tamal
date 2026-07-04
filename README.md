@@ -53,7 +53,7 @@ tested in Clash — the RISC-V-flavored cycle engine, the instruction + trace-ri
 block RAMs, the COBS/CRC-8 wire format, the UART load/drain loader, the tri-state
 eSPI pad boundary, and the `topEntity` that wires it all to the Arty A7 pins. A
 whole-system cosim streams a program in over UART, runs it, and checks the drained
-trace end to end; `stack run clash -- Tamal --verilog` emits a synthesizable top
+trace end to end; `cabal run clash -- Tamal --verilog` emits a synthesizable top
 (four `inout` IO lanes) and `cd hdl && make` builds a bitstream. v1 is controller
 role, single (x1) I/O, UART transport; on-hardware bring-up, target role,
 dual/quad I/O, and the error-injection + verdict engine are the next phases. See
@@ -105,11 +105,12 @@ The gateware is a self-contained project; build it from its own directory:
 cd hdl
 make                   # Clash -> Verilog -> Vivado synth/impl/bitstream
 make program           # flash the Arty A7 over JTAG
-make test              # Haskell unit tests (stack test)
+make test              # Haskell unit tests (cabal test)
 make clean
 ```
 
-`make` needs GNU Make, a Unix-ish shell (coreutils), `stack`, and Vivado. If
+`make` needs GNU Make, a Unix-ish shell (coreutils), GHC 9.10.3 + `cabal` (e.g.
+via `ghcup`), and Vivado. If
 `vivado` isn't on your `PATH`, copy `hdl/build.cfg` to `hdl/build.cfg.local`
 and set `VIVADO` there.
 

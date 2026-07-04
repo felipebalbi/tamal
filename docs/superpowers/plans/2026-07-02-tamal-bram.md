@@ -6,7 +6,7 @@
 
 **Architecture:** Each memory is a one-line wrapper over Clash's `blockRamPow2 (repeat 0)`, addressed with the engine's native `Unsigned 10`/`Unsigned 12` types. Tests sample the impure `Signal` via `Clash.Prelude.sampleN` (which supplies clock/reset/enable) and compare against a pure assoc-list reference that mirrors `blockRam`'s zero-init, 1-cycle-latency, read-before-write semantics. Ring depth 4096 makes `termAddr = maxBound = D−1` already correct — no engine behavior change.
 
-**Tech Stack:** Clash (`clash-prelude` 1.10), `blockRamPow2`; tasty + tasty-hedgehog + tasty-hunit; `stack` build from `hdl/`.
+**Tech Stack:** Clash (`clash-prelude` 1.10), `blockRamPow2`; tasty + tasty-hedgehog + tasty-hunit; `cabal` build from `hdl/`.
 
 **Division of labour (ping-pong TDD — this is a learning tool):** the **assistant writes the failing tests** and mentors on the Clash idioms; the **author writes the synthesizable Clash under `src/`** to make them pass; the two refactor together. Steps are tagged **[assistant]** (test) or **[author]** (`src/`) where it matters; untagged steps (run/commit) are shared.
 
@@ -34,10 +34,10 @@ All new `hdl/**/*.hs` files carry the REUSE/SPDX header:
 ```
 
 **Commands (run from `hdl/`):**
-- Full suite: `stack test`
-- Focused: `stack test --test-arguments '-p "/Mem/"'` (tasty `-p` awk-pattern)
+- Full suite: `cabal test`
+- Focused: `cabal test --test-options '-p "/Mem/"'` (tasty `-p` awk-pattern)
 - Formatter: `make format` (fourmolu; run before every commit) / `make format-check`
-- Codegen smoke: `stack run clash -- Tamal --verilog`
+- Codegen smoke: `cabal run clash -- Tamal --verilog`
 
 ---
 
@@ -192,7 +192,7 @@ and add it to the `tests` list (after `Test.Engine.tests`):
 
 - [ ] **Step 4: run the suite — verify the new test FAILS (red)**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
+Run: `cabal test --test-options '-p "/Mem/"'`
 Expected: builds cleanly; `Mem` group fails — the `instr: write then read-back` case errors on `undefined` (an exception / `errorX`), while the other 92 tests are unaffected.
 
 - [ ] **Step 5 [author]: implement `instrRam` (green)**
@@ -207,8 +207,8 @@ instrRam = blockRamPow2 (repeat 0)
 
 - [ ] **Step 6: run the suite — verify green**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
-Expected: `Mem` group passes (1 case). Then `stack test` → all 93 pass.
+Run: `cabal test --test-options '-p "/Mem/"'`
+Expected: `Mem` group passes (1 case). Then `cabal test` → all 93 pass.
 
 - [ ] **Step 7: format and commit**
 
@@ -254,7 +254,7 @@ Add these three `testCase`s to the `Mem` `tests` list in `hdl/tests/Test/Mem.hs`
 
 - [ ] **Step 2: run — verify all pass**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
+Run: `cabal test --test-options '-p "/Mem/"'`
 Expected: 4 `Mem` cases pass. If the collision case fails, Clash's `blockRam` is *not* read-before-write in this version — stop and reconcile `refRam`/the design before continuing.
 
 - [ ] **Step 3: format and commit**
@@ -312,7 +312,7 @@ Add these two `testCase`s to the `Mem` list:
 
 - [ ] **Step 2: run — verify the ring cases FAIL (red)**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
+Run: `cabal test --test-options '-p "/Mem/"'`
 Expected: the two `ring:` cases error on `undefined` (`ringRam` unimplemented); the four instr cases still pass.
 
 - [ ] **Step 3 [author]: implement `ringRam` (green)**
@@ -325,7 +325,7 @@ ringRam = blockRamPow2 (repeat 0)
 
 - [ ] **Step 4: run — verify green**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
+Run: `cabal test --test-options '-p "/Mem/"'`
 Expected: all six `Mem` cases pass.
 
 - [ ] **Step 5 [author]: reconcile the engine's `termAddr` comment (non-behavioral)**
@@ -339,7 +339,7 @@ record slot sits at @termAddr - 1@ (see 'pushWord').
 -}
 ```
 
-The definition `termAddr = maxBound` is unchanged. Confirm the engine still builds and its tests pass (this only edits a comment): `stack test --test-arguments '-p "/Engine/"'` → all pass.
+The definition `termAddr = maxBound` is unchanged. Confirm the engine still builds and its tests pass (this only edits a comment): `cabal test --test-options '-p "/Engine/"'` → all pass.
 
 - [ ] **Step 6: format and commit**
 
@@ -420,8 +420,8 @@ Add these to the `Mem` `tests` list:
 
 - [ ] **Step 3: run — verify all properties pass**
 
-Run: `stack test --test-arguments '-p "/Mem/"'`
-Expected: 6 unit cases + 3 properties pass (each property `✓ passed 100 tests`). Then `stack test` → all pass.
+Run: `cabal test --test-options '-p "/Mem/"'`
+Expected: 6 unit cases + 3 properties pass (each property `✓ passed 100 tests`). Then `cabal test` → all pass.
 
 - [ ] **Step 4: format and commit**
 
@@ -441,7 +441,7 @@ Confirms the whole branch is green, style-clean, and Clash-clean. No new code ex
 
 - [ ] **Step 1: full test suite**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: all tests pass — the original 92 plus the 9 new `Mem` cases/properties (101 total), 0 failures.
 
 - [ ] **Step 2: format gate**
@@ -456,7 +456,7 @@ git commit -m "style(hdl): fourmolu format Tamal.Mem + Test.Mem"
 
 - [ ] **Step 3: Clash codegen smoke**
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: completes without error (the `clash` executable builds the `tamal` library including `Tamal.Mem`, confirming it is Clash-clean; the placeholder top is unchanged, so no `Mem` gateware is emitted yet).
 
 - [ ] **Step 4: report**
@@ -480,7 +480,7 @@ Confirm branch `feat/hdl-bram` is green and ready to integrate (or to continue w
 - §7.4 C5 read-before-write collision → Task 2. ✓
 - §7.4 C6 ring drain sweep → Task 3. ✓
 - §8 files touched → all covered (Mem.hs, Test/Mem.hs, cabal, unittests.hs, Engine.hs). ✓
-- §9 verification (stack test / format / clash smoke) → Task 5. ✓
+- §9 verification (cabal test / format / clash smoke) → Task 5. ✓
 
 **2. Placeholder scan:** no TBD/TODO; every code step shows complete code; the deliberate `undefined` bodies are transient red-state skeletons, each replaced within the same task (`instrRam` Task 1 Step 5, `ringRam` Task 3 Step 3). ✓
 

@@ -327,7 +327,7 @@ testable pure functions; named-port record idiom (`"clk" ::: …`) at the top.
 
 ### 11.1 Hedgehog property-test plan
 `tests/` uses tasty + tasty-hedgehog + hedgehog + clash-prelude-hedgehog
-(`clash-prelude-hedgehog` is already pinned in `hdl/stack.yaml`; add `hedgehog`
+(`clash-prelude-hedgehog` is already pinned in `hdl/cabal.project`; add `hedgehog`
 and `tasty-hedgehog` to the `tamal.cabal` test-suite).
 
 1. **ISA round-trip**: `decode (encode i) ≡ Right i`; random 32-bit words decode
@@ -346,9 +346,9 @@ and `tasty-hedgehog` to the `tamal.cabal` test-suite).
    preserves the HALT slot.
 
 ### 11.2 CI (`.github/workflows/ci.yml`, ubuntu, no Vivado)
-- **hdl job** (`working-directory: hdl`): setup stack/GHC → cache `~/.stack` +
-  `hdl/.stack-work` (keyed on `stack.yaml.lock`) → `stack build` → `stack test`
-  (hedgehog) → `stack run clash -- Tamal --verilog` (codegen smoke). Cold
+- **hdl job** (`working-directory: hdl`): setup GHC + cabal → cache `~/.cabal/store` +
+  `hdl/dist-newstyle` (keyed on `cabal.project.freeze`) → `cabal build` → `cabal test`
+  (hedgehog) → `cabal run clash -- Tamal --verilog` (codegen smoke). Cold
   GHC/Clash build is slow, so caching is load-bearing.
 - **rust job**: `dtolnay/rust-toolchain` (stable + clippy + rustfmt) →
   `Swatinem/rust-cache` → `cargo build --workspace` → `cargo test --workspace` →

@@ -8,7 +8,7 @@
 
 **Architecture:** Four modules under `Tamal.Uart.*`: `BaudGen` (NCO `oversampleTick`), `Rx` (`uartRx`), `Tx` (`uartTx`), and the `uart` umbrella. RX/TX are Mealy machines gated by the shared oversample tick; the NCO is a phase accumulator. Tests drive the sequential logic with Clash `sampleN`/`fromList`.
 
-**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Stack; tasty + tasty-hunit + tasty-hedgehog + hedgehog; fourmolu (2-space, leading commas). Source of truth: `docs/superpowers/specs/2026-07-01-tamal-uart-design.md`.
+**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Cabal; tasty + tasty-hunit + tasty-hedgehog + hedgehog; fourmolu (2-space, leading commas). Source of truth: `docs/superpowers/specs/2026-07-01-tamal-uart-design.md`.
 
 **Build order rationale:** BaudGen → **Rx** → **Tx** → uart. `uartRx` is testable standalone (drive `tick = pure True` with a crafted line waveform); `uartTx` is then verified by feeding its line into the now-existing `uartRx` (fast loopback); `uart` closes the loop with the real NCO tick.
 
@@ -120,7 +120,7 @@ Add `Test.Uart` to `hdl/tamal.cabal` `test-suite other-modules` (after `Test.Reg
 
 - [ ] **Step 3 (assistant): run RED**
 
-Run: `stack test --ta '-p "Uart"'`
+Run: `cabal test --test-options '-p "Uart"'`
 Expected: FAIL — the NCO stub errors with `unimplemented (Task 1)`. **Do not commit.**
 
 - [ ] **Step 4 (HUMAN): implement `oversampleTick`**
@@ -148,7 +148,7 @@ oversampleTick baud = tick
 
 - [ ] **Step 5 (assistant): run GREEN, format, commit**
 
-Run: `stack test --ta '-p "Uart"'` (expect PASS), then `make format`, then `stack test` (all green).
+Run: `cabal test --test-options '-p "Uart"'` (expect PASS), then `make format`, then `cabal test` (all green).
 
 ```bash
 git add hdl/src/Tamal/Uart/BaudGen.hs hdl/tests/Test/Uart.hs hdl/tamal.cabal hdl/tests/unittests.hs
@@ -259,7 +259,7 @@ Properties (add to the `testGroup "Uart"` list):
 
 - [ ] **Step 3 (assistant): run RED**
 
-Run: `stack test --ta '-p "RX "'` (or `-p "Uart"`).
+Run: `cabal test --test-options '-p "RX "'` (or `-p "Uart"`).
 Expected: FAIL — RX cases error with `unimplemented (Task 2)`. **Do not commit.**
 
 - [ ] **Step 4 (HUMAN): implement `uartRx` (the meaty one)**
@@ -320,7 +320,7 @@ decideBit s = case rxState s of
 
 - [ ] **Step 5 (assistant): run GREEN, format, commit**
 
-Run: `stack test --ta '-p "Uart"'` (expect PASS), `make format`, `stack test`.
+Run: `cabal test --test-options '-p "Uart"'` (expect PASS), `make format`, `cabal test`.
 
 ```bash
 git add hdl/src/Tamal/Uart/Rx.hs hdl/tests/Test/Uart.hs hdl/tamal.cabal
@@ -407,7 +407,7 @@ runFastLoop ins n = sampleN n (fastLoop (fromList (ins <> repeat Nothing)) :: Si
 
 - [ ] **Step 3 (assistant): run RED**
 
-Run: `stack test --ta '-p "Uart"'`
+Run: `cabal test --test-options '-p "Uart"'`
 Expected: FAIL — TX loopback cases error with `unimplemented (Task 3)`. **Do not commit.**
 
 - [ ] **Step 4 (HUMAN): implement `uartTx`**
@@ -450,7 +450,7 @@ txAdvance s = case txState s of
 
 - [ ] **Step 5 (assistant): run GREEN, format, commit**
 
-Run: `stack test --ta '-p "Uart"'` (expect PASS — the loopback lights up), `make format`, `stack test`.
+Run: `cabal test --test-options '-p "Uart"'` (expect PASS — the loopback lights up), `make format`, `cabal test`.
 
 ```bash
 git add hdl/src/Tamal/Uart/Tx.hs hdl/tests/Test/Uart.hs hdl/tamal.cabal
@@ -534,7 +534,7 @@ runFullLoop ins n = sampleN n (fullLoop (fromList (ins <> repeat Nothing)) :: Si
 
 - [ ] **Step 3: run GREEN, format, commit**
 
-Run: `stack test --ta '-p "Uart"'` (expect PASS), `make format`, `stack test`.
+Run: `cabal test --test-options '-p "Uart"'` (expect PASS), `make format`, `cabal test`.
 
 ```bash
 git add hdl/src/Tamal/Uart.hs hdl/tests/Test/Uart.hs hdl/tamal.cabal
@@ -549,7 +549,7 @@ git commit -m "feat(hdl): UART umbrella + full-NCO loopback test"
 
 - [ ] **Step 1: Clash codegen smoke**
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: PASS — the UART modules are Clash-clean (not yet in `topEntity`).
 
 - [ ] **Step 2: format gate**
@@ -571,8 +571,8 @@ git commit -m "docs(hdl): UART done; Engine.step is next"
 ## Done criteria
 
 - `Tamal.Uart.{BaudGen,Rx,Tx}` + `Tamal.Uart` exist (SPDX headers), 8N1, single `Dom100`, 16× NCO oversample, RX framing-error strobe, TX ready handshake.
-- `Test.Uart` passes: NCO rate, RX decode/framing/glitch, TX fast loopback + ready gating, full-NCO loopback — all under `stack test`.
-- `stack run clash -- Tamal --verilog` and `make format-check` pass.
+- `Test.Uart` passes: NCO rate, RX decode/framing/glitch, TX fast loopback + ready gating, full-NCO loopback — all under `cabal test`.
+- `cabal run clash -- Tamal --verilog` and `make format-check` pass.
 - Commits: NCO, RX, TX, umbrella, roadmap.
 - Out of scope, unchanged: the topEntity load/drain FSM, configurable framing/oversampling, the Engine, the host `tamal-loader` (spec §2, §13).
 ```

@@ -6,7 +6,7 @@
 
 **Architecture:** All BiSignal lives in the shell so `system` is plain-`Signal` and testable end-to-end via a UART line-level cosim (serialize a `Tamal.Wire` control frame → run → decode `txLine` → assert the drained trace). Pure helpers (`stepM`, `ringWrite`, `rigState`, `ledPattern`) are hedgehog-tested; the shell is validated by the `--verilog` codegen gate.
 
-**Tech Stack:** Clash 1.10, Haskell, `stack`, tasty + tasty-hedgehog + tasty-hunit, fourmolu, Vivado (XDC).
+**Tech Stack:** Clash 1.10, Haskell, `cabal`, tasty + tasty-hedgehog + tasty-hunit, fourmolu, Vivado (XDC).
 
 **Division of labor (ping-pong TDD):** steps tagged **(assistant)** are the failing tests, cabal, and docs; steps tagged **(author)** are the synthesizable Clash under `src/`.
 
@@ -139,7 +139,7 @@ and add it to the `tests` list (after `Test.Io.tests`):
 
 - [ ] **Step 5: build the suite**
 
-Run: `stack test 2>&1 | tail -5`
+Run: `cabal test 2>&1 | tail -5`
 Expected: PASS — suite compiles, empty `"Top"` group present.
 
 - [ ] **Step 6: commit**
@@ -228,7 +228,7 @@ tests =
 
 - [ ] **Step 2: run to verify red**
 
-Run: `stack test 2>&1 | tail -30`
+Run: `cabal test 2>&1 | tail -30`
 Expected: FAIL — the `Top` cases error on `undefined` (`stepM`/`ringWrite`/`rigState`/`ledPattern`).
 
 - [ ] **Step 3 (author): implement the pure helpers**
@@ -250,7 +250,7 @@ rigState running False = if running then Running else Waiting
 
 - [ ] **Step 4: run to verify green**
 
-Run: `stack test 2>&1 | tail -20`
+Run: `cabal test 2>&1 | tail -20`
 Expected: PASS — all `Top` pure-helper cases green (`system` still `undefined`, but no test forces it yet).
 
 - [ ] **Step 5: format and commit**
@@ -372,7 +372,7 @@ Append these cases to the `Top` `testGroup` list:
 
 - [ ] **Step 2: run to verify red**
 
-Run: `stack test 2>&1 | tail -30`
+Run: `cabal test 2>&1 | tail -30`
 Expected: FAIL — the two `cosim:` cases error on `system = undefined`; the pure-helper cases still pass.
 
 - [ ] **Step 3 (author): implement `system`**
@@ -428,7 +428,7 @@ The `BusOut` projections (`pcO`/`lanesO`/`csO`/…) already use distinct local n
 
 - [ ] **Step 4: run to verify green**
 
-Run: `stack test 2>&1 | tail -25`
+Run: `cabal test 2>&1 | tail -25`
 Expected: PASS — both `cosim:` cases green (`Right [0x00010000, 0xC0000000]`, CS#/SCK activity), all `Top` + prior tests pass.
 
 If the drain decode fails or is empty, bump `nExtra` (the run needs load + a ~2-word UART drain ≈ 6–8k cycles; 20000 is generous) and confirm on a longer window; the expected words are fixed by `revisionWord = 0x00010000` and the `Halt 0` terminator `0xC0000000` (§ engine).
@@ -497,12 +497,12 @@ makeTopEntity 'topEntity
 
 - [ ] **Step 2: build**
 
-Run: `stack build 2>&1 | tail -5`
+Run: `cabal build 2>&1 | tail -5`
 Expected: success (library compiles; `Tamal.hs` type-checks against `system`/`espiPads`).
 
 - [ ] **Step 3 (assistant): codegen gate — confirm the inout port shape**
 
-Run: `stack run clash -- Tamal --verilog 2>&1 | tail -10`
+Run: `cabal run clash -- Tamal --verilog 2>&1 | tail -10`
 Expected: `Clash: Total compilation took …` (success).
 
 Then inspect the emitted top's ports:
@@ -553,7 +553,7 @@ Update the file's header comment to note it now constrains the full eSPI/UART/LE
 
 - [ ] **Step 2: codegen still clean + format**
 
-Run: `stack run clash -- Tamal --verilog 2>&1 | tail -3 && make format-check 2>&1 | tail -2`
+Run: `cabal run clash -- Tamal --verilog 2>&1 | tail -3 && make format-check 2>&1 | tail -2`
 Expected: codegen success; fourmolu clean (run `make format` if not).
 
 Note: `cd hdl && make` (full Vivado → `tamal.bit`) is the ultimate gate but is toolchain-dependent; run it where Vivado is available. It is not required to pass in a Vivado-less environment.
@@ -564,7 +564,7 @@ In `hdl/PLAN.md`: change the `Tamal` (top) table row status from `**placeholder 
 
 - [ ] **Step 4: full test run + commit**
 
-Run: `stack test 2>&1 | tail -5`
+Run: `cabal test 2>&1 | tail -5`
 Expected: PASS (all tests, `Top` included).
 
 ```bash

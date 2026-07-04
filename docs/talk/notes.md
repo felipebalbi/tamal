@@ -123,7 +123,7 @@ source both **simulates** (pure Haskell) and **synthesizes** (to Verilog).
   infinite lazy list. No process spawn, no VCD, no simulator handshake, no
   I/O. A "hardware simulation" is a list traversal.
 
-- Live-demo candidate: run `stack test`, let the wall-clock land under a second,
+- Live-demo candidate: run `cabal test`, let the wall-clock land under a second,
   then point out how many hardware cycles were just simulated.
 
 ### Property-based testing (hedgehog)
@@ -145,7 +145,7 @@ source both **simulates** (pure Haskell) and **synthesizes** (to Verilog).
 ### One source, two targets
 
 - The exact same `system`/`step` code that the test suite *evaluates* is what Clash
-  *compiles to Verilog*. `stack run clash -- Tamal --verilog` emits a synthesizable
+  *compiles to Verilog*. `cabal run clash -- Tamal --verilog` emits a synthesizable
   top; `cd hdl && make` → `tamal.bit`.
 
 - `clashi` (the Clash REPL) simulates and can `:verilog <expr>` on demand — you can
@@ -311,7 +311,7 @@ boundary probe cheap; TDD made sure a bug couldn't hide.**
 
 ## Metrics & artifacts to pull from (verify/refresh when building slides)
 
-- **Test suite:** 171 tests, < 700 ms (`stack test`). ~86 `testProperty`, ~99
+- **Test suite:** 171 tests, < 700 ms (`cabal test`). ~86 `testProperty`, ~99
   `testCase` in source (grep overcounts vs the 171 the runner reports — recount
   the exact split for the slide; each property = 100 cases).
 
@@ -367,7 +367,7 @@ boundary probe cheap; TDD made sure a bug couldn't hide.**
 ## TODO before writing the talk
 
 - [ ] Recount exact property/unit split and total generated-case count.
-- [ ] Grab a real `stack test` timing line + a `make` utilization/timing snippet.
+- [ ] Grab a real `cabal test` timing line + a `make` utilization/timing snippet.
 - [ ] Pull 2–3 tight code snippets (`step`, `stepM`+`mealy`, the `topEntity` shell,
       one cosim assertion) sized for slides.
 - [ ] Decide scope: internal team talk vs. conference; adjust Clash-vs-general-FP depth.

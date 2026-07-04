@@ -4,7 +4,7 @@
 {- Wrapper around Clash's interactive REPL (clashi), with the tamal
    project in scope. Start it with:
 
-       stack run clashi
+       cabal run clashi
 
    This file is taken verbatim from the upstream clash-starters projects. -}
 

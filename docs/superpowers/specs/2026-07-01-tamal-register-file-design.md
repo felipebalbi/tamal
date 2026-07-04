@@ -235,9 +235,9 @@ no change: hdl/tests/Test/Gen.hs        -- reuse genReg, genWord; genNonZeroReg/
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog: Test.RegFile (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — confirms Tamal.RegFile is Clash-clean
+cabal build
+cabal test                           # hedgehog: Test.RegFile (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — confirms Tamal.RegFile is Clash-clean
 make format-check                    # fourmolu style gate
 ```
 

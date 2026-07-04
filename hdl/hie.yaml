@@ -1,10 +1,10 @@
 cradle:
-  stack:
+  cabal:
   - path: "src"
-    component: "tamal:lib"
+    component: "lib:tamal"
   - path: "bin/Clash.hs"
-    component: "tamal:exe:clash"
+    component: "exe:clash"
   - path: "bin/Clashi.hs"
-    component: "tamal:exe:clashi"
+    component: "exe:clashi"
   - path: "tests"
-    component: "tamal:test:test-library"
+    component: "test:test-library"

@@ -5,7 +5,7 @@
 # Two-stage build, mirroring the sibling Clash/Quartus examples (e.g. sevenseg)
 # but retargeted from Quartus / Cyclone V to the Vivado / Artix-7 toolchain:
 #
-#   Stage 1  Clash + GHC compile src/ and emit Verilog          (stack)
+#   Stage 1  Clash + GHC compile src/ and emit Verilog          (cabal)
 #   Stage 2  a single non-project Vivado flow (vivado/build.tcl) (this Makefile)
 #            synth -> opt -> place -> route -> bitstream, in ONE Vivado launch
 #            program.tcl                                  -> JTAG flash (volatile)
@@ -31,7 +31,7 @@
 # syntax: `mkdir` creates parents (no `-p`), `cp -r` (not `-a`), and `;`
 # sequences commands (`&&` is unsupported in nushell). Source discovery uses the
 # make built-in `$(wildcard ...)` instead of `$(shell find ...)` so it needs no
-# shell at all. The `clash`/`stack`/`vivado` tools are real executables and run
+# shell at all. The `clash`/`cabal`/`vivado` tools are real executables and run
 # bare. On a POSIX host, point $(NU) at a wrapper or adjust these recipes.
 
 NAME = Tamal

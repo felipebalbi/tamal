@@ -1,0 +1,40 @@
+-- Pin the Clash 1.10.0 toolchain on GHC 9.10.3, the compiler behind Stackage
+-- LTS 24.38 (the snapshot this project used before the Stack -> Cabal move).
+-- This file plus cabal.project.freeze replace the old stack.yaml/stack.yaml.lock:
+--
+--   * with-compiler  fixes the GHC version (install it with `ghcup install ghc 9.10.3`);
+--   * index-state    fixes the Hackage package set to a single instant;
+--   * constraints     force the exact Clash 1.10 packages + solver plugins the
+--                     project was validated against (the old Stack extra-deps);
+--   * cabal.project.freeze locks the ENTIRE transitive graph (the lock-file analog).
+--
+-- A first `cabal build` downloads + compiles clash-lib/clash-ghc into
+-- ~/.local/state/cabal/store (~10-25 min cold); later builds are cached there.
+
+packages: .
+
+with-compiler: ghc-9.10.3
+
+-- The `clash` executable runs GHC on the tamal sources, whose -fplugin flags
+-- (common-options in tamal.cabal) must resolve GHC.TypeLits.* solver modules.
+-- Writing a .ghc.environment.* file makes cabal's whole package closure visible
+-- to that nested GHC session (Stack achieved this via its snapshot package DB).
+write-ghc-environment-files: always
+
+-- Fixed Hackage index instant (captured at migration time). Bump deliberately.
+index-state: 2026-07-04T16:13:10Z
+
+-- Build (and freeze) the test-suite deps too, so the freeze file is complete.
+tests: True
+
+-- Exact toolchain versions, mirroring the former stack.yaml extra-deps. The
+-- deep transitive pins live in cabal.project.freeze.
+constraints:
+  clash-ghc ==1.10.0,
+  clash-lib ==1.10.0,
+  clash-prelude ==1.10.0,
+  clash-prelude-hedgehog ==1.10.0,
+  ghc-typelits-extra ==0.5.3,
+  ghc-typelits-knownnat ==0.8.3,
+  ghc-typelits-natnormalise ==0.9.5,
+  ghc-tcplugin-api ==0.18.2.1

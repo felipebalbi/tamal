@@ -4,9 +4,9 @@
 
 **Goal:** Implement the property-tested pure cores of the tamal SPI-engine ISA — instruction encode/decode, RX CRC-8, config decode, x1 byte serdes + TAR, and result-ring record encoding — plus wire hedgehog into the HDL test suite and stand up HDL+Rust CI.
 
-**Architecture:** Each core is a small, total, synthesizable-where-relevant Haskell/Clash function in its own module under `hdl/src/Tamal/`, with a matching hedgehog property-test module under `hdl/tests/Test/`. No engine FSM, no top-entity/IOBUF/UART, no Vivado — those are later plans (A2 = `Engine.step`; B = top-entity shell). This plan produces a verified library that `stack test` and `cargo test` fully exercise.
+**Architecture:** Each core is a small, total, synthesizable-where-relevant Haskell/Clash function in its own module under `hdl/src/Tamal/`, with a matching hedgehog property-test module under `hdl/tests/Test/`. No engine FSM, no top-entity/IOBUF/UART, no Vivado — those are later plans (A2 = `Engine.step`; B = top-entity shell). This plan produces a verified library that `cabal test` and `cargo test` fully exercise.
 
-**Tech Stack:** Clash 1.10 (Haskell/GHC via stack, LTS 24.38), hedgehog 1.5 + tasty-hedgehog 1.4.0.2 + clash-prelude-hedgehog 1.10.0 (already pinned in `hdl/stack.yaml`), tasty 1.5.4; GitHub Actions for CI (haskell-actions/setup + dtolnay/rust-toolchain).
+**Tech Stack:** Clash 1.10 (Haskell/GHC via cabal, GHC 9.10.3), hedgehog 1.5 + tasty-hedgehog 1.4.0.2 + clash-prelude-hedgehog 1.10.0 (already pinned in `hdl/cabal.project`), tasty 1.5.4; GitHub Actions for CI (haskell-actions/setup + dtolnay/rust-toolchain).
 
 **Reference spec:** `docs/superpowers/specs/2026-07-01-tamal-isa-design.md` (§4 instruction word, §5 BUS, §6 CTRL/DATA, §7 config/CRC, §8 result-ring).
 
@@ -14,7 +14,7 @@
 - Haskell source uses **spaces** (match existing `hdl/src/Tamal/Domain.hs` style).
 - Every new library module is added to `exposed-modules` in `hdl/tamal.cabal`.
 - Every new test module is added to `other-modules` in the `test-library` stanza and aggregated in `hdl/tests/unittests.hs`.
-- All commands run from `hdl/` unless stated. `stack test` runs the suite; `stack build` compiles the library.
+- All commands run from `hdl/` unless stated. `cabal test` runs the suite; `cabal build` compiles the library.
 - ADTs derive `(Generic, Show, Eq)` via `stock` and `NFDataX` via `anyclass` (Clash idiom, per Lion).
 
 ---
@@ -132,7 +132,7 @@ tests =
 
 - [ ] **Step 4: Run the suite to verify hedgehog is wired**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: builds, then `tamal > smoke > pack/unpack byte round-trips: OK` and the suite passes. (First run triggers a cold GHC/Clash build — this is slow but one-time.)
 
 - [ ] **Step 5: Commit**
@@ -221,7 +221,7 @@ Add `Test.Crc` to `other-modules` in `hdl/tamal.cabal`:
     Test.Crc
 ```
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL to compile — `Tamal.Crc` / `crc8Update` not found.
 
 - [ ] **Step 3: Implement `Tamal.Crc`**
@@ -265,7 +265,7 @@ Add `Tamal.Crc` to the library `exposed-modules` in `hdl/tamal.cabal`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — `Crc` group green (both known-answer cases and the residue property).
 
 - [ ] **Step 5: Commit**
@@ -422,7 +422,7 @@ genInstr = Gen.choice [genBusInstr, genCtrlInstr, genDataInstr]
 
 In `hdl/tests/unittests.hs` add `import qualified Test.Isa` and append `Test.Isa.tests` to the list. Add `Test.Isa` to `other-modules` in `hdl/tamal.cabal`.
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL to compile — `Tamal.Isa` not found.
 
 - [ ] **Step 4: Implement `Tamal.Isa` (framework + BUS group)**
@@ -589,7 +589,7 @@ decodeBus sub rd rs1 rs2 imm =
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — `Isa` group green (BUS round-trip, canonical, reserved-trap).
 
 - [ ] **Step 6: Commit**
@@ -628,7 +628,7 @@ Add a property to the `testGroup "Isa"` list:
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL — CTRL instrs currently `encode` to `encodeRest` and `decode` returns `Left OpcodeUnimplemented`.
 
 - [ ] **Step 3: Implement CTRL encode + decode**
@@ -677,7 +677,7 @@ decodeCtrl sub rd rs1 rs2 imm =
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — CTRL round-trip green (BUS still green).
 
 - [ ] **Step 5: Commit**
@@ -718,7 +718,7 @@ Add to the `testGroup "Isa"` list:
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL — DATA instrs `encode` to `encodeRest`, `decode` returns `Left OpcodeUnimplemented`.
 
 - [ ] **Step 3: Implement DATA encode + decode; delete `encodeRest`**
@@ -790,7 +790,7 @@ Add `joinImm20` type is `-> (BitVector 1, BitVector 20)`; `hi` is the reserved b
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — all three groups round-trip; `encode . decode == id` for random valid instrs.
 
 - [ ] **Step 5: Commit**
@@ -846,7 +846,7 @@ tests =
 
 Add `import qualified Test.Config` and `Test.Config.tests` to `hdl/tests/unittests.hs`; add `Test.Config` to `other-modules`.
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL to compile — `Tamal.Config` not found.
 
 - [ ] **Step 3: Implement `Tamal.Config`**
@@ -911,7 +911,7 @@ Add `Tamal.Config` to `exposed-modules` in `hdl/tamal.cabal`.
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — `Config` group green.
 
 - [ ] **Step 5: Commit**
@@ -976,7 +976,7 @@ tests =
 
 Add `import qualified Test.Serdes` and `Test.Serdes.tests` to `hdl/tests/unittests.hs`; add `Test.Serdes` to `other-modules`.
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL to compile — `Tamal.Bus.Serdes` not found.
 
 - [ ] **Step 3: Implement `Tamal.Bus.Serdes`**
@@ -1036,7 +1036,7 @@ Add `Tamal.Bus.Serdes` to `exposed-modules` in `hdl/tamal.cabal`.
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — `Serdes` group green.
 
 - [ ] **Step 5: Commit**
@@ -1099,7 +1099,7 @@ tests =
 
 Add `import qualified Test.Trace` and `Test.Trace.tests` to `hdl/tests/unittests.hs`; add `Test.Trace` to `other-modules`.
 
-Run: `stack test`
+Run: `cabal test`
 Expected: FAIL to compile — `Tamal.Trace` not found.
 
 - [ ] **Step 3: Implement `Tamal.Trace`**
@@ -1161,7 +1161,7 @@ Add `Tamal.Trace` to `exposed-modules` in `hdl/tamal.cabal`.
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `stack test`
+Run: `cabal test`
 Expected: PASS — `Trace` group green.
 
 - [ ] **Step 5: Commit**
@@ -1175,7 +1175,7 @@ git commit -m "feat(hdl): result-ring record encoding + overflow model"
 
 ## Task 9: CI — HDL (hedgehog) + Rust
 
-Two-job GitHub Actions workflow (ubuntu, no Vivado). HDL: stack build + test + Clash codegen smoke, with caching. Rust: build + test + clippy + fmt.
+Two-job GitHub Actions workflow (ubuntu, no Vivado). HDL: cabal build + test + Clash codegen smoke, with caching. Rust: build + test + clippy + fmt.
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
@@ -1204,27 +1204,27 @@ jobs:
 
       - uses: haskell-actions/setup@v2
         with:
-          enable-stack: true
-          stack-version: latest
+          ghc-version: '9.10.3'
+          cabal-version: latest
 
-      - name: Cache stack + GHC + Clash
+      - name: Cache cabal store + dist-newstyle
         uses: actions/cache@v4
         with:
           path: |
-            ~/.stack
-            hdl/.stack-work
-          key: stack-${{ runner.os }}-${{ hashFiles('hdl/stack.yaml.lock', 'hdl/tamal.cabal') }}
+            ~/.cabal/store
+            hdl/dist-newstyle
+          key: cabal-${{ runner.os }}-${{ hashFiles('hdl/cabal.project.freeze', 'hdl/tamal.cabal') }}
           restore-keys: |
-            stack-${{ runner.os }}-
+            cabal-${{ runner.os }}-
 
       - name: Build
-        run: stack build --test --no-run-tests
+        run: cabal build --enable-tests all
 
       - name: Test (hedgehog)
-        run: stack test
+        run: cabal test
 
       - name: Clash -> Verilog codegen smoke
-        run: stack run clash -- Tamal --verilog
+        run: cabal run clash -- Tamal --verilog
 
   rust:
     name: Rust (workspace)
@@ -1258,8 +1258,8 @@ Expected: `ok` (no YAML syntax error). If Python/pyyaml is unavailable, visually
 
 - [ ] **Step 3: Confirm the referenced commands work locally**
 
-Run (from `hdl/`): `stack test` then `stack run clash -- Tamal --verilog`
-Expected: `stack test` passes; the Clash run writes `verilog/Tamal.topEntity/…`.
+Run (from `hdl/`): `cabal test` then `cabal run clash -- Tamal --verilog`
+Expected: `cabal test` passes; the Clash run writes `verilog/Tamal.topEntity/…`.
 
 Run (from repo root): `cargo build --workspace --all-targets`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 Expected: all succeed (scaffold crates compile; no clippy warnings; formatting clean). If `cargo fmt --all --check` reports diffs on the existing scaffold, run `cargo fmt --all` and include that formatting fix in this commit.

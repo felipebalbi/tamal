@@ -316,9 +316,9 @@ modified: hdl/tamal.cabal             -- library exposed-modules += Tamal.Mem
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog + HUnit: Test.Mem (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — confirms Tamal.Mem is Clash-clean
+cabal build
+cabal test                           # hedgehog + HUnit: Test.Mem (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — confirms Tamal.Mem is Clash-clean
 make format-check                    # fourmolu style gate (make format to fix)
 ```
 

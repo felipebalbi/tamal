@@ -102,7 +102,7 @@ later `tamal-asm` (file I/O, CLI) and `tamal-loader` (transport) crates.
 | D6 | **`config` module also gains a host-only `Config::pack`.** | The gateware only ever *decodes* `SET_CONFIG`; the host must *build* the payload. `pack` is the encode direction the HDL doesn't need. The bit layout stays centralized in the ABI, shared with the HDL. |
 | D7 | **Small declarative macro `bounded!(Name, repr, BITS)` generates the newtypes.** | One pure, unit-tested block instead of a dozen near-identical `new`/`TryFrom`/`bits` impls. |
 | D8 | **In-crate `#[cfg(test)]` tests (proptest + golden), not a `tests/` integration dir.** | The pure sub-blocks worth testing (`split_word`, the packers) are `pub(crate)`; inline tests exercise the private seam directly. Property tests mirror `hdl/tests/Test/Isa.hs`. |
-| D9 | **Golden encode vectors cross-checked against the HDL** (a documented `stack` snippet regenerates them). | Turns "hand-computed and hopefully right" into "provably identical to the gateware," the single strongest guard against silent Rust↔Haskell drift. |
+| D9 | **Golden encode vectors cross-checked against the HDL** (a documented `cabal` snippet regenerates them). | Turns "hand-computed and hopefully right" into "provably identical to the gateware," the single strongest guard against silent Rust↔Haskell drift. |
 | D10 | **TDD throughout, proptest where a law generalizes.** | Matches the repo's hedgehog baseline. Round-trip and canonical-or-traps are universally-quantified laws (proptest); reserved-field traps and golden layouts are specific vectors (unit). |
 
 ## 4. The `isa` module
@@ -383,7 +383,7 @@ regenerated/verified from the HDL. The spec records the exact snippet so a futur
 maintainer can re-derive it after any ISA change, from `hdl/`:
 
 ```haskell
--- ghci: stack ghci src/Tamal/Isa.hs
+-- REPL: cabal repl lib:tamal   then   :m *Tamal.Isa
 --   mapM_ (print . encode) [CsAssert, PutByteImm 0x64, TarImm 2, GetByte 5, ...]
 -- Each printed BitVector 32 is the u32 the Rust golden must match.
 ```

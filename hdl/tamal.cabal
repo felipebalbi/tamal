@@ -119,7 +119,7 @@ library
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.
--- Generate Verilog with:  stack run clash -- Tamal --verilog
+-- Generate Verilog with:  cabal run clash -- Tamal --verilog
 executable clash
   main-is: bin/Clash.hs
   default-language: Haskell2010
@@ -131,7 +131,7 @@ executable clash
     ghc-options: -dynamic
 
 -- Builds the executable 'clashi', the Clash REPL, with the tamal project
--- in scope.  Start it with:  stack run clashi
+-- in scope.  Start it with:  cabal run clashi
 executable clashi
   main-is: bin/Clashi.hs
   default-language: Haskell2010
@@ -141,7 +141,7 @@ executable clashi
   build-depends: base, clash-ghc, tamal
 
 -- Pure-Haskell tasty suite (tests/unittests.hs): independent of the Vivado
--- toolchain. Run with `stack test`. other-modules grows as components gain
+-- toolchain. Run with `cabal test`. other-modules grows as components gain
 -- tests.
 test-suite test-library
   import: common-options

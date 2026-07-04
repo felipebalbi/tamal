@@ -1272,7 +1272,7 @@ Expected: PASS (25 tests). These assert existing behavior — if `any_word_decod
 
 - [ ] **Step 3: Cross-check the golden table against the HDL**
 
-From `hdl/`, launch ghci and print the reference words for the exact golden list (spec §6.3). Run: `cd hdl && stack ghci src/Tamal/Isa.hs`, then paste (the `Unsigned 32` conversion + `showHex` prints hex, since Clash's default `Show (BitVector n)` prints binary):
+From `hdl/`, launch the REPL and print the reference words for the exact golden list (spec §6.3). Run: `cd hdl && cabal repl lib:tamal`, then at the prompt run `:m *Tamal.Isa` (enter the module's own scope, so `encode` + the constructors + `Clash.Prelude` are all visible under `NoImplicitPrelude`), then paste (the `Unsigned 32` conversion + `showHex` prints hex, since Clash's default `Show (BitVector n)` prints binary):
 
 ```haskell
 import Numeric (showHex)

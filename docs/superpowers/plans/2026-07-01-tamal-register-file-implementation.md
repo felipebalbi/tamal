@@ -6,7 +6,7 @@
 
 **Architecture:** A new pure module under `hdl/src/Tamal/`, mirroring the existing leaf layout. `Regs` is an opaque `newtype` over `Vec 16 (BitVector 32)`; `readReg`/`writeReg` are pure combinational functions taking the 5-bit `Reg` selector from `Tamal.Isa` (truncated to the low 4 bits), with `x0` reading 0 and writes to `x0` discarded. The Engine will later hold a `Regs` in its Mealy `State`; nothing here is stateful.
 
-**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Stack; tasty + tasty-hunit + tasty-hedgehog + hedgehog; fourmolu (2-space, leading commas). Source of truth: `docs/superpowers/specs/2026-07-01-tamal-register-file-design.md`.
+**Tech Stack:** Clash 1.10 (`clash-prelude`), GHC, Cabal; tasty + tasty-hunit + tasty-hedgehog + hedgehog; fourmolu (2-space, leading commas). Source of truth: `docs/superpowers/specs/2026-07-01-tamal-register-file-design.md`.
 
 ---
 
@@ -99,7 +99,7 @@ Add `Tamal.RegFile` to the `library` `exposed-modules` list (after `Tamal.Alu`):
 
 - [ ] **Step 3: Confirm the library builds with the stubs**
 
-Run: `stack build`
+Run: `cabal build`
 Expected: PASS (real `initRegs` uses the `Regs` constructor, so no unused-constructor warning; the `errorX` stubs type-check; `-Wall` is on but not `-Werror`).
 
 - [ ] **Step 4: Create `hdl/tests/Test/RegFile.hs`**
@@ -204,7 +204,7 @@ and append `Test.RegFile.tests` to the `testGroup "tamal"` list (after `Test.Alu
 
 - [ ] **Step 6: Run the suite to confirm RegFile is RED**
 
-Run: `stack test --ta '-p "RegFile"'`
+Run: `cabal test --test-options '-p "RegFile"'`
 Expected: FAIL — every RegFile case errors with `Tamal.RegFile.readReg/writeReg: unimplemented (Task 2)` (generation forces the stubs through `genRegs`/`readReg`/`writeReg`). This also confirms the module is exposed and `Test.RegFile` compiles. **Do not commit.** Proceed to Task 2.
 
 ---
@@ -243,13 +243,13 @@ writeReg regs@(Regs v) r x
 
 - [ ] **Step 2: Run the RegFile suite to verify GREEN**
 
-Run: `stack test --ta '-p "RegFile"'`
+Run: `cabal test --test-options '-p "RegFile"'`
 Expected: PASS — all 7 RegFile cases green.
 
 - [ ] **Step 3: Normalize formatting and confirm the full suite is green**
 
-Run (from `hdl/`): `make format` (rewrites the two new files to the fourmolu style; the rest of the repo is already formatted so only these change), then `stack test`.
-Expected: `make format` succeeds; `stack test` reports all tests passing (smoke, Crc, Isa, Config, Serdes, Trace, Branch, Alu, RegFile).
+Run (from `hdl/`): `make format` (rewrites the two new files to the fourmolu style; the rest of the repo is already formatted so only these change), then `cabal test`.
+Expected: `make format` succeeds; `cabal test` reports all tests passing (smoke, Crc, Isa, Config, Serdes, Trace, Branch, Alu, RegFile).
 
 - [ ] **Step 4: Commit the feature (scaffold + tests + impl together)**
 
@@ -266,7 +266,7 @@ git commit -m "feat(hdl): 16x32 register file (x0 hardwired) with hedgehog tests
 
 - [ ] **Step 1: Clash codegen smoke**
 
-Run: `stack run clash -- Tamal --verilog`
+Run: `cabal run clash -- Tamal --verilog`
 Expected: PASS — compiles `Tamal.topEntity`, confirming `Tamal.RegFile` is Clash-clean even though `topEntity` does not reference it yet (library compilation under Clash).
 
 - [ ] **Step 2: fourmolu style gate**
@@ -279,8 +279,8 @@ Expected: PASS — nothing unformatted (the new files were normalized by `make f
 ## Done criteria
 
 - `hdl/src/Tamal/RegFile.hs` exists with the SPDX header, an opaque `newtype Regs`, and `initRegs` / `readReg` / `writeReg`; `x0` reads 0 and writes to `x0` are discarded; selectors truncate to the low 4 bits (x16..x31 alias).
-- `Test.RegFile` passes under `stack test`; the full suite is green.
-- `stack run clash -- Tamal --verilog` succeeds; `make format-check` passes.
+- `Test.RegFile` passes under `cabal test`; the full suite is green.
+- `cabal run clash -- Tamal --verilog` succeeds; `make format-check` passes.
 - One commit: the register-file feature.
 - Out of scope, unchanged: `Engine.step`, the `State` aggregate, `RDSR`, x16..x31 trapping, BRAM/UART shell (spec §2, §9).
 ```

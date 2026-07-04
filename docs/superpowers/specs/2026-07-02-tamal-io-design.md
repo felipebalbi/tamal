@@ -354,9 +354,9 @@ No XDC change and no `Engine.hs` change in this piece.
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog + HUnit: Test.Io (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — library compiles under Clash
+cabal build
+cabal test                           # hedgehog + HUnit: Test.Io (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — library compiles under Clash
 make format-check                    # fourmolu style gate (make format to fix)
 ```
 

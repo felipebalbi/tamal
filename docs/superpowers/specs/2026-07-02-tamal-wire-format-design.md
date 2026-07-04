@@ -404,9 +404,9 @@ core is pure; the loader wires it in later).
 From `hdl/` (cold Clash/GHC builds are slow — expected):
 
 ```
-stack build
-stack test                           # hedgehog + HUnit: Test.Wire (+ existing)
-stack run clash -- Tamal --verilog   # codegen smoke — Tamal.Wire compiles under Clash
+cabal build
+cabal test                           # hedgehog + HUnit: Test.Wire (+ existing)
+cabal run clash -- Tamal --verilog   # codegen smoke — Tamal.Wire compiles under Clash
 make format-check                    # fourmolu style gate
 ```
 

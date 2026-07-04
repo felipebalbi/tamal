@@ -16,28 +16,32 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: haskell-actions/setup@v2
+        id: setup
         with:
-          enable-stack: true
-          stack-version: latest
+          ghc-version: '9.10.3'
+          cabal-version: 'latest'
 
-      - name: Cache stack + GHC + Clash
+      - name: Cache cabal store + dist-newstyle
         uses: actions/cache@v4
         with:
           path: |
-            ~/.stack
-            hdl/.stack-work
-          key: stack-${{ runner.os }}-${{ hashFiles('hdl/stack.yaml.lock', 'hdl/tamal.cabal') }}
+            ${{ steps.setup.outputs.cabal-store }}
+            hdl/dist-newstyle
+          key: cabal-${{ runner.os }}-${{ hashFiles('hdl/cabal.project.freeze', 'hdl/cabal.project', 'hdl/tamal.cabal') }}
           restore-keys: |
-            stack-${{ runner.os }}-
+            cabal-${{ runner.os }}-
+
+      - name: Update package index
+        run: cabal update
 
       - name: Build
-        run: stack build --test --no-run-tests
+        run: cabal build --enable-tests all
 
       - name: Test (hedgehog)
-        run: stack test
+        run: cabal test all
 
       - name: Clash -> Verilog codegen smoke
-        run: stack run clash -- Tamal --verilog
+        run: cabal run clash -- Tamal --verilog
 
   haskell-format:
     name: Haskell format (fourmolu)
