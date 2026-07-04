@@ -1,9 +1,9 @@
 //! Lowering: mnemonics + pseudo-ops -> tamal_abi::isa::Instr, with resolution,
 //! `li` tiling, branch offsets, and range checks.
 
-use tamal_abi::isa::Reg;
+use tamal_abi::isa::{Imm11, Imm20, Instr, Reg};
 
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{Diagnostic, Span};
 use crate::parser::{Operand, OperandKind};
 use crate::symbol::{Sym, SymbolTable};
 
@@ -97,6 +97,86 @@ pub(crate) fn resolve_imm(op: &Operand, syms: &SymbolTable) -> Result<i64, Diagn
     }
 }
 
+/// Range-check `value` into `[lo, hi]`, else a diagnostic naming `what`.
+// `allow(dead_code)`: the lowering pass that calls the `li`/range helpers lands
+// in a later task; remove the attributes once they are wired into encoding.
+#[allow(dead_code)]
+pub(crate) fn checked(
+    value: i64,
+    lo: i64,
+    hi: i64,
+    span: &Span,
+    what: &str,
+) -> Result<i64, Diagnostic> {
+    if value < lo || value > hi {
+        Err(Diagnostic::error(
+            span.clone(),
+            format!("{what} out of range: {value} is not in [{lo}, {hi}]"),
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+/// An 11-bit immediate from a signed value in `[-1024, 1023]` (two's complement).
+#[allow(dead_code)]
+fn imm11(v: i32) -> Imm11 {
+    Imm11::new((v as u32 & 0x7FF) as u16).expect("11-bit pattern always fits")
+}
+
+/// Build the `li` instruction sequence for any 32-bit `value` (1–4 instructions),
+/// minimal — one `load_imm` for signed-11 values, and never a dead `lui rd, 0`.
+#[allow(dead_code)]
+pub(crate) fn tile_li(rd: Reg, value: i32) -> Vec<Instr> {
+    // 1 instruction when the value fits the sign-extended 11-bit immediate.
+    if (-1024..=1023).contains(&value) {
+        return vec![Instr::LoadImm(rd, imm11(value))];
+    }
+    let w = value as u32;
+    let low12 = (w & 0xFFF) as i32; // 0..4095
+    let mut hi = (w >> 12) & 0xF_FFFF; // top 20 bits
+    let mut resid = low12;
+    if resid > 2047 {
+        resid -= 4096; // fold into [-2048, -1]
+        hi = hi.wrapping_add(1) & 0xF_FFFF;
+    }
+    // Seed the register: `lui` only when the high 20 bits are set; otherwise start
+    // from a `load_imm` of the first residual chunk (avoids a wasteful `lui rd, 0`).
+    let mut out = Vec::new();
+    if hi == 0 {
+        let seed = resid.clamp(-1024, 1023);
+        out.push(Instr::LoadImm(rd, imm11(seed)));
+        resid -= seed;
+    } else {
+        out.push(Instr::Lui(rd, Imm20::new(hi).expect("20-bit pattern fits")));
+    }
+    while resid != 0 {
+        let step = resid.clamp(-1024, 1023);
+        out.push(Instr::Addi(rd, rd, imm11(step)));
+        resid -= step;
+    }
+    out
+}
+
+/// Resolve + range-check an `li` value into its 32-bit pattern (as `i32`).
+#[allow(dead_code)]
+pub(crate) fn li_value(op: &Operand, syms: &SymbolTable) -> Result<i32, Diagnostic> {
+    let v = resolve_imm(op, syms)?;
+    if !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&v) {
+        return Err(Diagnostic::error(
+            op.span.clone(),
+            format!("`li` value {v} does not fit in 32 bits"),
+        ));
+    }
+    Ok(v as u32 as i32) // reinterpret the low-32 bit pattern
+}
+
+/// Number of instruction words an `li` of `value` expands to (1–4).
+#[allow(dead_code)]
+pub(crate) fn li_word_count(value: i32) -> u16 {
+    tile_li(Reg::new(0).expect("x0"), value).len() as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +194,95 @@ mod tests {
             kind: OperandKind::Num(n),
             span: 0..1,
         }
+    }
+
+    use tamal_abi::isa::{Imm11, Imm20, Instr, Reg};
+
+    fn r(n: u8) -> Reg {
+        Reg::new(n).unwrap()
+    }
+    fn i11(v: i32) -> Imm11 {
+        Imm11::new((v as u32 & 0x7FF) as u16).unwrap()
+    }
+
+    #[test]
+    fn tile_li_one_word_loadimm() {
+        assert_eq!(tile_li(r(5), 0x0F), vec![Instr::LoadImm(r(5), i11(15))]);
+        assert_eq!(tile_li(r(5), -1), vec![Instr::LoadImm(r(5), i11(-1))]);
+    }
+
+    #[test]
+    fn tile_li_two_words_lui_addi() {
+        // 0x1234: low12=0x234=564, hi=1, one addi
+        assert_eq!(
+            tile_li(r(5), 0x1234),
+            vec![
+                Instr::Lui(r(5), Imm20::new(1).unwrap()),
+                Instr::Addi(r(5), r(5), i11(0x234))
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_li_near_range_seeds_load_imm_no_lui() {
+        // 1024 is just past signed-11: load_imm 1023 + addi 1, and NO lui rd, 0
+        assert_eq!(
+            tile_li(r(5), 1024),
+            vec![
+                Instr::LoadImm(r(5), i11(1023)),
+                Instr::Addi(r(5), r(5), i11(1))
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_li_gap_band_three_words() {
+        // 0x1800: low12=0x800=2048 -> resid=-2048, hi=2, two addis of -1024
+        assert_eq!(
+            tile_li(r(5), 0x1800),
+            vec![
+                Instr::Lui(r(5), Imm20::new(2).unwrap()),
+                Instr::Addi(r(5), r(5), i11(-1024)),
+                Instr::Addi(r(5), r(5), i11(-1024)),
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_li_worst_case_four_words_reconstructs() {
+        // low12 == 0x7FF at large magnitude -> lui + 3 addi
+        let seq = tile_li(r(5), 0x0012_47FF);
+        assert_eq!(seq.len(), 4);
+        // reconstruct the value the engine would compute
+        let mut acc: i64 = 0;
+        for ins in &seq {
+            match *ins {
+                Instr::Lui(_, imm) => acc = (i64::from(imm.bits())) << 12,
+                Instr::Addi(_, _, imm) => {
+                    let s = imm.bits() as i32;
+                    let sext = if s & 0x400 != 0 { s | !0x7FF } else { s };
+                    acc = (acc + i64::from(sext)) & 0xFFFF_FFFF;
+                }
+                _ => panic!("unexpected instr in li tiling"),
+            }
+        }
+        assert_eq!(acc as u32, 0x0012_47FF);
+    }
+
+    #[test]
+    fn li_word_count_matches() {
+        assert_eq!(li_word_count(0x0F), 1);
+        assert_eq!(li_word_count(1024), 2);
+        assert_eq!(li_word_count(0x1234), 2);
+        assert_eq!(li_word_count(0x1800), 3);
+        assert_eq!(li_word_count(0x0012_47FF), 4);
+    }
+
+    #[test]
+    fn checked_range() {
+        assert!(checked(255, 0, 255, &(0..1), "byte").is_ok());
+        assert!(checked(256, 0, 255, &(0..1), "byte").is_err());
+        assert!(checked(-1, 0, 255, &(0..1), "byte").is_err());
     }
 
     #[test]
