@@ -23,6 +23,12 @@
 /// [`isa::Instr::encode`]/[`isa::Instr::decode`].
 pub mod isa;
 
+/// The `SET_CONFIG` payload codec (`Role`/`IoMode`/`Sck`/`AlertSource`).
+///
+/// A Rust mirror of the HDL `Tamal.Config`, plus the host-only [`config::Config::pack`]
+/// direction the gateware never needs.
+pub mod config;
+
 /// Control-plane messages: host → device.
 ///
 /// Planned commands (see the architecture docs):
