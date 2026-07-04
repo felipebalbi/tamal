@@ -18,16 +18,16 @@
 /// The tamal instruction encoding.
 ///
 /// The tamal engine's ISA is **inspired by — but not 100% compatible with — the
-/// RISC-V 32-bit (RV32I) ISA**. Borrowed: 32-bit fixed-width instruction words;
-/// a 32-entry register file `x0`..`x31` with `x0` hardwired to zero; the
-/// R/I/S/B/U/J format shapes. Diverged: tamal repurposes/extends the opcode
-/// space with eSPI bus operations (drive/sample cycles, per-channel ops,
-/// deterministic timing, compile-time error injection, capture/verdict), so
-/// tamal bytecode is **not** interchangeable with a stock RISC-V toolchain.
-pub mod isa {
-    // Placeholder — instruction word layout, opcode/format tables, and the
-    // encode/decode helpers land here.
-}
+/// RISC-V 32-bit (RV32I) ISA**. This module is a byte-for-byte Rust mirror of the
+/// HDL `Tamal.Isa`: the [`isa::Instr`] type, checked operand newtypes, and total
+/// [`isa::Instr::encode`]/[`isa::Instr::decode`].
+pub mod isa;
+
+/// The `SET_CONFIG` payload codec (`Role`/`IoMode`/`Sck`/`AlertSource`).
+///
+/// A Rust mirror of the HDL `Tamal.Config`, plus the host-only [`config::Config::pack`]
+/// direction the gateware never needs.
+pub mod config;
 
 /// Control-plane messages: host → device.
 ///

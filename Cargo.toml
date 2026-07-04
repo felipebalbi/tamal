@@ -25,3 +25,4 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
 serialport = "4"
+proptest = "1"
