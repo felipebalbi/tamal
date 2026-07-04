@@ -8,8 +8,10 @@
 #![forbid(unsafe_code)]
 
 pub mod diagnostics;
+pub mod disasm;
 pub mod encoder;
 pub mod lexer;
+pub mod mnemonics;
 pub mod parser;
 pub mod symbol;
 
@@ -23,10 +25,7 @@ use tamal_abi::isa::Instr;
 #[derive(Debug, Clone)]
 pub struct Program {
     instrs: Vec<Instr>,
-    // `allow(dead_code)`: retained per-word source spans feed the assembler's
-    // listing output, which lands in a later task; the field is populated now so
-    // the shape is stable.
-    #[allow(dead_code)]
+    // Retained per-word source spans feed the assembler's listing output.
     spans: Vec<Span>,
 }
 
@@ -39,6 +38,20 @@ impl Program {
     /// The program as little-endian bytes (loader-ready).
     pub fn to_le_bytes(&self) -> Vec<u8> {
         tamal_abi::isa::program_to_le_bytes(&self.instrs)
+    }
+
+    /// A human-readable `addr  word  mnemonic ; source` listing.
+    pub fn listing(&self, source: &str) -> String {
+        let mut out = String::new();
+        for (addr, (instr, span)) in self.instrs.iter().zip(&self.spans).enumerate() {
+            let text = mnemonics::render_instr(instr);
+            let src = line_text(source, span.start).trim();
+            out.push_str(&format!(
+                "{addr:04x}  {:08x}  {text:<28} ; {src}\n",
+                instr.encode()
+            ));
+        }
+        out
     }
 }
 
@@ -131,6 +144,16 @@ fn validate_directive(name: &str, args: &[Operand], span: &Span, diags: &mut Vec
             ));
         }
     }
+}
+
+/// The full source line containing byte offset `at`.
+fn line_text(source: &str, at: usize) -> &str {
+    let at = at.min(source.len());
+    let start = source[..at].rfind('\n').map_or(0, |p| p + 1);
+    let end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |p| start + p);
+    &source[start..end]
 }
 
 #[cfg(test)]
