@@ -127,9 +127,46 @@ impl ShiftOp {
     }
 }
 
+/// The six raw instruction fields, before per-opcode interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) struct Fields {
+    pub(crate) group: u8, // [31:30]
+    pub(crate) sub: u8,   // [29:26]
+    pub(crate) rd: u8,    // [25:21]
+    pub(crate) rs1: u8,   // [20:16]
+    pub(crate) rs2: u8,   // [15:11]
+    pub(crate) imm: u16,  // [10:0]
+}
+
+/// Split a 32-bit word into its raw fields (the Rust analog of `bitCoerce`).
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn split_word(w: u32) -> Fields {
+    Fields {
+        group: ((w >> 30) & 0x3) as u8,
+        sub: ((w >> 26) & 0xF) as u8,
+        rd: ((w >> 21) & 0x1F) as u8,
+        rs1: ((w >> 16) & 0x1F) as u8,
+        rs2: ((w >> 11) & 0x1F) as u8,
+        imm: (w & 0x7FF) as u16,
+    }
+}
+
+/// Join raw fields into a 32-bit word (masking each to its width).
+#[allow(dead_code)] // consumed by encode/decode in later work
+pub(crate) fn join_word(group: u8, sub: u8, rd: u8, rs1: u8, rs2: u8, imm: u16) -> u32 {
+    ((group as u32 & 0x3) << 30)
+        | ((sub as u32 & 0xF) << 26)
+        | ((rd as u32 & 0x1F) << 21)
+        | ((rs1 as u32 & 0x1F) << 16)
+        | ((rs2 as u32 & 0x1F) << 11)
+        | (imm as u32 & 0x7FF)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn newtype_new_accepts_in_range_rejects_out_of_range() {
@@ -177,5 +214,26 @@ mod tests {
         assert_eq!(ShiftOp::from_bits(0b01), Some(ShiftOp::Srl));
         assert_eq!(ShiftOp::from_bits(0b10), Some(ShiftOp::Sra));
         assert_eq!(ShiftOp::from_bits(0b11), None);
+    }
+
+    #[test]
+    fn split_word_golden_bit_positions() {
+        // group=0b10, sub=0xC, rd=0x1F, rs1=0x15, rs2=0x0A, imm=0x555
+        let w = (0b10 << 30) | (0xC << 26) | (0x1F << 21) | (0x15 << 16) | (0x0A << 11) | 0x555;
+        let f = split_word(w);
+        assert_eq!(f.group, 0b10);
+        assert_eq!(f.sub, 0xC);
+        assert_eq!(f.rd, 0x1F);
+        assert_eq!(f.rs1, 0x15);
+        assert_eq!(f.rs2, 0x0A);
+        assert_eq!(f.imm, 0x555);
+    }
+
+    proptest! {
+        #[test]
+        fn join_split_round_trip(w in any::<u32>()) {
+            let f = split_word(w);
+            prop_assert_eq!(join_word(f.group, f.sub, f.rd, f.rs1, f.rs2, f.imm), w);
+        }
     }
 }
