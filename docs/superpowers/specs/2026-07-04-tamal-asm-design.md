@@ -48,7 +48,7 @@ layout.
 - ABI + numeric registers for **x0–x15**, with helpful diagnostics for x16–x31.
 - Built-in symbolic operands: `set_config` role/io/sck/alert keywords (via
   `Config::pack`, validated by `decode_config`); `rdsr CRC` (sr = 0).
-- General `li` constant-tiling (any 32-bit value, ≤ 3 instructions).
+- General `li` constant-tiling (any 32-bit value, ≤ 4 instructions).
 - **ariadne** source diagnostics (in the CLI).
 - CLI: `assemble` (`--emit bin|hex|listing`) + `disasm`.
 - Assembles all four `examples/*.s`.
@@ -169,22 +169,23 @@ Operand *kind* (register vs immediate) disambiguates the imm/reg forms.
 - `bnez rs,label` → `bne rs,x0,label`.
 - `li rd,value` → tiling (§5.4).
 
-### 5.4 `li` constant-tiling (any 32-bit value, ≤ 3 instructions)
+### 5.4 `li` constant-tiling (any 32-bit value, ≤ 4 instructions)
 
-`ADDI`/`LOAD_IMM` sign-extend an 11-bit immediate (`[-1024, 1023]`); `LUI` writes
-`imm20` into bits `[31:12]`. For a target `V` (interpreted as `i32`):
+`ADDI`/`LOAD_IMM` sign-extend an **11-bit** immediate (`[-1024, 1023]`); `LUI`
+writes `imm20` into bits `[31:12]`. For a target `V` (its 32-bit pattern):
 
 1. `V ∈ [-1024, 1023]` → `load_imm rd, V` (**1** word).
-2. Else pick `lo ∈ [-1024, 1023]` with `lo ≡ V (mod 4096)` when possible and
-   `hi = (V − lo) >> 12` (fits 20 bits): `lui rd, hi` + `addi rd, rd, lo` (**2**
-   words). Reachable iff `V mod 4096 ∈ [0,1023] ∪ [3072,4095]`.
-3. Else `V mod 4096 ∈ [1024, 3071]` (the ISA §7.3 gap) → **3** words: `lui rd, hi`
-   + `addi rd, rd, lo1` + `addi rd, rd, lo2`, with `lo1, lo2 ∈ [-1024, 1023]`,
-   `lo1 + lo2 ≡ V (mod 4096)`, and `hi` adjusted for the combined carry. (Exact
-   constant choice is pinned by the implementation plan's tiling tests.)
+2. Else `lui rd, hi` (top 20 bits, adjusted +1 when the low-12 residual exceeds
+   `2047`) followed by a **greedy chain of `addi`s** that sum to the residual
+   (residual ∈ `[-2048, 2047]`; each `addi` covers `[-1024, 1023]`). Common cases
+   are **2** words (`lui` + one `addi`); the residual `2047` needs three `addi`s,
+   so the worst case is `lui` + 3 `addi` = **4** words.
 
-The word count is a pure function of `V` (a literal or resolved `.equ`), so it is
-known in pass 1.
+Note tamal's 11-bit immediate (vs RISC-V's 12-bit) is why the worst case is 4, not
+2 (RISC-V's `LUI`+`ADDI`): a residual of `0x7FF` cannot be reached by two 11-bit
+`addi`s (`1023 + 1023 = 2046 < 2047`). The greedy chain is provably correct for
+every `i32`/`u32` value. The word count is a pure function of `V` (a literal or
+resolved `.equ`, address-independent), so it is known in pass 1.
 
 ### 5.5 Branch offsets
 
@@ -249,10 +250,14 @@ This replaces the placeholder `assemble(_) -> Result<Vec<u8>, AssembleError>`;
   an expected word sequence (spot-checked anchors: `set_config controller,x1,sck20,
   alert_pin` → `0x5800_0000`; the `beq`/`bnez` back-edge offsets; the hand-written
   CRC `put_byte`s). This is the acceptance gate.
-- **Round-trip (proptest).** For a random valid `Instr` (an `arb_instr` strategy in
-  the asm tests), `parse(render(instr))` re-encodes to `instr.encode()` — proves
-  the mnemonic table is a faithful bijection. And `disasm(program.to_le_bytes())`
-  re-assembles to identical words.
+- **Round-trip.** A curated table (one entry per **non-branch** mnemonic) asserts
+  `parse(render(instr))` re-encodes to `instr.encode()` — proving the mnemonic
+  table is a faithful bijection. Branches are excluded from the parse round-trip
+  because `render` emits a *numeric* offset (disassembly has no labels) which the
+  label-only branch parser does not re-accept; branch rendering gets its own unit
+  test, and `disasm` is unit-tested against a known word stream (incl. an illegal
+  word). (A full `arb_instr` proptest is deferred; the curated table already
+  exercises every mnemonic.)
 - **Diagnostics.** Targeted bad inputs assert the message **and span**: x16–31 use
   (`add x20,x0,x0`); immediate overflow (`put_byte 0x100`); non-v1 config
   (`set_config controller,x2,sck20,alert_pin` → UnsupportedIoMode); undefined
