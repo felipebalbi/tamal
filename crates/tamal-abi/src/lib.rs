@@ -29,6 +29,9 @@ pub mod isa;
 /// direction the gateware never needs.
 pub mod config;
 
+/// CRC-8 (eSPI/SMBus PEC) — a Rust mirror of the HDL `Tamal.Crc`.
+pub mod crc8;
+
 /// Control-plane messages: host → device.
 ///
 /// Planned commands (see the architecture docs):
