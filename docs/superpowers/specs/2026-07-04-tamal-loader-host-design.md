@@ -315,8 +315,10 @@ HALT  status=0x00  (ok)
   On a trap the last line is e.g. `TRAP  reason=decode  ovf=false  status=0x00`.
   A `REVISION` other than `0x0001_0000` (the `tamal.cabal` 0.1.0 constant) prints
   a warning — the bitstream and CLI disagree.
-- **Exit code**: `0` when `halt.trap == false`, non-zero on a trap, so scripts can
-  gate on the verdict. Errors render via `color-eyre`.
+- **Exit code**: `0` when `halt.trap == false` **and** `halt.ovf == false`,
+  non-zero on a trap **or** a trace overflow (`ovf`), so a truncated trace is not
+  reported as a clean success and scripts can gate on the verdict. Errors render
+  via `color-eyre`.
 
 ## 8. Testing
 

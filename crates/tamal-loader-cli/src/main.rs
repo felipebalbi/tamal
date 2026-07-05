@@ -60,6 +60,11 @@ fn format_halt(h: &Halt) -> String {
             h.ovf,
             h.status
         )
+    } else if h.ovf {
+        format!(
+            "HALT  status={:#04X}  ovf=true  (trace overflow — records dropped)",
+            h.status
+        )
     } else {
         format!("HALT  status={:#04X}  (ok)", h.status)
     }
@@ -86,7 +91,7 @@ fn format_trace(t: &Trace) -> String {
 }
 
 fn trace_exit_code(h: &Halt) -> u8 {
-    if h.trap { 1 } else { 0 }
+    if h.trap || h.ovf { 1 } else { 0 }
 }
 
 fn cmd_run(
@@ -191,5 +196,19 @@ mod tests {
             }),
             0
         );
+    }
+
+    #[test]
+    fn clean_halt_with_overflow_is_surfaced_and_nonzero_exit() {
+        let h = Halt {
+            trap: false,
+            reason: TrapReason::None,
+            ovf: true,
+            status: 0,
+        };
+        let s = format_halt(&h);
+        assert!(s.contains("ovf=true") && s.contains("overflow"), "{s}");
+        assert!(!s.contains("(ok)"), "overflow must not read as ok: {s}");
+        assert_eq!(trace_exit_code(&h), 1);
     }
 }

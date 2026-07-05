@@ -11,7 +11,9 @@
 //! It is deliberately **transport-agnostic** — it knows nothing about UART,
 //! JTAG, or a future FX3 USB link. Transports live in `tamal-loader`.
 //!
-//! Nothing here is implemented yet; the modules below sketch the intended shape.
+//! The wire mirror (`crc8`, `cobs`, `wire`, `trace`) is a byte-exact Rust
+//! counterpart to the HDL `Tamal.Crc`/`Tamal.Wire`/engine record encodings;
+//! it stays transport-agnostic (transports live in `tamal-loader`).
 
 #![forbid(unsafe_code)]
 

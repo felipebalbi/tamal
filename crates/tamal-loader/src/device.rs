@@ -54,7 +54,7 @@ impl<T: Transport> Device<T> {
     /// `TRIGGER` each attempt (a partial LOAD is committed only by TRIGGER).
     /// Genuine transport I/O faults propagate immediately.
     pub fn run(&mut self, words: &[u32], opts: RunOptions) -> Result<Trace, Error> {
-        let attempts = opts.retries + 1;
+        let attempts = opts.retries.saturating_add(1);
         for _ in 0..attempts {
             self.load_program(words)?;
             self.trigger()?;
