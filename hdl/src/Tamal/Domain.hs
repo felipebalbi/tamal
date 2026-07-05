@@ -21,3 +21,13 @@ createDomain
     { vName = "Dom100"
     , vPeriod = hzToPeriod 100_000_000
     }
+
+-- | 50 MHz reference domain for the C5G oscillator (CLOCK_50_B5B, pin R20). It
+-- is the input to the Cyclone V PLL ('Tamal.Board.CycloneV'); the PLL multiplies
+-- it to the design's 100 MHz 'Dom100'. Asynchronous + ActiveHigh (the 'vSystem'
+-- default), which satisfies 'alteraPllSync''s @HasAsynchronousReset@ requirement.
+createDomain
+  vSystem
+    { vName = "DomInput50"
+    , vPeriod = hzToPeriod 50_000_000
+    }
