@@ -42,12 +42,6 @@ pub mod cobs;
 /// crc8) ++ 0x00`, little-endian throughout.
 pub mod wire;
 
-/// Result / trace-plane events: device → host.
-///
-/// Planned event shape:
-/// `BusEvent { timestamp, channel, cycle_type, tag, length, verdict }`.
-/// The stream must tolerate dropped events (an overflow marker) so the eSPI bus
-/// is never blocked by trace backpressure.
-pub mod trace {
-    // Placeholder — observed-transaction and verdict types land here.
-}
+/// Typed decode of the drained trace ring (engine §7.2 record encodings):
+/// `REVISION` word, the CAPTURE/MARK record stream, and the HALT terminator.
+pub mod trace;
