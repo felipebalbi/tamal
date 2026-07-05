@@ -79,8 +79,8 @@ genCtrlInstr =
 genDataInstr :: Gen Instr
 genDataInstr =
   Gen.choice
-    [ LoadImm <$> genReg <*> genI
-    , Lui <$> genReg <*> (genDefinedBitVector :: Gen (BitVector 20))
+    [ LoadImm <$> genReg <*> genI21
+    , Lui <$> genReg <*> genI21
     , Mov <$> genReg <*> genReg
     , Add <$> genReg <*> genReg <*> genReg
     , Addi <$> genReg <*> genReg <*> genI
@@ -96,6 +96,7 @@ genDataInstr =
     ]
  where
   genI = genDefinedBitVector :: Gen (BitVector 11)
+  genI21 = genDefinedBitVector :: Gen (BitVector 21)
   genShOp = Gen.element [0b00, 0b01, 0b10] :: Gen (BitVector 2)
 
 genInstr :: Gen Instr

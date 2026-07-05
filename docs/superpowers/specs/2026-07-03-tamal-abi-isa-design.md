@@ -59,7 +59,7 @@ later `tamal-asm` (file I/O, CLI) and `tamal-loader` (transport) crates.
 - `tamal_abi::isa`:
   - The `Instr` enum — 36 variants, 1:1 with `Tamal.Isa`.
   - Checked operand **newtypes** for non-native field widths (`Reg`, `Imm11`,
-    `Imm20`, `Tar4`, `Cfg6`, `Sr5`, `Amt5`, `BitCount`, `WaitCond`,
+    `Imm21`, `Tar4`, `Cfg6`, `Sr5`, `Amt5`, `BitCount`, `WaitCond`,
     `WaitTimeout`) and the `ShiftOp` enum.
   - `DecodeError` (`ReservedFieldNonZero | OpcodeUnimplemented | IllegalOpcode`).
   - Total `Instr::encode(&self) -> u32` and total
@@ -131,8 +131,8 @@ consumer needs `TryFrom`, add it with a real (non-unit) error type.
 | Newtype | Repr | Valid range | Used by |
 |---|---|---|---|
 | `Reg` | `u8` | `0..=31` (5-bit; **not** windowed) | every `rd`/`rs1`/`rs2` |
-| `Imm11` | `u16` | 11-bit (`0..=0x7FF`) | branch offset, `LoadImm`, `Addi`/`Andi`/`Ori`/`Xori`, `Mark` label |
-| `Imm20` | `u32` | 20-bit (`0..=0xF_FFFF`) | `Lui` |
+| `Imm11` | `u16` | 11-bit (`0..=0x7FF`) | branch offset, `Addi`/`Andi`/`Ori`/`Xori`, `Mark` label |
+| `Imm21` | `u32` | 21-bit (`0..=0x1F_FFFF`) | `Lui`, `LoadImm` (fills `rs1 ++ rs2 ++ imm`) |
 | `Tar4` | `u8` | 4-bit (`0..=0xF`) | `TarImm` |
 | `Cfg6` | `u8` | 6-bit (`0..=0x3F`) | `SetConfig` payload |
 | `Sr5` | `u8` | 5-bit (`0..=0x1F`) | `Rdsr` |
@@ -184,8 +184,8 @@ pub enum Instr {
     Mark(Imm11, Reg),
     CrcReset,
     // DATA group (10)
-    LoadImm(Reg, Imm11),
-    Lui(Reg, Imm20),
+    LoadImm(Reg, Imm21),
+    Lui(Reg, Imm21),
     Mov(Reg, Reg),
     Add(Reg, Reg, Reg),
     Addi(Reg, Reg, Imm11),
@@ -229,9 +229,9 @@ reviewer can diff Rust against Haskell arm-by-arm.
 - **Sub-field packers** (`pub(crate)`, each with a pack/unpack pair):
   - `bits_imm(n_minus_1: u8, byte: u8) -> u16` / inverse — `imm[10:8]=n-1`,
     `imm[7:0]=byte` (the `PUT_BITS`/`GET_BITS` layout).
-  - `split_imm20(i20) -> (rs1, rs2, imm)` / `join_imm20(rs1, rs2, imm) -> (hi, i20)`
-    — LUI's `0 ++ i20` spread across `rs1 ++ rs2 ++ imm`; `hi` is the reserved
-    bit 20.
+  - `split_imm21(i21) -> (rs1, rs2, imm)` / `join_imm21(rs1, rs2, imm) -> i21`
+    — the shared `LUI`/`LOAD_IMM` 21-bit immediate spread across
+    `rs1 ++ rs2 ++ imm` (`5 + 5 + 11 == 21`, so there is no reserved bit).
   - `wait_pack(cond, timeout) -> u16` / inverse — `imm = cond:2 ++ timeout:9`.
   - `shift_pack(op, amt) -> u16` / `shift_unpack(imm) -> (op, mid, amt)` —
     `imm = op:2 ++ 0:4 ++ amt:5`; `mid` is the 4 reserved bits.
@@ -262,13 +262,16 @@ HDL; the notable ones:
 - `TarImm`: `rd==0 && rs1==0 && rs2==0 && imm[10:4]==0`.
 - `Halt`: `rd==0 && rs1==0 && rs2==0 && imm[10:8]==0`.
 - `SetConfig`: `rd==0 && rs1==0 && rs2==0 && imm[10:6]==0`.
-- `Lui`: the reserved bit 20 (`hi`) is zero.
 - `Shift`: `rs2==0 && mid==0 && op != 0b11`.
 - `Rdsr`: `rs1==0 && rs2==0 && imm[10:5]==0`.
 - Branch ops (`Beq`/`Bne`/`Bltu`/`Bgeu`): `rd==0`.
 - `Mark`: `rd==0 && rs2==0`.
 - No-operand ops (`CsAssert`, `CsDeassert`, `RstAssert`, `RstDeassert`,
   `CrcReset`): all of `rd`/`rs1`/`rs2`/`imm` zero.
+
+`LoadImm` and `Lui` have **no** reserved-field predicate: their 21-bit immediate
+fills `rs1 ++ rs2 ++ imm` entirely, so every such word decodes (the sub-opcode is
+the only discriminant).
 
 ### 4.6 Little-endian program helper (spec §4, wire §7)
 
@@ -343,7 +346,8 @@ expand into tasks):
    `BitCount` additionally: `new(0)` and `new(9)` are `None`; `new(1..=8)` map to
    stored `0..=7`.
 3. **Sub-field packers** — pack/unpack round-trips (proptest) for `bits_imm`,
-   `imm20`, `wait`, `shift`, plus golden vectors for the LUI spread and the SHIFT
+   `imm21`, `wait`, `shift`, plus golden vectors for the shared `LUI`/`LOAD_IMM`
+   21-bit spread (including a bit-20-set value) and the SHIFT
    `op:2 ++ 0:4 ++ amt:5` layout.
 4. **Golden encode table** — a checked-in `&[(Instr, u32)]` of representative
    instructions across all three groups (including the tricky `Lui`, `WaitOn`,
@@ -354,7 +358,7 @@ expand into tasks):
    `group == 0b11` word ⇒ `Err(IllegalOpcode)`; an unknown sub-opcode ⇒
    `Err(IllegalOpcode)`.
 6. **Round-trip law** — proptest strategies `arb_reg` (`0..=31`), `arb_imm11`,
-   `arb_imm20`, …, and `arb_bus_instr`/`arb_ctrl_instr`/`arb_data_instr`/
+   `arb_imm21`, …, and `arb_bus_instr`/`arb_ctrl_instr`/`arb_data_instr`/
    `arb_instr`: `decode(i.encode()) == Ok(i)`.
 7. **Canonical-or-traps law** — for any `u32 w`: `decode(w)` is `Err(_)`, or
    `Ok(i)` with `i.encode() == w` (the HDL's "any word decodes canonical or
@@ -437,8 +441,9 @@ crate with no workflow change; proptest runs under `cargo test`.
    implement next.
 2. **`tamal-asm`** — the RISC-V-flavored assembler on top of this ABI: lexer,
    parser, pseudo-op expansion, directives, labels/local labels, the symbolic
-   `set_config`/`rdsr` operand surface, `li` constant-tiling for the ISA §7.3
-   reachability gap, diagnostics, and the CLI. Consumes `Instr`/`encode`/
+   `set_config`/`rdsr` operand surface, `li` constant-tiling (≤ 2 words with the
+   21-bit `LUI`/`LOAD_IMM` immediate — no reachability gap), diagnostics, and the
+   CLI. Consumes `Instr`/`encode`/
    `Config::pack`. Separate spec.
 3. **`tamal-abi` wire-format mirror** — the Rust port of the COBS/CRC-8 control
    and result framing (`Tamal.Wire`), deferred post-silicon per the wire-format

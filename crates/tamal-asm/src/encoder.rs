@@ -3,7 +3,7 @@
 
 use tamal_abi::config::{AlertSource, Config, ConfigError, IoMode, Role, Sck, decode_config};
 use tamal_abi::isa::{
-    Amt5, BitCount, Imm11, Imm20, Instr, Reg, ShiftOp, Sr5, Tar4, WaitCond, WaitTimeout,
+    Amt5, BitCount, Imm11, Imm21, Instr, Reg, ShiftOp, Sr5, Tar4, WaitCond, WaitTimeout,
 };
 
 use crate::diagnostics::{Diagnostic, Span};
@@ -118,35 +118,39 @@ fn imm11(v: i32) -> Imm11 {
     Imm11::new((v as u32 & 0x7FF) as u16).expect("11-bit pattern always fits")
 }
 
-/// Build the `li` instruction sequence for any 32-bit `value` (1–4 instructions),
-/// minimal — one `load_imm` for signed-11 values, and never a dead `lui rd, 0`.
+/// A 21-bit immediate from a signed value in `[-2^20, 2^20-1]` (two's complement),
+/// for `LOAD_IMM`'s sign-extended field.
+fn imm21_signed(v: i32) -> Imm21 {
+    Imm21::new(v as u32 & 0x1F_FFFF).expect("21-bit pattern always fits")
+}
+
+/// Build the `li` instruction sequence for any 32-bit `value` (1–2 instructions).
+///
+/// `LUI` places a 21-bit immediate at bits `[31:11]`, meeting `ADDI`'s
+/// sign-extended 11-bit low half exactly — so, unlike RISC-V's narrower pairing,
+/// there is no reachability gap and the worst case is two words:
+///
+/// * `value ∈ [-2^20, 2^20-1]` → one `load_imm` (signed-21).
+/// * `value` a multiple of `2^11` (`lo == 0`) → one `lui` (never a dead `lui rd, 0`).
+/// * otherwise → `lui` + one `addi` (with the standard `%hi`/`%lo` +1 carry).
 pub(crate) fn tile_li(rd: Reg, value: i32) -> Vec<Instr> {
-    // 1 instruction when the value fits the sign-extended 11-bit immediate.
-    if (-1024..=1023).contains(&value) {
-        return vec![Instr::LoadImm(rd, imm11(value))];
+    // 1 instruction when the value fits the sign-extended 21-bit LOAD_IMM.
+    if (-(1 << 20)..=(1 << 20) - 1).contains(&value) {
+        return vec![Instr::LoadImm(rd, imm21_signed(value))];
     }
     let w = value as u32;
-    let low12 = (w & 0xFFF) as i32; // 0..4095
-    let mut hi = (w >> 12) & 0xF_FFFF; // top 20 bits
-    let mut resid = low12;
-    if resid > 2047 {
-        resid -= 4096; // fold into [-2048, -1]
-        hi = hi.wrapping_add(1) & 0xF_FFFF;
-    }
-    // Seed the register: `lui` only when the high 20 bits are set; otherwise start
-    // from a `load_imm` of the first residual chunk (avoids a wasteful `lui rd, 0`).
-    let mut out = Vec::new();
-    if hi == 0 {
-        let seed = resid.clamp(-1024, 1023);
-        out.push(Instr::LoadImm(rd, imm11(seed)));
-        resid -= seed;
+    // Sign-extend the low 11 bits; the borrow folds into the high 21 (%hi/%lo).
+    let low11 = (w & 0x7FF) as i32;
+    let lo = if low11 & 0x400 != 0 {
+        low11 - 0x800
     } else {
-        out.push(Instr::Lui(rd, Imm20::new(hi).expect("20-bit pattern fits")));
-    }
-    while resid != 0 {
-        let step = resid.clamp(-1024, 1023);
-        out.push(Instr::Addi(rd, rd, imm11(step)));
-        resid -= step;
+        low11
+    };
+    // (w - lo) is an exact multiple of 2^11, so its top 21 bits are the LUI field.
+    let hi = w.wrapping_sub(lo as u32) >> 11;
+    let mut out = vec![Instr::Lui(rd, Imm21::new(hi).expect("21-bit pattern fits"))];
+    if lo != 0 {
+        out.push(Instr::Addi(rd, rd, imm11(lo)));
     }
     out
 }
@@ -169,7 +173,7 @@ pub(crate) fn li_word_count(value: i32) -> u16 {
 }
 
 /// Word count of one instruction line, for pass-1 addressing. Infallible: only
-/// `li` varies (1–4 words, from its constant); everything else is 1 word. When a
+/// `li` varies (1–2 words, from its constant); everything else is 1 word. When a
 /// `li` value can't be sized (bad arity / undefined symbol), assume 1 — pass 2
 /// reports the real error and assembly fails anyway.
 pub(crate) fn instr_word_count(mnemonic: &str, operands: &[Operand], syms: &SymbolTable) -> u16 {
@@ -215,9 +219,21 @@ fn field_amt5(op: &Operand, syms: &SymbolTable) -> Result<Amt5, Diagnostic> {
     let v = checked(resolve_imm(op, syms)?, 0, 31, &op.span, "shift amount")?;
     Ok(Amt5::new(v as u8).unwrap())
 }
-fn field_imm20(op: &Operand, syms: &SymbolTable) -> Result<Imm20, Diagnostic> {
-    let v = checked(resolve_imm(op, syms)?, 0, 0xF_FFFF, &op.span, "immediate")?;
-    Ok(Imm20::new(v as u32).unwrap())
+fn field_imm21(op: &Operand, syms: &SymbolTable) -> Result<Imm21, Diagnostic> {
+    // `lui` takes the raw 21-bit field, unsigned (`[0, 2^21-1]`).
+    let v = checked(resolve_imm(op, syms)?, 0, 0x1F_FFFF, &op.span, "immediate")?;
+    Ok(Imm21::new(v as u32).unwrap())
+}
+fn field_load_imm(op: &Operand, syms: &SymbolTable) -> Result<Imm21, Diagnostic> {
+    // `load_imm` sign-extends its 21-bit field (`[-2^20, 2^20-1]`).
+    let v = checked(
+        resolve_imm(op, syms)?,
+        -(1 << 20),
+        (1 << 20) - 1,
+        &op.span,
+        "immediate",
+    )?;
+    Ok(Imm21::new((v as u32) & 0x1F_FFFF).unwrap())
 }
 fn field_mark_tag(op: &Operand, syms: &SymbolTable) -> Result<Imm11, Diagnostic> {
     let v = checked(resolve_imm(op, syms)?, 0, 2047, &op.span, "mark tag")?;
@@ -520,14 +536,14 @@ pub(crate) fn encode_line(
             args_exact(operands, 2, span, mnemonic)?;
             Ok(vec![Instr::LoadImm(
                 resolve_reg(&operands[0])?,
-                field_imm11(&operands[1], syms)?,
+                field_load_imm(&operands[1], syms)?,
             )])
         }
         "lui" => {
             args_exact(operands, 2, span, mnemonic)?;
             Ok(vec![Instr::Lui(
                 resolve_reg(&operands[0])?,
-                field_imm20(&operands[1], syms)?,
+                field_imm21(&operands[1], syms)?,
             )])
         }
         "mov" | "mv" => {
@@ -619,7 +635,7 @@ mod tests {
         }
     }
 
-    use tamal_abi::isa::{Imm11, Imm20, Instr, Reg};
+    use tamal_abi::isa::{Imm11, Imm21, Instr, Reg};
 
     fn r(n: u8) -> Reg {
         Reg::new(n).unwrap()
@@ -627,60 +643,73 @@ mod tests {
     fn i11(v: i32) -> Imm11 {
         Imm11::new((v as u32 & 0x7FF) as u16).unwrap()
     }
+    fn i21(v: i32) -> Imm21 {
+        Imm21::new(v as u32 & 0x1F_FFFF).unwrap()
+    }
 
     #[test]
     fn tile_li_one_word_loadimm() {
-        assert_eq!(tile_li(r(5), 0x0F), vec![Instr::LoadImm(r(5), i11(15))]);
-        assert_eq!(tile_li(r(5), -1), vec![Instr::LoadImm(r(5), i11(-1))]);
+        assert_eq!(tile_li(r(5), 0x0F), vec![Instr::LoadImm(r(5), i21(15))]);
+        assert_eq!(tile_li(r(5), -1), vec![Instr::LoadImm(r(5), i21(-1))]);
+    }
+
+    #[test]
+    fn tile_li_signed21_is_one_word() {
+        // The whole signed-21 range is a single load_imm — including values that
+        // used to need lui+addi (0x1234) or that fell in the old 4096-gap band
+        // (0x1800). This is the reachability-gap-closing win.
+        assert_eq!(
+            tile_li(r(5), 0x1234),
+            vec![Instr::LoadImm(r(5), i21(0x1234))]
+        );
+        assert_eq!(
+            tile_li(r(5), 0x1800),
+            vec![Instr::LoadImm(r(5), i21(0x1800))]
+        );
+        assert_eq!(tile_li(r(5), 1024), vec![Instr::LoadImm(r(5), i21(1024))]);
+        // Boundaries of the signed-21 range.
+        assert_eq!(
+            tile_li(r(5), (1 << 20) - 1),
+            vec![Instr::LoadImm(r(5), i21((1 << 20) - 1))]
+        );
+        assert_eq!(
+            tile_li(r(5), -(1 << 20)),
+            vec![Instr::LoadImm(r(5), i21(-(1 << 20)))]
+        );
     }
 
     #[test]
     fn tile_li_two_words_lui_addi() {
-        // 0x1234: low12=0x234=564, hi=1, one addi
+        // 0x0020_0055 is past signed-21; low11=0x055 (bit 10 clear) -> lo=+85,
+        // hi=0x400, so exactly lui + one addi.
         assert_eq!(
-            tile_li(r(5), 0x1234),
+            tile_li(r(5), 0x0020_0055),
             vec![
-                Instr::Lui(r(5), Imm20::new(1).unwrap()),
-                Instr::Addi(r(5), r(5), i11(0x234))
+                Instr::Lui(r(5), i21(0x400)),
+                Instr::Addi(r(5), r(5), i11(85))
             ]
         );
     }
 
     #[test]
-    fn tile_li_near_range_seeds_load_imm_no_lui() {
-        // 1024 is just past signed-11: load_imm 1023 + addi 1, and NO lui rd, 0
+    fn tile_li_multiple_of_2pow11_is_single_lui_no_dead_addi() {
+        // 0x0020_0000 is past signed-21 with lo == 0: one lui, and NO dead addi.
         assert_eq!(
-            tile_li(r(5), 1024),
-            vec![
-                Instr::LoadImm(r(5), i11(1023)),
-                Instr::Addi(r(5), r(5), i11(1))
-            ]
+            tile_li(r(5), 0x0020_0000),
+            vec![Instr::Lui(r(5), i21(0x400))]
         );
     }
 
     #[test]
-    fn tile_li_gap_band_three_words() {
-        // 0x1800: low12=0x800=2048 -> resid=-2048, hi=2, two addis of -1024
-        assert_eq!(
-            tile_li(r(5), 0x1800),
-            vec![
-                Instr::Lui(r(5), Imm20::new(2).unwrap()),
-                Instr::Addi(r(5), r(5), i11(-1024)),
-                Instr::Addi(r(5), r(5), i11(-1024)),
-            ]
-        );
-    }
-
-    #[test]
-    fn tile_li_worst_case_four_words_reconstructs() {
-        // low12 == 0x7FF at large magnitude -> lui + 3 addi
+    fn tile_li_worst_case_is_two_words_and_reconstructs() {
+        // low11 == 0x7FF at large magnitude was the old 4-word worst case; now 2.
         let seq = tile_li(r(5), 0x0012_47FF);
-        assert_eq!(seq.len(), 4);
-        // reconstruct the value the engine would compute
+        assert_eq!(seq.len(), 2);
+        // reconstruct the value the engine would compute (LUI << 11 + sext11 addi)
         let mut acc: i64 = 0;
         for ins in &seq {
             match *ins {
-                Instr::Lui(_, imm) => acc = (i64::from(imm.bits())) << 12,
+                Instr::Lui(_, imm) => acc = (i64::from(imm.bits())) << 11,
                 Instr::Addi(_, _, imm) => {
                     let s = imm.bits() as i32;
                     let sext = if s & 0x400 != 0 { s | !0x7FF } else { s };
@@ -692,13 +721,81 @@ mod tests {
         assert_eq!(acc as u32, 0x0012_47FF);
     }
 
+    // Reconstruct the 32-bit value a `tile_li` sequence computes on the engine.
+    fn reconstruct_li(seq: &[Instr]) -> u32 {
+        let mut acc: i64 = 0;
+        for ins in seq {
+            match *ins {
+                Instr::LoadImm(_, imm) => {
+                    let s = imm.bits() as i32;
+                    let sext = if s & (1 << 20) != 0 {
+                        s | !0x1F_FFFF
+                    } else {
+                        s
+                    };
+                    acc = i64::from(sext) & 0xFFFF_FFFF;
+                }
+                Instr::Lui(_, imm) => acc = i64::from(imm.bits()) << 11,
+                Instr::Addi(_, _, imm) => {
+                    let s = imm.bits() as i32;
+                    let sext = if s & 0x400 != 0 { s | !0x7FF } else { s };
+                    acc = (acc + i64::from(sext)) & 0xFFFF_FFFF;
+                }
+                _ => panic!("unexpected instr in li tiling"),
+            }
+        }
+        acc as u32
+    }
+
+    #[test]
+    fn tile_li_sweeps_reconstruct_in_at_most_two_words() {
+        // A strided sweep across the full 32-bit space plus the boundaries that
+        // exercise every branch: signed-21 edges, the 2^11 carry boundary, and
+        // the old gap band. Every value must reconstruct in <= 2 words.
+        let mut vals: Vec<u32> = (0u32..=0xFFFF_FFFF).step_by(0x0001_0001).collect();
+        vals.extend([
+            0,
+            1,
+            0x7FF,
+            0x800,
+            0xFFF,
+            0x1000,
+            0x1800,
+            (1 << 20) - 1,
+            1 << 20,
+            (1 << 20) + 1,
+            0x0020_0000,
+            0x0020_0055,
+            0x0012_47FF,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0xFFFF_F800,
+            0xFFFF_FFFF,
+        ]);
+        for v in vals {
+            let seq = tile_li(r(5), v as i32);
+            assert!(
+                seq.len() <= 2,
+                "value {v:#010x} tiled to {} words",
+                seq.len()
+            );
+            assert_eq!(
+                reconstruct_li(&seq),
+                v,
+                "value {v:#010x} did not reconstruct"
+            );
+        }
+    }
+
     #[test]
     fn li_word_count_matches() {
         assert_eq!(li_word_count(0x0F), 1);
-        assert_eq!(li_word_count(1024), 2);
-        assert_eq!(li_word_count(0x1234), 2);
-        assert_eq!(li_word_count(0x1800), 3);
-        assert_eq!(li_word_count(0x0012_47FF), 4);
+        assert_eq!(li_word_count(1024), 1); // now signed-21: one word
+        assert_eq!(li_word_count(0x1234), 1); // now signed-21: one word
+        assert_eq!(li_word_count(0x1800), 1); // former gap band: one word
+        assert_eq!(li_word_count(0x0020_0000), 1); // multiple of 2^11: one lui
+        assert_eq!(li_word_count(0x0020_0055), 2); // lui + addi
+        assert_eq!(li_word_count(0x0012_47FF), 2); // former 4-word worst case
     }
 
     #[test]

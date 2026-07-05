@@ -13,7 +13,8 @@ Companion to the ISA & HDL Engine design
 (`docs/superpowers/specs/2026-07-01-tamal-isa-design.md`, esp. §6.1 branch
 offsets and §6.3 the RISC-V assembly surface), the ALU/branch design
 (`.../2026-07-01-tamal-alu-branch-design.md`, esp. §7 immediate extension and the
-`li = LUI + ADDI` tiling / §7.3 the 11-bit reachability gap), and the
+`li = LUI + ADDI` tiling / §7.3 the 21-bit `LUI`/`LOAD_IMM` immediate that closes
+the reachability gap), and the
 `tamal-abi::isa` design (`.../2026-07-03-tamal-abi-isa-design.md`). The
 authoritative encoding is `tamal_abi::isa` (`Instr`, `encode`, `decode`,
 `program_to_le_bytes`) and `tamal_abi::config` (`Config::pack`, `decode_config`);
@@ -48,7 +49,7 @@ layout.
 - ABI + numeric registers for **x0–x15**, with helpful diagnostics for x16–x31.
 - Built-in symbolic operands: `set_config` role/io/sck/alert keywords (via
   `Config::pack`, validated by `decode_config`); `rdsr CRC` (sr = 0).
-- General `li` constant-tiling (any 32-bit value, ≤ 4 instructions).
+- General `li` constant-tiling (any 32-bit value, ≤ 2 instructions).
 - **ariadne** source diagnostics (in the CLI).
 - CLI: `assemble` (`--emit bin|hex|listing`) + `disasm`.
 - Assembles all four `examples/*.s`.
@@ -80,7 +81,7 @@ a parse crash)**
 | D7 | **`mv` lowers to the native `Mov` instruction** (not `addi rd,rs,0`). | Reconciles ISA §6.3's `mv=addi` note: tamal has a native `Mov` op; one instruction and clearer intent. `nop` stays `addi x0,x0,0`. |
 | D8 | **Branch offset = `target_addr − branch_addr` in words**, encoded as raw two's-complement `Imm11`. | Byte-matches the built engine (`Engine.hs`: taken → `pc = pc s + off`, where `pc s` is the branch's own address; not-taken → `pc + 1`). |
 | D9 | **`Program` carries `Instr`s + per-instruction source spans**; `to_le_bytes` via the abi helper; `listing`/`disasm` share one `Instr → text` renderer. | The renderer is the inverse of the parse table, so the round-trip tests exercise both directions. |
-| D10 | **`li` tiling is value-derived and sized in pass 1.** | `li`'s 1–4-word expansion depends only on the (address-independent) constant, so label addresses are correct before pass 2. |
+| D10 | **`li` tiling is value-derived and sized in pass 1.** | `li`'s 1–2-word expansion depends only on the (address-independent) constant, so label addresses are correct before pass 2. |
 
 ## 4. Pipeline & module layout
 
@@ -146,7 +147,8 @@ Operand *kind* (register vs immediate) disambiguates the imm/reg forms.
   `wait_on rd,cond,timeout` (cond 0..3, timeout 0..511); `set_config
   role,io,sck,alert`; `mark tag,rs` (tag = 11-bit numeric marker, **not** a code
   label); `crc_reset`.
-- **DATA:** `load_imm rd,imm11`; `lui rd,imm20`; `mov rd,rs`;
+- **DATA:** `load_imm rd,imm21` (signed `[-2^20, 2^20-1]`); `lui rd,imm21`
+  (unsigned `[0, 2^21-1]`); `mov rd,rs`;
   `add|sub|and|or|xor rd,rs1,rs2`; `addi|andi|ori|xori rd,rs1,imm11`;
   `sll|srl|sra rd,rs1,amt` (→`Shift`, amt 0..31); `rdsr rd,sr`.
 
@@ -169,26 +171,25 @@ Operand *kind* (register vs immediate) disambiguates the imm/reg forms.
 - `bnez rs,label` → `bne rs,x0,label`.
 - `li rd,value` → tiling (§5.4).
 
-### 5.4 `li` constant-tiling (any 32-bit value, ≤ 4 instructions)
+### 5.4 `li` constant-tiling (any 32-bit value, ≤ 2 instructions)
 
-`ADDI`/`LOAD_IMM` sign-extend an **11-bit** immediate (`[-1024, 1023]`); `LUI`
-writes `imm20` into bits `[31:12]`. For a target `V` (its 32-bit pattern):
+`LOAD_IMM` sign-extends a **21-bit** immediate (`[-2^20, 2^20-1]`); `LUI` writes a
+**21-bit** immediate into bits `[31:11]` (`imm << 11`); `ADDI` sign-extends an
+11-bit immediate (`[-1024, 1023]`). Because `LUI`'s field meets `ADDI`'s
+sign-extended low half exactly, tiling is at most two words. For a target `V` (its
+32-bit pattern):
 
-1. `V ∈ [-1024, 1023]` → `load_imm rd, V` (**1** word).
-2. Else seed the register — `lui rd, hi` (top 20 bits, `hi` bumped +1 when the
-   low-12 residual exceeds `2047`) when `hi ≠ 0`, otherwise `load_imm rd, chunk`
-   of the first residual chunk (so it **never emits a dead `lui rd, 0`**) —
-   followed by a **greedy chain of `addi`s** that sum to the residual (residual ∈
-   `[-2048, 2047]`; each `addi` covers `[-1024, 1023]`). Near-range values (e.g.
-   `1024`) are **2** words (`load_imm` + `addi`, no `lui`); `lui` + one `addi` is
-   **2**; the residual `2047` with a non-zero `lui` needs three `addi`s, so the
-   worst case is `lui` + 3 `addi` = **4** words.
+1. `V ∈ [-2^20, 2^20-1]` → `load_imm rd, V` (**1** word).
+2. Else split `V` with the standard `%hi`/`%lo` carry: `lo = sext11(V & 0x7FF)` and
+   `hi = (V − lo) >> 11` (a 21-bit value). Emit `lui rd, hi`, then `addi rd, rd, lo`
+   **only when `lo ≠ 0`**. In this branch `hi ≠ 0` always (else `V` would be in
+   the case-1 range), so there is never a dead `lui rd, 0` — and the `addi` is
+   skipped for multiples of `2^11`. Worst case: `lui` + one `addi` = **2** words.
 
-Note tamal's 11-bit immediate (vs RISC-V's 12-bit) is why the worst case is 4, not
-2 (RISC-V's `LUI`+`ADDI`): a residual of `0x7FF` cannot be reached by two 11-bit
-`addi`s (`1023 + 1023 = 2046 < 2047`). The greedy chain is provably correct for
-every `i32`/`u32` value. The word count is a pure function of `V` (a literal or
-resolved `.equ`, address-independent), so it is known in pass 1.
+Unlike RISC-V-style narrower pairings, there is **no reachability gap** and no
+3-/4-word case: `LUI`'s 21-bit `[31:11]` field abuts `ADDI`'s `[10:0]` reach
+exactly (see the ALU/branch design §7.3). The word count is a pure function of `V`
+(a literal or resolved `.equ`, address-independent), so it is known in pass 1.
 
 ### 5.5 Branch offsets
 
@@ -246,8 +247,9 @@ This replaces the placeholder `assemble(_) -> Result<Vec<u8>, AssembleError>`;
 - **Per-module units.** lexer (tokens + spans, both `#`/`;` comments, blank
   lines); parser (each line kind + representative syntax errors); symbol (two-pass
   addresses, `.equ`, `li` sizing feeding label addresses); encoder (every mnemonic
-  → exact `Instr`/word; pseudo-op lowering; `li` tiling 1–4-word incl. the gap
-  band; branch offset sign + range; register-window rejection; `set_config` v1
+  → exact `Instr`/word; pseudo-op lowering; `li` tiling 1–2-word incl. the
+  signed-21 boundary, the `2^11` carry boundary, and a full-range reconstruction
+  sweep; branch offset sign + range; register-window rejection; `set_config` v1
   validation).
 - **Golden — the four examples.** Each `examples/*.s` assembles `Ok` and matches
   an expected word sequence (spot-checked anchors: `set_config controller,x1,sck20,

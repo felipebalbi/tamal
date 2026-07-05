@@ -1,7 +1,7 @@
 //! The canonical `Instr` -> asm-text renderer (inverse of the parse table),
 //! shared by disassembly and program listings.
 
-use tamal_abi::isa::{Cfg6, Imm11, Instr, Reg, ShiftOp};
+use tamal_abi::isa::{Cfg6, Imm11, Imm21, Instr, Reg, ShiftOp};
 
 fn rn(r: Reg) -> String {
     format!("x{}", r.bits())
@@ -10,6 +10,15 @@ fn rn(r: Reg) -> String {
 fn sext11(imm: Imm11) -> i32 {
     let v = imm.bits() as i32;
     if v & 0x400 != 0 { v | !0x7FF } else { v }
+}
+
+fn sext21(imm: Imm21) -> i32 {
+    let v = imm.bits() as i32;
+    if v & (1 << 20) != 0 {
+        v | !0x1F_FFFF
+    } else {
+        v
+    }
 }
 
 fn render_set_config(p: Cfg6) -> String {
@@ -63,7 +72,7 @@ pub fn render_instr(i: &Instr) -> String {
         WaitOn(r, c, t) => format!("wait_on {}, {}, {}", rn(r), c.bits(), t.bits()),
         SetConfig(p) => render_set_config(p),
         Mark(tag, r) => format!("mark {}, {}", tag.bits(), rn(r)),
-        LoadImm(r, imm) => format!("load_imm {}, {}", rn(r), sext11(imm)),
+        LoadImm(r, imm) => format!("load_imm {}, {}", rn(r), sext21(imm)),
         Lui(r, imm) => format!("lui {}, {}", rn(r), imm.bits()),
         Mov(rd, rs) => format!("mov {}, {}", rn(rd), rn(rs)),
         Add(d, a, b) => format!("add {}, {}, {}", rn(d), rn(a), rn(b)),
@@ -97,13 +106,16 @@ pub fn render_instr(i: &Instr) -> String {
 mod tests {
     use super::*;
     use tamal_abi::config::{AlertSource, Config, IoMode, Role, Sck};
-    use tamal_abi::isa::{Amt5, BitCount, Imm11, Imm20, Instr, Reg, ShiftOp, Sr5, Tar4};
+    use tamal_abi::isa::{Amt5, BitCount, Imm11, Imm21, Instr, Reg, ShiftOp, Sr5, Tar4};
 
     fn r(n: u8) -> Reg {
         Reg::new(n).unwrap()
     }
     fn i11(v: i32) -> Imm11 {
         Imm11::new((v as u32 & 0x7FF) as u16).unwrap()
+    }
+    fn i21(v: i32) -> Imm21 {
+        Imm21::new(v as u32 & 0x1F_FFFF).unwrap()
     }
 
     // Assemble the rendered text and confirm it re-encodes to the same word.
@@ -138,8 +150,10 @@ mod tests {
             Instr::Halt(0x11),
             Instr::SetConfig(cfg.pack()),
             Instr::Mark(i11(42), r(5)),
-            Instr::LoadImm(r(5), i11(-3)),
-            Instr::Lui(r(5), Imm20::new(0x12345).unwrap()),
+            Instr::LoadImm(r(5), i21(-3)),
+            Instr::LoadImm(r(5), i21(0x12345)),
+            Instr::Lui(r(5), Imm21::new(0x12345).unwrap()),
+            Instr::Lui(r(5), Imm21::new(0x1F_FFFF).unwrap()),
             Instr::Mov(r(5), r(6)),
             Instr::Add(r(5), r(6), r(7)),
             Instr::Addi(r(5), r(6), i11(-1)),

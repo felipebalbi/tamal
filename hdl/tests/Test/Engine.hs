@@ -341,7 +341,7 @@ genRd = Gen.element [1, 2, 3, 4]
 genDataOnly :: H.Gen Instr
 genDataOnly =
   Gen.choice
-    [ LoadImm <$> genRd <*> genImm11
+    [ LoadImm <$> genRd <*> genImm21
     , Mov <$> genRd <*> genRd
     , Add <$> genRd <*> genRd <*> genRd
     , Addi <$> genRd <*> genRd <*> genImm11
@@ -349,4 +349,5 @@ genDataOnly =
     , Xor_ <$> genRd <*> genRd <*> genRd
     ]
  where
-  genImm11 = fromIntegral <$> Gen.int (Range.linearFrom 0 (-1024) 1023)
+  genImm11 = fromIntegral <$> Gen.int (Range.linearFrom 0 (-1024) 1023) :: H.Gen (BitVector 11)
+  genImm21 = fromIntegral <$> Gen.int (Range.linearFrom 0 (-1024) 1023) :: H.Gen (BitVector 21)

@@ -160,16 +160,16 @@ mod tests {
 
     #[test]
     fn addresses_account_for_li_expansion() {
-        // a:0 ; li x5,0x1800 (3 words: 0,1,2) ; b:3 ; cs_assert (3) ; c:4
-        let ls = lines("a:\n  li x5, 0x1800\nb:\n  cs_assert\nc:\n");
+        // a:0 ; li x5,0x00200055 (2 words: lui+addi at 0,1) ; b:2 ; cs_assert (2) ; c:3
+        let ls = lines("a:\n  li x5, 0x00200055\nb:\n  cs_assert\nc:\n");
         let (mut t, d0) = collect_equs(&ls);
         assert!(d0.is_empty());
         let (total, d) = assign_addresses(&ls, &mut t);
         assert!(d.is_empty());
         assert_eq!(t.get("a"), Some(Sym::Label(0)));
-        assert_eq!(t.get("b"), Some(Sym::Label(3)));
-        assert_eq!(t.get("c"), Some(Sym::Label(4)));
-        assert_eq!(total, 4);
+        assert_eq!(t.get("b"), Some(Sym::Label(2)));
+        assert_eq!(t.get("c"), Some(Sym::Label(3)));
+        assert_eq!(total, 3);
     }
 
     #[test]

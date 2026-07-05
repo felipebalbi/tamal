@@ -21,8 +21,8 @@ import Test.Gen (genReg, genWord)
 genImm :: Gen (BitVector 11)
 genImm = genDefinedBitVector
 
-genImm20 :: Gen (BitVector 20)
-genImm20 = genDefinedBitVector
+genImm21 :: Gen (BitVector 21)
+genImm21 = genDefinedBitVector
 
 genAmt :: Gen (BitVector 5)
 genAmt = genDefinedBitVector
@@ -104,18 +104,18 @@ tests =
             dataResult (Isa.Mov rd rs) x y === x
         , testProperty "LoadImm sign-extends imm" $ property $ do
             rd <- forAll genReg
-            imm <- forAll genImm
+            imm <- forAll genImm21
             x <- forAll genWord
             y <- forAll genWord
             dataResult (Isa.LoadImm rd imm) x y === signExtend imm
-        , testProperty "Lui places imm20 at [31:12], low 12 zero" $ property $ do
+        , testProperty "Lui places imm21 at [31:11], low 11 zero" $ property $ do
             rd <- forAll genReg
-            i20 <- forAll genImm20
+            i21 <- forAll genImm21
             x <- forAll genWord
             y <- forAll genWord
-            let r = dataResult (Isa.Lui rd i20) x y
-            r === (zeroExtend i20 :: BitVector 32) `shiftL` 12
-            (r .&. 0xFFF) === 0
+            let r = dataResult (Isa.Lui rd i21) x y
+            r === (zeroExtend i21 :: BitVector 32) `shiftL` 11
+            (r .&. 0x7FF) === 0
         , testProperty "Addi = alu Add rs1v (signExtend imm)" $ property $ do
             rd <- forAll genReg
             rs <- forAll genReg

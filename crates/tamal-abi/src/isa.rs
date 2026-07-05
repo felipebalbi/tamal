@@ -41,8 +41,13 @@ bounded!(
 );
 bounded!(/// An 11-bit immediate / branch offset / label field.
     Imm11, u16, 11);
-bounded!(/// A 20-bit `LUI` immediate.
-    Imm20, u32, 20);
+bounded!(
+    /// A 21-bit immediate, shared by `LUI` and `LOAD_IMM`. It fills the whole
+    /// `rd`-free operand space (`rs1 ++ rs2 ++ imm`), so there is no reserved
+    /// bit. `LUI` places it at `[31:11]` (`imm << 11`); `LOAD_IMM` sign-extends
+    /// it as a full small-magnitude value (`[-2^20, 2^20-1]`).
+    Imm21, u32, 21
+);
 bounded!(/// A 4-bit `TAR` turnaround count.
     Tar4, u8, 4);
 bounded!(/// A 6-bit `SET_CONFIG` payload.
@@ -167,19 +172,20 @@ pub(crate) fn unpack_bits_imm(imm: u16) -> (u8, u8) {
     (((imm >> 8) & 0x7) as u8, (imm & 0xFF) as u8)
 }
 
-/// `LUI`: spread a 20-bit immediate across `rs1 ++ rs2 ++ imm` (bit 20 = 0).
-pub(crate) fn split_imm20(i20: u32) -> (u8, u8, u16) {
+/// `LUI`/`LOAD_IMM`: spread a 21-bit immediate across `rs1 ++ rs2 ++ imm`. The
+/// immediate fills the entire operand space, so there is no reserved bit.
+pub(crate) fn split_imm21(i21: u32) -> (u8, u8, u16) {
     (
-        ((i20 >> 16) & 0x1F) as u8,
-        ((i20 >> 11) & 0x1F) as u8,
-        (i20 & 0x7FF) as u16,
+        ((i21 >> 16) & 0x1F) as u8,
+        ((i21 >> 11) & 0x1F) as u8,
+        (i21 & 0x7FF) as u16,
     )
 }
 
-/// Inverse of [`split_imm20`]; `hi` is the reserved bit 20.
-pub(crate) fn join_imm20(rs1: u8, rs2: u8, imm: u16) -> (u8, u32) {
-    let temp = ((rs1 as u32 & 0x1F) << 16) | ((rs2 as u32 & 0x1F) << 11) | (imm as u32 & 0x7FF);
-    (((temp >> 20) & 0x1) as u8, temp & 0xF_FFFF)
+/// Inverse of [`split_imm21`]: recombine the full 21-bit immediate. Total — no
+/// reserved bit to report (`5 + 5 + 11 == 21`).
+pub(crate) fn join_imm21(rs1: u8, rs2: u8, imm: u16) -> u32 {
+    ((rs1 as u32 & 0x1F) << 16) | ((rs2 as u32 & 0x1F) << 11) | (imm as u32 & 0x7FF)
 }
 
 /// `WAIT_ON`: `imm = cond[10:9] ++ timeout[8:0]`.
@@ -257,10 +263,10 @@ pub enum Instr {
     /// Reset the RX CRC-8 accumulator.
     CrcReset,
     // DATA group (10)
-    /// `rd <- sext(imm)`.
-    LoadImm(Reg, Imm11),
-    /// `rd <- imm << 12`.
-    Lui(Reg, Imm20),
+    /// `rd <- sext(imm)` (21-bit signed, `[-2^20, 2^20-1]`).
+    LoadImm(Reg, Imm21),
+    /// `rd <- imm << 11` (21-bit immediate at bits `[31:11]`).
+    Lui(Reg, Imm21),
     /// `rd <- rs1`.
     Mov(Reg, Reg),
     /// `rd <- rs1 + rs2`.
@@ -337,9 +343,12 @@ impl Instr {
             Mark(lbl, rs) => join_word(0b01, 0x7, 0, rs.bits(), 0, lbl.bits()),
             CrcReset => join_word(0b01, 0x8, 0, 0, 0, 0),
             // DATA group (10)
-            LoadImm(rd, i) => join_word(0b10, 0x0, rd.bits(), 0, 0, i.bits()),
-            Lui(rd, i20) => {
-                let (rs1, rs2, imm) = split_imm20(i20.bits());
+            LoadImm(rd, i) => {
+                let (rs1, rs2, imm) = split_imm21(i.bits());
+                join_word(0b10, 0x0, rd.bits(), rs1, rs2, imm)
+            }
+            Lui(rd, i21) => {
+                let (rs1, rs2, imm) = split_imm21(i21.bits());
                 join_word(0b10, 0x1, rd.bits(), rs1, rs2, imm)
             }
             Mov(rd, rs) => join_word(0b10, 0x2, rd.bits(), rs.bits(), 0, 0),
@@ -525,15 +534,14 @@ fn decode_data(f: Fields) -> Result<Instr, DecodeError> {
         imm,
         ..
     } = f;
-    let (hi, i20) = join_imm20(rs1, rs2, imm);
+    let i21 = join_imm21(rs1, rs2, imm);
     let (sh_op, sh_mid, sh_amt) = shift_unpack(imm);
     let imm_hi5 = (imm >> 5) & 0x3F; // imm[10:5]
     match sub {
-        0x0 => only(
-            rs1 == 0 && rs2 == 0,
-            LoadImm(Reg::from_bits(rd), Imm11::from_bits(imm)),
-        ),
-        0x1 => only(hi == 0, Lui(Reg::from_bits(rd), Imm20::from_bits(i20))),
+        // LOAD_IMM and LUI fill the whole operand space (rs1++rs2++imm = 21
+        // bits); no reserved field remains, so both always decode.
+        0x0 => Ok(LoadImm(Reg::from_bits(rd), Imm21::from_bits(i21))),
+        0x1 => Ok(Lui(Reg::from_bits(rd), Imm21::from_bits(i21))),
         0x2 => only(
             rs2 == 0 && imm == 0,
             Mov(Reg::from_bits(rd), Reg::from_bits(rs1)),
@@ -628,8 +636,8 @@ mod tests {
         assert_eq!(Reg::new(32), None);
         assert_eq!(Imm11::new(0x7FF).map(|i| i.bits()), Some(0x7FF));
         assert_eq!(Imm11::new(0x800), None);
-        assert_eq!(Imm20::new(0xF_FFFF).map(|i| i.bits()), Some(0xF_FFFF));
-        assert_eq!(Imm20::new(0x10_0000), None);
+        assert_eq!(Imm21::new(0x1F_FFFF).map(|i| i.bits()), Some(0x1F_FFFF));
+        assert_eq!(Imm21::new(0x20_0000), None);
         assert_eq!(Tar4::new(15).map(|t| t.bits()), Some(15));
         assert_eq!(Tar4::new(16), None);
         assert_eq!(Cfg6::new(0x3F).map(|c| c.bits()), Some(0x3F));
@@ -691,19 +699,20 @@ mod tests {
     }
 
     #[test]
-    fn imm20_spread_reconstructs() {
-        // i20 = 0x12345 -> rs1=0x01, rs2=0x04, imm=0x345
-        let (rs1, rs2, imm) = split_imm20(0x12345);
+    fn imm21_spread_reconstructs() {
+        // i21 = 0x12345 -> rs1=0x01, rs2=0x04, imm=0x345
+        let (rs1, rs2, imm) = split_imm21(0x12345);
         assert_eq!((rs1, rs2, imm), (0x01, 0x04, 0x345));
-        let (hi, i20) = join_imm20(rs1, rs2, imm);
-        assert_eq!((hi, i20), (0, 0x12345));
+        assert_eq!(join_imm21(rs1, rs2, imm), 0x12345);
     }
 
     #[test]
-    fn imm20_join_reports_reserved_bit20() {
-        // rs1 bit4 set -> hi = 1 (the reserved bit)
-        let (hi, _) = join_imm20(0b1_0000, 0, 0);
-        assert_eq!(hi, 1);
+    fn imm21_carries_the_full_field_including_bit20() {
+        // All 21 bits set spread to all-ones sub-fields and rejoin losslessly
+        // (what used to be the reserved bit 20 is now the LSB of rs1).
+        let (rs1, rs2, imm) = split_imm21(0x1F_FFFF);
+        assert_eq!((rs1, rs2, imm), (0x1F, 0x1F, 0x7FF));
+        assert_eq!(join_imm21(rs1, rs2, imm), 0x1F_FFFF);
     }
 
     #[test]
@@ -741,7 +750,7 @@ mod tests {
             WaitTimeout::new(0x64).unwrap(),
         );
         let _ = Instr::SetConfig(Cfg6::new(0).unwrap());
-        let _ = Instr::Lui(Reg::new(5).unwrap(), Imm20::new(0x12345).unwrap());
+        let _ = Instr::Lui(Reg::new(5).unwrap(), Imm21::new(0x12345).unwrap());
         let _ = Instr::Shift(
             Reg::new(5).unwrap(),
             Reg::new(6).unwrap(),
@@ -787,12 +796,23 @@ mod tests {
             (Instr::SetConfig(Cfg6::new(0).unwrap()), 0x5800_0000),
             (Instr::CrcReset, 0x6000_0000),
             (
-                Instr::LoadImm(Reg::new(5).unwrap(), Imm11::new(0x0F).unwrap()),
+                Instr::LoadImm(Reg::new(5).unwrap(), Imm21::new(0x0F).unwrap()),
                 0x80A0_000F,
             ),
+            // LOAD_IMM with a >11-bit immediate now spreads across rs1++rs2++imm
+            // (was ReservedFieldNonZero before the 21-bit widening).
             (
-                Instr::Lui(Reg::new(5).unwrap(), Imm20::new(0x12345).unwrap()),
+                Instr::LoadImm(Reg::new(5).unwrap(), Imm21::new(0x12345).unwrap()),
+                0x80A1_2345,
+            ),
+            (
+                Instr::Lui(Reg::new(5).unwrap(), Imm21::new(0x12345).unwrap()),
                 0x84A1_2345,
+            ),
+            // LUI using the full 21-bit field (bit 20 set — formerly reserved).
+            (
+                Instr::Lui(Reg::new(5).unwrap(), Imm21::new(0x1F_FFFF).unwrap()),
+                0x84BF_FFFF,
             ),
             (
                 Instr::Shift(
@@ -832,11 +852,9 @@ mod tests {
         }
 
         #[test]
-        fn imm20_round_trip(i20 in 0u32..=0xF_FFFF) {
-            let (rs1, rs2, imm) = split_imm20(i20);
-            let (hi, back) = join_imm20(rs1, rs2, imm);
-            prop_assert_eq!(hi, 0);
-            prop_assert_eq!(back, i20);
+        fn imm21_round_trip(i21 in 0u32..=0x1F_FFFF) {
+            let (rs1, rs2, imm) = split_imm21(i21);
+            prop_assert_eq!(join_imm21(rs1, rs2, imm), i21);
         }
 
         #[test]
@@ -853,8 +871,8 @@ mod tests {
     fn arb_imm11() -> impl Strategy<Value = Imm11> {
         (0u16..=0x7FF).prop_map(Imm11::from_bits)
     }
-    fn arb_imm20() -> impl Strategy<Value = Imm20> {
-        (0u32..=0xF_FFFF).prop_map(Imm20::from_bits)
+    fn arb_imm21() -> impl Strategy<Value = Imm21> {
+        (0u32..=0x1F_FFFF).prop_map(Imm21::from_bits)
     }
     fn arb_tar4() -> impl Strategy<Value = Tar4> {
         (0u8..=0xF).prop_map(Tar4::from_bits)
@@ -935,10 +953,10 @@ mod tests {
     fn arb_data_instr() -> impl Strategy<Value = Instr> {
         // `Union::new` (not `prop_oneof!`) because there are more than 10 arms.
         Union::new(vec![
-            (arb_reg(), arb_imm11())
+            (arb_reg(), arb_imm21())
                 .prop_map(|(r, i)| Instr::LoadImm(r, i))
                 .boxed(),
-            (arb_reg(), arb_imm20())
+            (arb_reg(), arb_imm21())
                 .prop_map(|(r, i)| Instr::Lui(r, i))
                 .boxed(),
             (arb_reg(), arb_reg())

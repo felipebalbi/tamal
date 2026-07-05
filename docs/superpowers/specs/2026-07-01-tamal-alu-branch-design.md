@@ -192,14 +192,14 @@ Clash notes:
 `dataResult` resolves operand B, applies the extension rules (§7), and dispatches
 to `alu`. `LUI`/`MOV`/`LOAD_IMM` bypass `alu` (constant / pass-through), keeping
 the core arithmetic-only. Constructor field types come from `Tamal.Isa`:
-`imm :: BitVector 11`, `imm20 :: BitVector 20`, `shOp :: BitVector 2`,
+`imm :: BitVector 11`, `imm21 :: BitVector 21`, `shOp :: BitVector 2`,
 `amt :: BitVector 5`.
 
 ```haskell
 dataResult :: Instr -> BitVector 32 -> BitVector 32 -> BitVector 32
 dataResult instr rs1v rs2v = case instr of
   LoadImm _ imm      -> signExtend imm
-  Lui     _ imm20    -> (zeroExtend imm20 :: BitVector 32) `shiftL` 12
+  Lui     _ imm21    -> (zeroExtend imm21 :: BitVector 32) `shiftL` 11
   Mov     _ _        -> rs1v
   Add     _ _ _      -> alu Add rs1v rs2v
   Addi    _ _ imm    -> alu Add rs1v (signExtend imm)
@@ -222,8 +222,8 @@ dataResult instr rs1v rs2v = case instr of
 
 | DATA `Instr` | `dataResult` returns | Extension |
 |---|---|---|
-| `LoadImm _ imm` | `signExtend imm` | sign |
-| `Lui _ imm20` | `zeroExtend imm20 << 12` → bits `[31:12]`, low 12 = 0 | — |
+| `LoadImm _ imm` | `signExtend imm` (21-bit) | sign |
+| `Lui _ imm21` | `zeroExtend imm21 << 11` → bits `[31:11]`, low 11 = 0 | — |
 | `Mov _ _` | `rs1v` | — |
 | `Add` / `Addi` | `alu Add rs1v rs2v` / `alu Add rs1v (signExtend imm)` | sign |
 | `Sub` | `alu Sub rs1v rs2v` | — |
@@ -244,7 +244,7 @@ Key points:
   rejected as needless — every real DATA-compute input yields a value.)
 - **Uniform sign-extension** for `ADDI`/`ANDI`/`ORI`/`XORI`/`LOAD_IMM` (§7). The
   shift amount is the one exception: it is a *count*, so `zeroExtend amt`.
-- **`LUI`** places `imm20` at bits `[31:12]` with the low 12 zero — a pure lane
+- **`LUI`** places `imm21` at bits `[31:11]` with the low 11 zero — a pure lane
   placement, not an arithmetic op.
 - **`x0` hardwiring is NOT here.** `dataResult` takes raw register values; the
   Engine/register file is responsible for reading `x0` as 0 and for discarding
@@ -276,29 +276,34 @@ as a general logical-immediate op; it is simply no longer `li`'s low half.
 Byte masks are unaffected: realistic masks (`0xFF`, `0x0F`, `0x7F`, …) have bit
 10 clear, so sign- and zero-extension are identical for them.
 
-### 7.3 The residual reachability gap (a `tamal-asm` concern, not the ALU's)
+### 7.3 No reachability gap: the 21-bit `LUI`/`LOAD_IMM` immediate
 
-tamal's `imm` field is **11 bits**, one bit narrower than RISC-V's 12-bit I-imm.
-With `LUI` writing `imm20` into bits `[31:12]`, *neither* two-instruction `li`
-expansion can tile all 2³² constants:
+An earlier revision paired a **20-bit** `LUI` (`imm20 << 12`) with the 11-bit
+`ADDI`. Because tamal's immediate field is one bit narrower than RISC-V's 12-bit
+I-imm, `LUI`'s bit-12 boundary did **not** meet `ADDI`'s sign-extended reach, so
+the band `K mod 4096 ∈ [1024, 3071]` needed a third instruction — worst case
+`LUI + 3 ADDI` = **4 words**. RISC-V avoids this only because its 12-bit immediate
+(`[-2048, 2047]`) exactly meets `LUI`'s bit-12 boundary.
 
-- **`LUI + ORI`** (zero-extended 11-bit → bits `[10:0]`): cannot set **bit 11**;
-  any constant whose low 12 bits have bit 11 set is unreachable in two
-  instructions.
-- **`LUI + ADDI`** (sign-extended 11-bit → `[-1024, +1023]`, with a free choice
-  of `imm20`): a constant `K` is reachable iff `K mod 4096 ∈ [0,1023] ∪
-  [3072,4095]`; the middle band `[1024, 3071]` is unreachable in two
-  instructions.
-- RISC-V has *no* gap only because its 12-bit immediate (`[-2048, 2047]`)
-  exactly meets `LUI`'s bit-12 boundary.
+The fix lives in the **encoding**, not the tiling. `LUI` and `LOAD_IMM` each carry
+a **21-bit** immediate spread across the entire `rs1 ++ rs2 ++ imm` operand space
+(`5 + 5 + 11 == 21` — there is no `rd`-free bit left to reserve). `LUI` now shifts
+by **11**, placing its 21 bits at `[31:11]`, exactly where `ADDI`'s sign-extended
+low half `[10:0]` begins. The boundaries meet, so the gap is *gone*:
 
-So switching to `ADDI` moves *where* the gap sits but does not remove it — the
-gap is inherent to the 11-bit immediate. This is fine and **out of scope for the
-ALU**: the host builds packet bytes as `PUT_BYTE imm8`, so full 32-bit constants
-are rare; when one lands in the unreachable band, `tamal-asm` synthesizes a
-3-instruction sequence (e.g. `LUI + ADDI + ADDI`/`ORI`). The ALU spec fixes only
-the *primitive* semantics (`LUI = imm20 << 12`, `ADDI = a + sext(imm11)`); how
-`li` tiles the constant space is the assembler's problem.
+- every 32-bit constant is reachable in **≤ 2** instructions, with uniform
+  sign-extension preserved (`li = LUI + ADDI`, still no `ORI` needed);
+- `LOAD_IMM` alone now reaches the full signed-21 range `[-2^20, 2^20-1]` in **1**
+  instruction (was `[-1024, 1023]`);
+- no dead `LUI rd, 0` and no dead trailing `ADDI rd, rd, 0`.
+
+This was a **human catch during code inspection**: the old `LUI` reserved bit 20
+even though the field already had room for it, and the "gap" the earlier draft
+called *inherent to the 11-bit immediate* was really an artifact of pinning
+`LUI`'s shift to 12 while `ADDI` covered 11. Widening to 21 and realigning the
+shift both recovers the wasted bit and closes the gap. The ALU spec fixes only the
+*primitive* semantics (`LUI = imm21 << 11`, `ADDI = a + sext(imm11)`); the exact
+`li` tiling lives in `tamal-asm` (§5.4 of the asm design).
 
 ### 7.4 Doc consequence
 
@@ -415,8 +420,8 @@ random operand pairs (`op <- forAll (Gen.element [minBound..maxBound])`):
 **`dataResult` wrapper** — over `genDataInstr` filtered to DATA-compute
 constructors, plus random `rs1v`/`rs2v`:
 
-- `Mov` returns `rs1v`; `LoadImm imm` returns `signExtend imm`; `Lui imm20`
-  returns `zeroExtend imm20 << 12` with low 12 bits zero.
+- `Mov` returns `rs1v`; `LoadImm imm` returns `signExtend imm` (21-bit); `Lui
+  imm21` returns `zeroExtend imm21 << 11` with low 11 bits zero.
 - Immediate arithmetic/logical forms use `signExtend` and agree with `alu`
   (`dataResult (Addi rd rs imm) x _ === alu Add x (signExtend imm)`, etc.).
 - Reg-reg forms agree with `alu` (`dataResult (Add rd a b) x y === alu Add x y`,
@@ -506,7 +511,7 @@ Ordered as in `hdl/PLAN.md`:
 
 Explicitly deferred here: the register file, `Engine.step`, `RDSR`, all BUS-op
 *execution/sequencing*, signed branches (`BLT`/`BGE`), and the assembler-side
-`li` constant-tiling for the §7.3 reachability gap.
+`li` constant-tiling (§7.3 / the asm design §5.4).
 
 ---
 

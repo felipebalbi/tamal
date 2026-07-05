@@ -56,8 +56,8 @@ data Instr
   | Mark (BitVector 11) Reg -- label, payload reg
   | CrcReset
   | -- DATA group (group 10) — decoding lands in Task 5
-    LoadImm Reg (BitVector 11)
-  | Lui Reg (BitVector 20)
+    LoadImm Reg (BitVector 21)
+  | Lui Reg (BitVector 21)
   | Mov Reg Reg
   | Add Reg Reg Reg
   | Addi Reg Reg (BitVector 11)
@@ -100,12 +100,12 @@ bitsField = bitCoerce
 mkBitsImm :: Index 8 -> BitVector 8 -> BitVector 11
 mkBitsImm n b = bitCoerce (pack n, b)
 
--- LUI imm20 occupies rs1 ++ rs2 ++ imm low 20 bits; bit 20 reserved 0.
-splitImm20 :: BitVector 20 -> (BitVector 5, BitVector 5, BitVector 11)
-splitImm20 i20 = bitCoerce ((0 :: BitVector 1) ++# i20)
+-- LUI/LOAD_IMM imm21 occupies rs1 ++ rs2 ++ imm (5+5+11 = 21); no reserved bit.
+splitImm21 :: BitVector 21 -> (BitVector 5, BitVector 5, BitVector 11)
+splitImm21 = bitCoerce
 
-joinImm20 :: BitVector 5 -> BitVector 5 -> BitVector 11 -> (BitVector 1, BitVector 20)
-joinImm20 rs1 rs2 imm = bitCoerce (rs1 ++# rs2 ++# imm)
+joinImm21 :: BitVector 5 -> BitVector 5 -> BitVector 11 -> BitVector 21
+joinImm21 rs1 rs2 imm = bitCoerce (rs1 ++# rs2 ++# imm)
 
 {- | Encode an instruction to its 32-bit word, packing operands into their fields
 and zeroing reserved fields. Total, and the exact inverse of a successful
@@ -138,9 +138,11 @@ encode = \case
   Mark lbl rs -> joinW (0b01, 0x7, 0, rs, 0, lbl)
   CrcReset -> joinW (0b01, 0x8, 0, 0, 0, 0)
   -- DATA group (10)
-  LoadImm rd i -> joinW (0b10, 0x0, rd, 0, 0, i)
-  Lui rd i20 ->
-    let (rs1', rs2', imm') = splitImm20 i20
+  LoadImm rd i21 ->
+    let (rs1', rs2', imm') = splitImm21 i21
+     in joinW (0b10, 0x0, rd, rs1', rs2', imm')
+  Lui rd i21 ->
+    let (rs1', rs2', imm') = splitImm21 i21
      in joinW (0b10, 0x1, rd, rs1', rs2', imm')
   Mov rd rs -> joinW (0b10, 0x2, rd, rs, 0, 0)
   Add rd a b -> joinW (0b10, 0x3, rd, a, b, 0)
@@ -247,8 +249,8 @@ decodeData ::
   Either DecodeError Instr
 decodeData sub' rd rs1 rs2 imm =
   case sub' of
-    0x0 -> only (z rs1 && z rs2) (LoadImm rd imm) -- imm=i11; rs1,rs2 reserved
-    0x1 -> only (hi == 0) (Lui rd i20) -- i20 packed in rs1++rs2++imm; bit20 reserved
+    0x0 -> Right (LoadImm rd i21) -- imm21 = rs1++rs2++imm; no reserved field
+    0x1 -> Right (Lui rd i21) -- imm21 = rs1++rs2++imm; no reserved field
     0x2 -> only (z rs2 && z imm) (Mov rd rs1) -- rd,rs1 used; rs2,imm reserved
     0x3 -> only (z imm) (Add rd rs1 rs2) -- reg-reg: imm reserved
     0x4 -> only (z rs2) (Addi rd rs1 imm) -- imm op: rs2 reserved
@@ -265,6 +267,6 @@ decodeData sub' rd rs1 rs2 imm =
  where
   z :: (KnownNat n) => BitVector n -> Bool
   z = (== 0)
-  (hi, i20) = joinImm20 rs1 rs2 imm
+  i21 = joinImm21 rs1 rs2 imm
   (shOp, shMid, shAmt) = bitCoerce imm :: (BitVector 2, BitVector 4, BitVector 5)
   immHi5 = slice d10 d5 imm -- RDSR imm[10:5] (BitVector 6) reserved

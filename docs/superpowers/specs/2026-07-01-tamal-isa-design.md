@@ -84,8 +84,10 @@ Three planes (per `AGENTS.md`):
 - **imm / payload** `[10:0]`: immediate, branch offset, TAR count, bit-count, or
   opcode-specific. Big 32-bit constants (rare — the host builds packet bytes)
   come from a `li` pseudo-op expanding to `LUI` + `ADDI` (standard `%hi`/`%lo`
-  carry adjustment; the 11-bit immediate leaves a residual reachability gap that
-  `tamal-asm` covers with a 3-instruction sequence — see the ALU/branch design).
+  carry adjustment). `LUI`/`LOAD_IMM` carry a **21-bit** immediate (`rs1 ++ rs2 ++
+  imm`, no reserved bit), so `LUI << 11` meets `ADDI`'s sign-extended low half
+  exactly — there is **no reachability gap** and `li` is at most **2 words** (see
+  the ALU/branch design).
 
 Fields unused by an opcode are **reserved-must-be-zero**; a non-zero reserved
 field → `TRAP`. This gives forward room and catches malformed bytecode.
@@ -183,8 +185,8 @@ later — v1 programs are branch-structured.
 
 | sub | Mnemonic | Form | Effect |
 |----|----------|------|--------|
-| `0x0` | `LOAD_IMM` | `rd, imm` | `rd ← sext(imm[10:0])`. |
-| `0x1` | `LUI` | `rd, imm20` | `rd ← imm << 12` (pairs with `ADDI` for 32-bit consts). |
+| `0x0` | `LOAD_IMM` | `rd, imm21` | `rd ← sext(imm21)` (21-bit, `[-2^20, 2^20-1]`). |
+| `0x1` | `LUI` | `rd, imm21` | `rd ← imm << 11` (21-bit at `[31:11]`; pairs with `ADDI` for 32-bit consts). |
 | `0x2` | `MOV` | `rd, rs1` | `rd ← rs1`. |
 | `0x3`/`0x4` | `ADD`/`ADDI` | rr / ri | add. |
 | `0x5` | `SUB` | rr | subtract (`DEC` = `ADDI rd,rd,-1`). |

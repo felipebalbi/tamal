@@ -65,7 +65,7 @@ else to 'alu'. Total over 'Instr'; non-DATA-compute constructors (BUS, CTRL,
 dataResult :: Instr -> BitVector 32 -> BitVector 32 -> BitVector 32
 dataResult instr rs1v rs2v = case instr of
   Isa.LoadImm _ imm -> signExtend imm
-  Isa.Lui _ imm20 -> (zeroExtend imm20 :: BitVector 32) `shiftL` 12
+  Isa.Lui _ imm21 -> (zeroExtend imm21 :: BitVector 32) `shiftL` 11
   Isa.Mov _ _ -> rs1v
   Isa.Add _ _ _ -> alu Add rs1v rs2v
   Isa.Addi _ _ imm -> alu Add rs1v (signExtend imm)
