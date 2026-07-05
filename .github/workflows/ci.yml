@@ -43,6 +43,9 @@ jobs:
       - name: Clash -> Verilog codegen smoke
         run: cabal run clash -- Tamal.Board.ArtyA7 --verilog
 
+      - name: Clash -> Verilog codegen smoke (Cyclone V)
+        run: cabal run clash -- Tamal.Board.CycloneV --verilog
+
   haskell-format:
     name: Haskell format (fourmolu)
     runs-on: ubuntu-latest

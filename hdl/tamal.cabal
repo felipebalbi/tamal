@@ -97,6 +97,7 @@ library
     Tamal.Domain
     Tamal.Params
     Tamal.Board.ArtyA7
+    Tamal.Board.CycloneV
     Tamal.Crc
     Tamal.Isa
     Tamal.Config
