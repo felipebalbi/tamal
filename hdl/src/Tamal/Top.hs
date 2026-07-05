@@ -38,6 +38,7 @@ import Tamal.Mem
   ( instrRam
   , ringRam
   )
+import Tamal.Params (RW)
 import Tamal.Uart (uart)
 
 -- | The mealy adapter: re-associates 'step' so it lifts with 'mealy'.
@@ -47,7 +48,7 @@ stepM s i = (s', (bo, mr))
   (s', bo, mr) = step s i
 
 -- | Project the engine's ring write to the BRAM write-port tuple.
-ringWrite :: Maybe Ring -> Maybe (Unsigned 12, BitVector 32)
+ringWrite :: Maybe Ring -> Maybe (Unsigned RW, BitVector 32)
 ringWrite = fmap (\(Ring a d) -> (a, d))
 
 -- | Lifecycle state shown on the status LED.

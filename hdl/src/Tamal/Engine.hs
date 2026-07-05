@@ -29,10 +29,8 @@ import Tamal.Bus.Serdes (Lanes, hiZ, serializeX1, tarBeat)
 import Tamal.Config (AlertSource (..), Config (..), IoMode (..), Role (..), Sck (..), decodeConfig)
 import Tamal.Crc (crc8Update)
 import Tamal.Isa (Instr (..), Reg, decode)
+import Tamal.Params (AW, RW)
 import Tamal.RegFile (Regs, initRegs, readReg, writeReg)
-
--- | Program-address width (word index): 1024-word store (§ D3).
-type AW = 10
 
 {- | The engine lifecycle (the @phase@ field of 'State'). Each constructor is a
 Mealy state 'step' dispatches on: 'Idle' waits for a start trigger, 'Preamble'
@@ -66,7 +64,7 @@ data State = State
   , regs :: Regs
   , cfg :: Config
   , rxCrc :: BitVector 8
-  , ringPtr :: Unsigned 12
+  , ringPtr :: Unsigned RW
   , ovf :: Bool
   , csN :: Bit
   , sck :: Bit
@@ -107,7 +105,7 @@ data BusOut = BusOut
   , rstOut :: Bit
   , lanesOut :: Lanes
   , haltedOut :: Bool
-  , ringPtrOut :: Unsigned 12
+  , ringPtrOut :: Unsigned RW
   }
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
@@ -116,7 +114,7 @@ data BusOut = BusOut
 per cycle (the @Maybe Ring@ third element of 'step').
 -}
 data Ring = Ring
-  { rAddr :: Unsigned 12
+  { rAddr :: Unsigned RW
   , rData :: BitVector 32
   }
   deriving stock (Generic, Show, Eq)
@@ -328,7 +326,7 @@ captureWord :: BitVector 4 -> BitVector 8 -> BitVector 32
 captureWord nbits byte = bitCoerce (0b00 :: BitVector 2, 0 :: BitVector 18, nbits, byte)
 
 -- | Push one word below the terminator; else latch overflow and drop (§7.1).
-pushWord :: Unsigned 12 -> Bool -> BitVector 32 -> (Unsigned 12, Bool, Maybe Ring)
+pushWord :: Unsigned RW -> Bool -> BitVector 32 -> (Unsigned RW, Bool, Maybe Ring)
 pushWord ptr ov w
   | ov = (ptr, True, Nothing)
   | ptr <= termAddr - 1 = (ptr + 1, False, Just (Ring ptr w))
@@ -342,7 +340,7 @@ advance s = s{phase = Fetch, pc = pc s + 1}
 pins the ring at 4096 words, so @termAddr = maxBound = D - 1@ — the last usable
 record slot sits at @termAddr - 1@ (see 'pushWord').
 -}
-termAddr :: Unsigned 12
+termAddr :: Unsigned RW
 termAddr = maxBound
 
 -- | Drive pins safe (used by TRAP): CS# high, lanes hi-Z, SCK low, RESET# high.

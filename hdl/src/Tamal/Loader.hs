@@ -18,13 +18,14 @@ import Data.Maybe (fromMaybe, isJust)
 
 import Tamal.Crc (crc8Update)
 import Tamal.Loader.Cobs
+import Tamal.Params (AW, RW)
 
 -- | What the top feeds the loader each cycle.
 data LoaderIn = LoaderIn
   { rxByte :: Maybe (BitVector 8)
   , txReady :: Bool
   , halted :: Bool
-  , ringPtrIn :: Unsigned 12
+  , ringPtrIn :: Unsigned RW
   , ringData :: BitVector 32
   }
   deriving stock (Generic, Show, Eq)
@@ -35,8 +36,8 @@ and the engine start pulse.
 -}
 data LoaderOut = LoaderOut
   { txByte :: Maybe (BitVector 8)
-  , instrWr :: Maybe (Unsigned 10, BitVector 32)
-  , ringAddr :: Unsigned 12
+  , instrWr :: Maybe (Unsigned AW, BitVector 32)
+  , ringAddr :: Unsigned RW
   , startOut :: Bool
   }
   deriving stock (Generic, Show, Eq)
@@ -61,13 +62,13 @@ data LoaderSt = LoaderSt
   , lByteIx :: Unsigned 2 -- payload byte within the current word (0..3)
   , lWordAcc :: BitVector 32 -- LE word being assembled
   , lHadPay :: Bool -- any payload byte seen (TRIGGER must have none)
-  , lAddr :: Unsigned 10 -- next instr write slot
-  , lFull :: Bool -- instr store overflowed (>1024 words)
+  , lAddr :: Unsigned AW -- next instr write slot
+  , lFull :: Bool -- instr store overflowed (> 2^AW words)
   , lDrn :: DrainPhase
   , lWord :: BitVector 32 -- ring word being emitted
   , lWIx :: Unsigned 2 -- LE byte of lWord (0..3)
   , lCrcTx :: BitVector 8 -- running CRC over the drain
-  , lDrCnt :: Unsigned 12 -- ring record index being fetched
+  , lDrCnt :: Unsigned RW -- ring record index being fetched
   , lTerm :: Bool -- fetching/emitting the terminator word
   }
   deriving stock (Generic, Show, Eq)
@@ -140,7 +141,7 @@ rxStep s inp =
 {- | Confirm a held (definitely-not-CRC) byte: fold CRC, route as opcode or a
 payload byte, assembling LE words and writing them (write-through) for LOAD.
 -}
-confirm :: LoaderSt -> BitVector 8 -> (LoaderSt, Maybe (Unsigned 10, BitVector 32))
+confirm :: LoaderSt -> BitVector 8 -> (LoaderSt, Maybe (Unsigned AW, BitVector 32))
 confirm s h
   | not (lHaveOp s) =
       ( s

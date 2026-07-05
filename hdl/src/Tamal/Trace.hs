@@ -17,6 +17,8 @@ module Tamal.Trace
 import Clash.Prelude
 import qualified Data.List as L
 
+import Tamal.Params (RW)
+
 {- | A result-ring record. @Capture@ reports a sampled byte (with its valid bit
 count), @Mark@ carries a host↔trace correlation label plus a register payload,
 and @Halt@ terminates a run (with the sticky trap & overflow flags, 3-bit reason
@@ -44,14 +46,14 @@ words (advancing the pointer) or drop them and latch overflow.
 -}
 ringPush ::
   -- | current write pointer
-  Unsigned 12 ->
+  Unsigned RW ->
   -- | last usable record-slot index (limit)
-  Unsigned 12 ->
+  Unsigned RW ->
   -- | prior sticky overflow
   Bool ->
   -- | words of one record
   [BitVector 32] ->
-  (Unsigned 12, Bool, [BitVector 32])
+  (Unsigned RW, Bool, [BitVector 32])
 ringPush ptr limit ovf ws
   | ovf = (ptr, True, [])
   | fits = (ptr + count, False, ws)

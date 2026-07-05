@@ -95,6 +95,7 @@ library
   -- domain and the placeholder heartbeat top.
   exposed-modules:
     Tamal.Domain
+    Tamal.Params
     Tamal
     Tamal.Crc
     Tamal.Isa
