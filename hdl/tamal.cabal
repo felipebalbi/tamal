@@ -96,7 +96,7 @@ library
   exposed-modules:
     Tamal.Domain
     Tamal.Params
-    Tamal
+    Tamal.Board.ArtyA7
     Tamal.Crc
     Tamal.Isa
     Tamal.Config

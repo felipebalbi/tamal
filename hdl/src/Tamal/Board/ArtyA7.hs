@@ -2,17 +2,17 @@
 -- SPDX-License-Identifier: CERN-OHL-P-2.0
 
 {- |
-Top entity for the tamal gateware: the thin pin-binding shell. It ties the 100 MHz
-clock, binds the tri-state @IO[3:0]@ pads via 'Tamal.Io.espiPads', and wires the
-UART / sideband / LED pins around 'Tamal.Top.system'. No reset port (power-up
-@init@, per AGENTS.md).
+Top entity for the tamal gateware on the Digilent Arty A7-100T: the thin
+pin-binding shell. It ties the 100 MHz clock, binds the tri-state @IO[3:0]@ pads
+via 'Tamal.Io.espiPads', and wires the UART / sideband / LED pins around
+'Tamal.Top.system'. No reset port (power-up @init@, per AGENTS.md).
 
 The four @IO@ lanes are exposed as four scalar @inout@ ports (@io0@..@io3@): Clash
 fuses a 'BiSignalIn' argument with the matching 'BiSignalOut' result into one
 @inout@ port per lane. A @Vec 4@ of BiSignals does /not/ fuse (it lowers to a plain
 input), so the per-lane scalar form is required.
 -}
-module Tamal where
+module Tamal.Board.ArtyA7 where
 
 import Clash.Annotations.TH
 import Clash.Prelude

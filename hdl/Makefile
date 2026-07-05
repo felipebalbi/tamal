@@ -34,7 +34,7 @@
 # shell at all. The `clash`/`cabal`/`vivado` tools are real executables and run
 # bare. On a POSIX host, point $(NU) at a wrapper or adjust these recipes.
 
-NAME = Tamal
+NAME = Tamal.Board.ArtyA7
 TOP  = topEntity
 PROJ = tamal
 
@@ -99,7 +99,7 @@ $(HDLDIR)/$(TOP).v: $(CLASHOUT)/$(TOP).v
 # 1. Generate Verilog from Clash. Wired into make so the whole pipeline runs
 #    from a single `make`. Prerequisites come from $(wildcard) (a make built-in,
 #    no shell) over the two source levels (src/*.hs and src/*/*.hs).
-$(CLASHOUT)/$(TOP).v: $(wildcard src/*.hs src/*/*.hs)
+$(CLASHOUT)/$(TOP).v: $(wildcard src/*.hs src/*/*.hs src/*/*/*.hs)
 	$(CLASH) $(NAME) --verilog
 
 ##----------------------------------------------------------------------------##
