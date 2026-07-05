@@ -1,0 +1,32 @@
+##----------------------------------------------------------------------------##
+#   Digilent Arty A7-100T -- Vivado flow (BOARD=arty-a7)                        #
+##----------------------------------------------------------------------------##
+# Included by the main Makefile when TOOLCHAIN=vivado. One non-project Vivado
+# launch (synth -> opt -> place -> route -> bitstream), then JTAG program.
+
+# Xilinx part for the Digilent Arty A7-100T.
+PART = xc7a100tcsg324-1
+
+VDIR = $(BUILDDIR)/02-vivado
+
+# Hand-written Vivado constraints (absolute; the recipe cd's into $(VDIR)).
+XDC = $(abspath constraints/arty_a7.xdc)
+
+BUILD_TCL = $(abspath vivado/build.tcl)
+PGM_TCL   = $(abspath vivado/program.tcl)
+
+BIT = $(VDIR)/$(PROJ).bit
+
+bitstream: $(BIT)
+
+# Program the Arty A7 over its built-in JTAG (volatile SRAM config).
+program: $(BIT)
+	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(PGM_TCL) -tclargs $(PROJ).bit"
+
+# The whole Vivado flow in one launch: synth -> opt -> place -> route -> bitstream.
+$(BIT): $(HDLDIR)/$(TOP).v $(XDC)
+	$(NU) -c "rm -rf $(VDIR)"
+	$(NU) -c "mkdir $(VDIR)"
+	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(BUILD_TCL) -tclargs $(PART) $(TOP) $(abspath $(HDLDIR)) $(XDC) $(PROJ)"
+
+.PHONY: bitstream program

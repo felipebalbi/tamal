@@ -1,0 +1,59 @@
+##----------------------------------------------------------------------------##
+#   Terasic Cyclone V GX Starter Kit (C5G) -- Quartus flow (BOARD=cyclonev)     #
+##----------------------------------------------------------------------------##
+# Included by the main Makefile when TOOLCHAIN=quartus. Mirrors the sibling
+# cyclonev-clash-examples: quartus_sh -t build.tcl (project) -> quartus_map ->
+# quartus_fit -> quartus_asm -> quartus_sta -> quartus_pgm (embedded USB-Blaster).
+
+# Cyclone V device on the C5G. The chip is marked 5CGXFC5C6F27C7N; Quartus's DEVICE
+# drops the trailing "N" (lead-free suffix) or quartus_map fails "Part name illegal".
+DEVICE = 5CGXFC5C6F27C7
+QPROJ  = $(PROJ)
+
+QDIR = $(BUILDDIR)/02-quartus
+
+# Hand-written constraints + project tcl (absolute; recipes cd into $(QDIR)).
+SDC       = $(abspath constraints/c5g.sdc)
+PINS      = $(abspath constraints/c5g_pins.tcl)
+BUILD_TCL = $(abspath quartus/build.tcl)
+
+# Quartus stage markers (each discrete tool writes one into $(QDIR)).
+QSF = $(QDIR)/$(QPROJ).qsf
+MAP = $(QDIR)/$(QPROJ).map.rpt
+FIT = $(QDIR)/$(QPROJ).fit.rpt
+SOF = $(QDIR)/$(QPROJ).sof
+STA = $(QDIR)/$(QPROJ).sta.rpt
+
+bitstream: $(SOF)
+timing:    $(STA)
+
+# Program the C5G over its built-in USB-Blaster. `.sof` is volatile SRAM config
+# (lost on power cycle). `-o "p;<file>"` programs the first device in the JTAG
+# chain (the C5G has one); run `jtagconfig` to confirm the cable.
+program: $(SOF)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_PGM) -m jtag -o \"p;$(QPROJ).sof\""
+
+# 6. Timing analysis (off the default path; reports slack against the SDC).
+$(STA): $(SOF)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_STA) $(QPROJ)"
+
+# 5. Assembler: emit the bitstream (.sof) from the fitted design.
+$(SOF): $(FIT)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_ASM) $(QPROJ)"
+
+# 4. Fitter: place & route.
+$(FIT): $(MAP)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_FIT) $(QPROJ)"
+
+# 3. Analysis & synthesis. quartus_map auto-generates the altera_pll IP from the
+#    staged *.qsys (added as QSYS_FILE by build.tcl).
+$(MAP): $(QSF)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_MAP) $(QPROJ)"
+
+# 2. Generate the Quartus project (device, sources, QSYS PLL, SDC, pins).
+$(QSF): $(HDLDIR)/$(TOP).v $(BUILD_TCL) $(SDC) $(PINS)
+	$(NU) -c "rm -rf $(QDIR)"
+	$(NU) -c "mkdir $(QDIR)"
+	$(NU) -c "cd $(QDIR); $(QUARTUS_SH) -t $(BUILD_TCL) $(DEVICE) $(TOP) $(QPROJ) $(abspath $(HDLDIR)) $(SDC) $(PINS)"
+
+.PHONY: bitstream timing program
