@@ -23,5 +23,5 @@ pub mod error;
 /// The [`Device`] session: frame + ship control messages, read + decode drains.
 pub mod device;
 
-pub use device::Device;
+pub use device::{Device, RunOptions};
 pub use error::{Error, MAX_PROGRAM_WORDS, validate_program_bytes};

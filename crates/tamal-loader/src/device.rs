@@ -6,7 +6,16 @@ use tamal_abi::trace::{Trace, decode_trace};
 use tamal_abi::wire::{ControlMsg, decode_result, encode_control};
 
 use crate::error::Error;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportError};
+
+/// Knobs for [`Device::run`].
+#[derive(Debug, Clone, Copy)]
+pub struct RunOptions {
+    /// Per-drain read deadline.
+    pub timeout: Duration,
+    /// Extra attempts after the first (total attempts = `retries + 1`).
+    pub retries: u32,
+}
 
 /// A connected tamal rig over a transport `T`.
 pub struct Device<T: Transport> {
@@ -38,6 +47,28 @@ impl<T: Transport> Device<T> {
         let wire = self.transport.read_frame(timeout)?;
         let words = decode_result(&wire)?;
         Ok(decode_trace(&words)?)
+    }
+
+    /// Load, trigger, and read the drain, re-running on a timed-out or malformed
+    /// drain up to `opts.retries` extra times. Re-sends BOTH `LOAD_PROGRAM` and
+    /// `TRIGGER` each attempt (a partial LOAD is committed only by TRIGGER).
+    /// Genuine transport I/O faults propagate immediately.
+    pub fn run(&mut self, words: &[u32], opts: RunOptions) -> Result<Trace, Error> {
+        let attempts = opts.retries + 1;
+        for _ in 0..attempts {
+            self.load_program(words)?;
+            self.trigger()?;
+            match self.read_trace(opts.timeout) {
+                Ok(trace) => return Ok(trace),
+                // Recoverable: a lost or malformed drain -> deterministic re-run.
+                Err(Error::Transport(TransportError::Timeout))
+                | Err(Error::Wire(_))
+                | Err(Error::Trace(_)) => continue,
+                // Non-recoverable (port/IO fault, etc.).
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::RetriesExhausted { attempts })
     }
 }
 
@@ -118,6 +149,65 @@ mod tests {
         assert!(matches!(
             dev.read_trace(Duration::from_secs(1)),
             Err(Error::Wire(_))
+        ));
+    }
+
+    #[test]
+    fn run_happy_path_returns_trace() {
+        let words = vec![0x0001_0000u32, 0xC000_0000];
+        let mut dev = Device::new(MockTransport::new(vec![Ok(drain_frame(&words))]));
+        let opts = RunOptions {
+            timeout: Duration::from_secs(1),
+            retries: 3,
+        };
+        let trace = dev.run(&[0x0800_0064], opts).unwrap();
+        assert_eq!(trace.halt.status, 0);
+        // Two frames sent per attempt (LOAD + TRIGGER); one attempt here.
+        assert_eq!(dev.transport.sent.len(), 2);
+    }
+
+    #[test]
+    fn run_retries_on_timeout_then_succeeds() {
+        let words = vec![0x0001_0000u32, 0xC000_0000];
+        let mut dev = Device::new(MockTransport::new(vec![
+            Err(TransportError::Timeout),
+            Ok(drain_frame(&words)),
+        ]));
+        let opts = RunOptions {
+            timeout: Duration::from_secs(1),
+            retries: 3,
+        };
+        assert!(dev.run(&[0x0800_0064], opts).is_ok());
+        // Re-sent LOAD + TRIGGER on the retry: 4 frames total.
+        assert_eq!(dev.transport.sent.len(), 4);
+    }
+
+    #[test]
+    fn run_retries_on_corrupt_drain_then_succeeds() {
+        let words = vec![0x0001_0000u32, 0xC000_0000];
+        let mut bad = drain_frame(&words);
+        bad[2] ^= 0x01;
+        let mut dev = Device::new(MockTransport::new(vec![Ok(bad), Ok(drain_frame(&words))]));
+        let opts = RunOptions {
+            timeout: Duration::from_secs(1),
+            retries: 3,
+        };
+        assert!(dev.run(&[0x0800_0064], opts).is_ok());
+    }
+
+    #[test]
+    fn run_exhausts_retries() {
+        let mut dev = Device::new(MockTransport::new(vec![
+            Err(TransportError::Timeout),
+            Err(TransportError::Timeout),
+        ]));
+        let opts = RunOptions {
+            timeout: Duration::from_secs(1),
+            retries: 1,
+        };
+        assert!(matches!(
+            dev.run(&[0x0800_0064], opts),
+            Err(Error::RetriesExhausted { attempts: 2 })
         ));
     }
 }
