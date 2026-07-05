@@ -35,15 +35,12 @@ pub mod crc8;
 /// COBS framing (spec §5) — a Rust mirror of the HDL `Tamal.Wire.Cobs`.
 pub mod cobs;
 
-/// Control-plane messages: host → device.
+/// The frame + message wire layer (spec §8) — a Rust mirror of the HDL `Tamal.Wire`.
 ///
-/// Planned commands (see the architecture docs):
-/// `LOAD_PROGRAM(bytecode)`, `SET_ROLE(controller|target)`,
-/// `SET_IO_MODE(single|dual|quad)`, `SET_CRC(on|off)`,
-/// `SET_INJECT(seed, ratio)`, `ARM`, `TRIGGER`.
-pub mod control {
-    // Placeholder — control command/response types land here.
-}
+/// Control plane (host → FPGA): `LOAD_PROGRAM` + `TRIGGER`. Result plane
+/// (FPGA → host): the `TRACE_DRAIN` frame. Frame = `COBS(opcode ++ payload ++
+/// crc8) ++ 0x00`, little-endian throughout.
+pub mod wire;
 
 /// Result / trace-plane events: device → host.
 ///
