@@ -221,6 +221,41 @@ piece (BRAM, wire, loader, IOBUF, topEntity) got:
   human's synthesizable code was correct, and TDD surfaced the AI's test-harness
   mistake.  Nice inversion of the usual "AI writes buggy code" story.
 
+### The bug tests can't catch (never blindly trust AI output)
+
+The sharper, more uncomfortable counterpoint to "the bug was in the AI's tests."
+Here the AI-written code was **not buggy at all** — and that's exactly the
+problem.
+
+- **What the AI produced:** a `LUI`/`LOAD_IMM` encoding with a 20-bit immediate
+  (mirroring RISC-V's `LUI`), a reserved bit, and an 11-bit `load_imm`. It
+  **passed every property test** — encode/decode round-trips, canonical-or-traps,
+  the whole hedgehog suite — and the design doc *explained* the resulting
+  `li`-expansion limitation as if it were **fundamental**: "the gap is inherent to
+  the 11-bit immediate."
+- **What the human caught, by reading the bits:** the instruction word had a spare
+  21st bit the encoding was *pinning to zero for no reason*, and the reachability
+  gap wasn't inherent at all — it was an artifact of shifting `LUI` by 12 while
+  `ADDI` reached only 11. Widen both immediates to 21 bits and realign the shift
+  to 11, and the gap **vanishes**: `li` drops from a 4-word worst case to a
+  guaranteed ≤ 2 words, and the wasted bit does real work.
+- **Why no test caught it:** there was nothing to fail against. The code was
+  self-consistent and correct *for the design it implemented*. Tests verify "does
+  it do what it says"; they can't tell you "the design left a better one on the
+  table." Only a human comparing the encoding against the field budget saw it.
+
+**The lesson for the talk:** passing tests and a confident, well-written
+justification are *not* proof a design is right. TDD caught the AI's three
+test-harness bugs; only human inspection caught the AI's plausible-but-suboptimal
+*design* — the one dressed up with an authoritative "this limitation is
+inherent." Trust, but read the bits yourself.
+
+Caveat to keep it honest (and credible on stage): the 20-bit choice was a
+*defensible* RISC-V-mirroring decision, not a blunder. The teachable failure is
+narrower and scarier — **the docs asserted a limitation as inherent when it
+wasn't**, and that confident wrong framing sailed through review until a human
+did the arithmetic.
+
 ### AI as a verification/research partner (not a guess machine)
 
 - Plans contained **concrete, compile-ready code**, not placeholders, because
@@ -304,8 +339,20 @@ real, from this build.
    scalar BiSignal pairs emits four real `inout` ports. *Punchline:* trust, but
    verify the generated HDL.
 
-Common moral across all four: **purity made the bug reproducible and the
-boundary probe cheap; TDD made sure a bug couldn't hide.**
+5. **"The bit that wasn't used."** The AI's `LUI` encoding reserved a bit and its
+   design doc called the resulting `li` reachability gap "inherent to the 11-bit
+   immediate." Every test passed. A human counting bits in the instruction word
+   (`6 opcode + 5 rd` = 11, leaving **21**, not 20) saw the encoding was throwing
+   a bit away — and that the gap was an artifact of the shift, not inherent.
+   Widen to 21 bits, realign the shift, gap gone, `li` worst case 4 → 2 words.
+   *Punchline:* tests prove the code matches the design; they can't tell you the
+   design was second-best. The one story where the fault was in neither the tests
+   *nor* the hardware — it was in the *design*, and only human review caught it.
+
+Common moral across the first four: **purity made the bug reproducible and the
+boundary probe cheap; TDD made sure a bug couldn't hide.** The fifth is the
+deliberate counterweight — **TDD can't catch what isn't a bug; a human reading
+the encoding can.** Never blindly trust AI output, even when it's green.
 
 ---
 
