@@ -27,8 +27,13 @@ cobsEncode = go []
  where
   go grp [] = emit grp
   go grp (b : bs)
+    -- Group full FIRST: a 254-byte group flushes as a 0xFF continuation (no
+    -- implied zero), then @b@ is reprocessed in a fresh group. Checking this
+    -- before the @b == 0@ case is load-bearing: a zero arriving on a full group
+    -- must terminate a *fresh* empty group (…FF,<254>,01,…) — folding it into the
+    -- full group as code 0xFF would drop the zero on decode.
+    | L.length grp == 254 = emit grp <> go [] (b : bs) -- group full: flush, reprocess b
     | b == 0 = emit grp <> go [] bs -- zero terminates the group (implied)
-    | L.length grp == 254 = emit grp <> go [b] bs -- group full: flush, restart with b
     | otherwise = go (grp <> [b]) bs
   emit grp = fromIntegral (L.length grp + 1) : grp
 

@@ -44,12 +44,31 @@ tests =
     , testCase "cobsEncode 255 non-zero bytes == 0xFF group + 0x02 group"
         $ cobsEncode run255
         @?= (0xFF : run254) <> [0x02, 255]
+    , -- Regression: a full 254-byte group terminated by a zero must flush as a
+      -- 0xFF continuation and then emit a *separate* empty group for the zero
+      -- (…FF,<254>,01,01). Folding the zero into the full group (code 0xFF, which
+      -- carries no implied zero) silently drops it on decode.
+      testCase "cobsEncode 254 non-zero then 0x00 == FF,<254>,01,01"
+        $ cobsEncode (run254 <> [0x00])
+        @?= (0xFF : run254) <> [0x01, 0x01]
+    , testCase "cobsDecode . cobsEncode round-trips 254 non-zero then 0x00"
+        $ cobsDecode (cobsEncode (run254 <> [0x00]))
+        @?= Just (run254 <> [0x00])
     , testProperty "cobsEncode output contains no 0x00" $ property $ do
         xs <- forAll (Gen.list (Range.linear 0 300) genByteZeros)
         L.elem 0 (cobsEncode xs) === False
     , testProperty "cobsDecode . cobsEncode == Just" $ property $ do
         xs <- forAll (Gen.list (Range.linear 0 300) genByteZeros)
         cobsDecode (cobsEncode xs) === Just xs
+    , -- The zero-dense generator above cannot produce a 254-long non-zero run,
+      -- so it never exercises the full-group / trailing-zero boundary. genRuns
+      -- does: round-trip and the no-0x00 invariant must hold there too.
+      testProperty "cobsDecode . cobsEncode == Just (boundary runs)" $ property $ do
+        xs <- forAll genRuns
+        cobsDecode (cobsEncode xs) === Just xs
+    , testProperty "cobsEncode output contains no 0x00 (boundary runs)" $ property $ do
+        xs <- forAll genRuns
+        L.elem 0 (cobsEncode xs) === False
     , testCase "cobsDecode truncated group -> Nothing"
         $ cobsDecode [0x05, 0x11]
         @?= Nothing
@@ -101,10 +120,25 @@ tests =
         @?= Left (UnknownOpcode 0x02)
     ]
 
--- A zero-dense byte generator: stresses COBS group boundaries far harder than
--- the ~1/256 zeros a uniform generator produces. Reuses Test.Gen's genByte.
+-- A zero-dense byte generator: many group boundaries via frequent zeros, but
+-- (by design) only short non-zero runs — it cannot reach the 254-byte full-group
+-- cap. Reuses Test.Gen's genByte.
 genByteZeros :: Gen (BitVector 8)
 genByteZeros = Gen.frequency [(1, pure 0), (4, genByte)]
+
+-- A full-group-boundary generator: concatenated runs of non-zero bytes (each up
+-- to 260 long, so runs cross the 254-byte cap), each optionally followed by a
+-- single zero. This is what actually exercises the full-group / trailing-zero
+-- interaction the zero-dense generator above cannot reach.
+genRuns :: Gen [BitVector 8]
+genRuns = fmap L.concat (Gen.list (Range.linear 0 4) chunk)
+ where
+  chunk = do
+    n <- Gen.int (Range.linear 0 260)
+    run <- Gen.list (Range.singleton n) genNonZero
+    z <- Gen.bool
+    pure (run <> if z then [0] else [])
+  genNonZero = fmap fromIntegral (Gen.int (Range.linear 1 255))
 
 -- 254 distinct non-zero bytes (1..254) — the maximal COBS group.
 run254 :: [BitVector 8]

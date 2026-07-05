@@ -51,6 +51,21 @@ genByteZeros = Gen.frequency [(1, pure 0), (4, genB)]
  where
   genB = fromIntegral <$> Gen.int (Range.linear 0 255)
 
+{- | A full-group-boundary generator: concatenated runs of non-zero bytes (each
+up to 260 long, crossing the 254-byte cap), each optionally followed by a
+single zero. genByteZeros cannot produce a 254-long non-zero run, so it never
+reaches the full-group / trailing-zero interaction; this generator does.
+-}
+genRuns :: Gen [BitVector 8]
+genRuns = fmap L.concat (Gen.list (Range.linear 0 4) chunk)
+ where
+  chunk = do
+    n <- Gen.int (Range.linear 0 260)
+    run <- Gen.list (Range.singleton n) genNonZero
+    z <- Gen.bool
+    pure (run <> if z then [0] else [])
+  genNonZero = fmap fromIntegral (Gen.int (Range.linear 1 255))
+
 {- | Pure driver for the decode step: feed the COBS bytes (delimiter stripped),
 then a frame-end pulse; collect the decoded bytes and the malformed flag.
 -}
@@ -125,8 +140,20 @@ encodeTests =
           @?= (0xFF : L.map fromIntegral [1 .. 254 :: Int])
         encDrive (L.map fromIntegral [1 .. 255 :: Int])
           @?= (0xFF : L.map fromIntegral [1 .. 254 :: Int]) <> [0x02, 255]
+    , -- Regression: a full 254-byte group terminated by a zero. The streaming
+      -- encoder must match the pure oracle — flush 0xFF,<254> then a fresh empty
+      -- group for the zero (…,01,01), not drop the zero.
+      testCase "encode 254 non-zero then 0x00 == FF,<254>,01,01"
+        $ encDrive (L.map fromIntegral [1 .. 254 :: Int] <> [0x00])
+        @?= (0xFF : L.map fromIntegral [1 .. 254 :: Int]) <> [0x01, 0x01]
+    , testProperty "streaming encode equals cobsEncode (boundary runs)" $ property $ do
+        x <- forAll (Gen.filter (not . L.null) genRuns)
+        encDrive x === cobsEncode x
     , testProperty "encode then decode round-trips (both streaming)" $ property $ do
         x <- forAll (Gen.list (Range.linear 1 300) genByteZeros)
+        decDrive (encDrive x) === (x, False)
+    , testProperty "encode then decode round-trips (both streaming, boundary runs)" $ property $ do
+        x <- forAll (Gen.filter (not . L.null) genRuns)
         decDrive (encDrive x) === (x, False)
     ]
 
