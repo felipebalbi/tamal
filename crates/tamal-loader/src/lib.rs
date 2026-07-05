@@ -15,18 +15,6 @@
 /// Pluggable link layers between host and device (UART today; FX3 later).
 pub mod transport;
 
-/// A connected tamal rig — control + result streams.
-///
-/// Placeholder type; the real connection lifecycle, program-load API, and
-/// result subscription land in a later plan.
-#[derive(Debug, Default)]
-pub struct Device {
-    _private: (),
-}
+pub mod error;
 
-impl Device {
-    /// Create a placeholder handle. Real construction will take a transport.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
+pub use error::{Error, MAX_PROGRAM_WORDS, validate_program_bytes};
