@@ -116,17 +116,22 @@ test:
 ##----------------------------------------------------------------------------##
 
 # Every Haskell source file. Shell-free discovery via $(wildcard) (a make
-# built-in), covering src/, src/*/ (Tamal/), src/*/*/ (Tamal/Bus/), tests/,
-# tests/Test/, and bin/ — same portability rationale as the codegen prereqs.
-HS = $(wildcard src/*.hs src/*/*.hs src/*/*/*.hs tests/*.hs tests/*/*.hs bin/*.hs)
+# built-in). The CI job globs hdl/**/*.hs (any depth), so keep enough levels
+# here to cover the whole tree — otherwise `make format-check` could pass while
+# CI checks a deeper file it skipped.
+HS = $(wildcard \
+  src/*.hs src/*/*.hs src/*/*/*.hs src/*/*/*/*.hs \
+  tests/*.hs tests/*/*.hs tests/*/*/*.hs \
+  bin/*.hs)
 
 # Rewrite every file in place to the hdl/fourmolu.yaml style.
 format:
 	$(FOURMOLU) --mode inplace $(HS)
 
-# Fail (non-zero exit) if anything is unformatted. Used by CI.
+# Fail (non-zero exit) if anything is unformatted. Mirrors the CI fourmolu
+# check, INCLUDING --check-idempotence, so a local pass matches CI exactly.
 format-check:
-	$(FOURMOLU) --mode check $(HS)
+	$(FOURMOLU) --check-idempotence --mode check $(HS)
 
 ##----------------------------------------------------------------------------##
 #   Cleanup                                                                    #

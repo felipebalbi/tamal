@@ -51,7 +51,10 @@ jobs:
 
       # Reads hdl/fourmolu.yaml (per-file upward search) and hdl/tamal.cabal
       # (for default-extensions). Pin the version so CI matches local installs.
-      - uses: haskell-actions/run-fourmolu@v11
+      # Requires >= v13: fourmolu 0.20.0.0 ships .zip archives, and only
+      # run-fourmolu v13+ downloads/extracts them (v11 fetched a bare binary URL
+      # that now 404s, which the action mislabels as "detected unformatted files").
+      - uses: haskell-actions/run-fourmolu@v13
         with:
           version: "0.20.0.0"
           pattern: |
