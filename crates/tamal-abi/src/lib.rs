@@ -32,6 +32,9 @@ pub mod config;
 /// CRC-8 (eSPI/SMBus PEC) — a Rust mirror of the HDL `Tamal.Crc`.
 pub mod crc8;
 
+/// COBS framing (spec §5) — a Rust mirror of the HDL `Tamal.Wire.Cobs`.
+pub mod cobs;
+
 /// Control-plane messages: host → device.
 ///
 /// Planned commands (see the architecture docs):
