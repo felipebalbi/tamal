@@ -19,6 +19,16 @@ boundary** (`Tamal.Io`), and the **integration** (`Tamal.Top`'s `system` + the
 `topEntity` shell) — all built and tested, with a whole-system UART/eSPI cosim.
 tamal now builds to a v1 bitstream (controller role, x1 I/O, UART transport).
 
+tamal now builds to a v1 bitstream on **two boards**: the Arty A7-100T (Vivado,
+`make`) and the Cyclone V GX Starter Kit (Quartus, `make BOARD=cyclonev`, 50→100 MHz
+Altera PLL). The gateware core is shared; only the `Tamal.Board.*` pin-shell and the
+toolchain fragment differ.
+
+The eSPI IO lanes are driven through a **scalar per-lane `BiSignal`** interface in
+`Tamal.Io.espiPads`: routing BiSignals through a `Vec` had dropped the per-lane
+`inout` drive on both boards (fixed on this branch), so any refactor of `espiPads`
+or the board shells must keep the lanes scalar.
+
 | Module              | Purpose                                                                                                    | Status                                |
 |---------------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|
 | `Tamal.Isa`         | `Instr` ADT, total `encode`/`decode`, reserved-field trap                                                  | done, tested                          |

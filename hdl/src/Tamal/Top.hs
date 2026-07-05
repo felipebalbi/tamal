@@ -6,8 +6,9 @@
 The tamal design minus pin binding (design doc 2026-07-03-tamal-topentity-design.md):
 'system' wires the BRAMs, loader, UART, and engine (@mealy stepM initState@) over
 plain 'Signal's — no 'BiSignal', so the whole integration is cosim-testable. The
-'Tamal' shell binds the clock + 'espiPads' + pins around it. Pure helpers 'stepM',
-'ringWrite', 'rigState', and 'ledPattern' are hedgehog-tested.
+'Tamal.Board.ArtyA7' / 'Tamal.Board.CycloneV' shells bind the clock + 'espiPads' +
+pins around it. Pure helpers 'stepM', 'ringWrite', 'rigState', and 'ledPattern' are
+hedgehog-tested.
 -}
 module Tamal.Top
   ( system

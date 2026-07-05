@@ -4,12 +4,17 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 {- |
-Clock domain for the tamal gateware on the Digilent Arty A7-100T.
+Clock domains for the tamal gateware, shared by both board targets.
 
-The board's 100 MHz oscillator (CLK100MHZ, pin E3) drives the single system
-domain. The default 'vSystem' reset (asynchronous, active-high) is kept as-is:
-the top entity ties it permanently de-asserted, so it never reaches hardware
-and Clash emits no reset port.
+'Dom100' is the 100 MHz system domain the whole design runs on: on the Digilent
+Arty A7-100T it is the board oscillator directly (CLK100MHZ, pin E3); on the
+Terasic Cyclone V GX Starter Kit it is the output of an Altera PLL
+('Tamal.Board.CycloneV'). 'DomInput50' is the C5G's 50 MHz PLL-input domain
+(CLOCK_50_B5B, pin R20).
+
+The default 'vSystem' reset (asynchronous, active-high) is kept as-is: the board
+shells tie it permanently de-asserted, so it never reaches hardware and Clash
+emits no reset port.
 -}
 module Tamal.Domain where
 

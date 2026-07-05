@@ -1,7 +1,7 @@
 cabal-version:       2.4
 name:                tamal
 version:             0.1.0
-synopsis:            eSPI compliance test-rig gateware (Clash) for the Digilent Arty A7-100T
+synopsis:            eSPI compliance test-rig gateware (Clash) for the Arty A7-100T and Cyclone V GX Starter Kit
 -- CERN-OHL-P-2.0 is a real SPDX id, but Cabal's bundled SPDX list doesn't know
 -- it; express it as a LicenseRef and ship the full text in license-file.
 license:             LicenseRef-CERN-OHL-P-2.0
@@ -121,7 +121,8 @@ library
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with the tamal project in scope.
--- Generate Verilog with:  cabal run clash -- Tamal --verilog
+-- Generate Verilog with:  cabal run clash -- Tamal.Board.ArtyA7 --verilog
+--                         (or Tamal.Board.CycloneV)
 executable clash
   main-is: bin/Clash.hs
   default-language: Haskell2010

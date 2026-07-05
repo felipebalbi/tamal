@@ -1,8 +1,11 @@
 # Tamal gateware (`hdl/`)
 
-The Clash FPGA gateware for the tamal eSPI compliance rig, targeting the
-**Digilent Arty A7-100T** (`xc7a100tcsg324-1`, 100 MHz). Self-contained: Clash →
-Verilog → Vivado bitstream, driven by `make`. Not a Cargo workspace member.
+The Clash FPGA gateware for the tamal eSPI compliance rig, targeting the **Digilent
+Arty A7-100T** (`xc7a100tcsg324-1`, Vivado — default `make`) and the **Terasic
+Cyclone V GX Starter Kit** (`5CGXFC5C6F27C7`, Quartus — `make BOARD=cyclonev`). Both
+run the design on `Dom100` (100 MHz); the C5G's 50 MHz oscillator is multiplied by an
+Altera PLL. Self-contained: Clash → Verilog → vendor bitstream, driven by `make`.
+Not a Cargo workspace member.
 
 Licensed **CERN-OHL-P-2.0** (see [`LICENSE`](LICENSE)); every `hdl/**/*.hs` carries
 a REUSE-style SPDX header. (The Rust host tooling under `crates/` is MIT.)
@@ -12,8 +15,10 @@ a REUSE-style SPDX header. (The Rust host tooling under `crates/` is MIT.)
 A host loads a compiled tamal program over UART; the on-FPGA engine executes it,
 driving/sampling the eSPI bus with deterministic timing and recording every
 transaction into a trace ring; on `HALT` the trace is drained back to the host.
-The whole path is one clock domain (`Dom100`, 100 MHz) — no PLL, no CDC, no FIFOs
-(the trace ring BRAM is the buffer; UART is ~500× slower than the fabric).
+The whole path is one clock domain (`Dom100`, 100 MHz) — no CDC (the C5G multiplies
+its 50 MHz oscillator to `Dom100` with an Altera PLL, but it is still a single design
+domain), no FIFOs (the trace ring BRAM is the buffer; UART is ~500× slower than the
+fabric).
 
 ```
  host ──UART──► loader ──► instr BRAM ──► engine (mealy step) ──► eSPI pads (IO[3:0], CS#, SCK, RESET#, ALERT#)

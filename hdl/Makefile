@@ -15,7 +15,9 @@
 # (`topEntity`). Clash writes HDL to verilog/$(NAME).$(TOP)/. PROJ names the artefact.
 #
 # Filesystem / cd steps are wrapped in `$(NU) -c "..."` (nushell) for Windows
-# portability (see build.cfg to override NU).
+# portability (see build.cfg.local to override NU). Note: the nushell recipes in
+# Makefile.vivado / Makefile.quartus sequence commands with `;` (not `&&`) — leave
+# them as-is.
 
 BOARD ?= arty-a7
 

@@ -5,9 +5,11 @@
 
    Generate Verilog with:
 
-       cabal run clash -- Tamal --verilog
+       cabal run clash -- Tamal.Board.ArtyA7 --verilog
+       cabal run clash -- Tamal.Board.CycloneV --verilog
 
-   The HDL lands in verilog/Tamal.topEntity/. This file is taken verbatim
+   The HDL lands in verilog/Tamal.Board.ArtyA7.topEntity/ (or
+   verilog/Tamal.Board.CycloneV.topEntity/). This file is taken verbatim
    from the upstream clash-starters projects. -}
 
 import Clash.Main (defaultMain)
