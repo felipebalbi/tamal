@@ -63,6 +63,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # tamal-loader depends on serialport v4, which links libudev on Linux
+      # (libudev-sys) and probes it via pkg-config. Without these the build
+      # fails with "The system library `libudev` required by crate ... was not
+      # found."
+      - name: Install libudev (serialport build dep)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
