@@ -12,11 +12,8 @@
 
 #![forbid(unsafe_code)]
 
-/// Pluggable link layers between host and device.
-pub mod transport {
-    // Placeholder. The first backend will be UART (`serialport`); a future FX3
-    // GPIF II slave-FIFO backend can be added alongside it.
-}
+/// Pluggable link layers between host and device (UART today; FX3 later).
+pub mod transport;
 
 /// A connected tamal rig — control + result streams.
 ///
