@@ -60,7 +60,7 @@ fully replaced in Task 6.
 **Files:**
 - Create: `hdl/src/Tamal/Board/ArtyA7.hs`
 - Delete: `hdl/src/Tamal.hs`
-- Modify: `hdl/tamal.cabal` (exposed-modules), `hdl/Makefile` (NAME + source wildcard)
+- Modify: `hdl/tamal.cabal` (exposed-modules), `hdl/Makefile` (NAME + source wildcard), `.github/workflows/ci.yml` (codegen-smoke module name)
 
 - [ ] **Step 1: Create `hdl/src/Tamal/Board/ArtyA7.hs`**
 
@@ -147,6 +147,18 @@ levels deep, `src/Tamal/Board/`), i.e. change the recipe line
 ```makefile
 $(CLASHOUT)/$(TOP).v: $(wildcard src/*.hs src/*/*.hs src/*/*/*.hs)
 ```
+
+- [ ] **Step 4b: Fix the CI codegen-smoke module name**
+
+The rename breaks `.github/workflows/ci.yml`, whose "Clash → Verilog codegen smoke"
+step hard-codes the old module. Change its `run:` line from
+`cabal run clash -- Tamal --verilog` to:
+
+```yaml
+        run: cabal run clash -- Tamal.Board.ArtyA7 --verilog
+```
+
+(Task 3 adds a second line codegenning `Tamal.Board.CycloneV`, so CI covers both boards.)
 
 - [ ] **Step 5: Format**
 
@@ -255,6 +267,16 @@ In the `library` `exposed-modules`, add a line beside `Tamal.Board.ArtyA7`:
 Run: `make format`
 Expected: `CycloneV.hs` conforms (small or no diff).
 
+- [ ] **Step 3b: Add the C5G codegen to CI**
+
+So CI codegens both boards, add a second smoke line to `.github/workflows/ci.yml`
+after the `Tamal.Board.ArtyA7` one (from Task 2):
+
+```yaml
+      - name: Clash -> Verilog codegen smoke (Cyclone V)
+        run: cabal run clash -- Tamal.Board.CycloneV --verilog
+```
+
 - [ ] **Step 4: Verify the library builds**
 
 Run: `cabal build tamal`
@@ -281,7 +303,7 @@ input plus `io0..io3` `inout` and the named UART/eSPI/LED ports.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add hdl/src/Tamal/Board/CycloneV.hs hdl/tamal.cabal
+git add hdl/src/Tamal/Board/CycloneV.hs hdl/tamal.cabal .github/workflows/ci.yml
 git commit -m "feat(hdl): add Tamal.Board.CycloneV shell (alteraPllSync 50->100 MHz)"
 ```
 

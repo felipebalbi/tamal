@@ -41,7 +41,7 @@ jobs:
         run: cabal test all
 
       - name: Clash -> Verilog codegen smoke
-        run: cabal run clash -- Tamal --verilog
+        run: cabal run clash -- Tamal.Board.ArtyA7 --verilog
 
   haskell-format:
     name: Haskell format (fourmolu)
