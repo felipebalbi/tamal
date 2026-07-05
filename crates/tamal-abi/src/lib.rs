@@ -11,7 +11,9 @@
 //! It is deliberately **transport-agnostic** — it knows nothing about UART,
 //! JTAG, or a future FX3 USB link. Transports live in `tamal-loader`.
 //!
-//! Nothing here is implemented yet; the modules below sketch the intended shape.
+//! The wire mirror (`crc8`, `cobs`, `wire`, `trace`) is a byte-exact Rust
+//! counterpart to the HDL `Tamal.Crc`/`Tamal.Wire`/engine record encodings;
+//! it stays transport-agnostic (transports live in `tamal-loader`).
 
 #![forbid(unsafe_code)]
 
@@ -29,22 +31,19 @@ pub mod isa;
 /// direction the gateware never needs.
 pub mod config;
 
-/// Control-plane messages: host → device.
-///
-/// Planned commands (see the architecture docs):
-/// `LOAD_PROGRAM(bytecode)`, `SET_ROLE(controller|target)`,
-/// `SET_IO_MODE(single|dual|quad)`, `SET_CRC(on|off)`,
-/// `SET_INJECT(seed, ratio)`, `ARM`, `TRIGGER`.
-pub mod control {
-    // Placeholder — control command/response types land here.
-}
+/// CRC-8 (eSPI/SMBus PEC) — a Rust mirror of the HDL `Tamal.Crc`.
+pub mod crc8;
 
-/// Result / trace-plane events: device → host.
+/// COBS framing (spec §5) — a Rust mirror of the HDL `Tamal.Wire.Cobs`.
+pub mod cobs;
+
+/// The frame + message wire layer (spec §8) — a Rust mirror of the HDL `Tamal.Wire`.
 ///
-/// Planned event shape:
-/// `BusEvent { timestamp, channel, cycle_type, tag, length, verdict }`.
-/// The stream must tolerate dropped events (an overflow marker) so the eSPI bus
-/// is never blocked by trace backpressure.
-pub mod trace {
-    // Placeholder — observed-transaction and verdict types land here.
-}
+/// Control plane (host → FPGA): `LOAD_PROGRAM` + `TRIGGER`. Result plane
+/// (FPGA → host): the `TRACE_DRAIN` frame. Frame = `COBS(opcode ++ payload ++
+/// crc8) ++ 0x00`, little-endian throughout.
+pub mod wire;
+
+/// Typed decode of the drained trace ring (engine §7.2 record encodings):
+/// `REVISION` word, the CAPTURE/MARK record stream, and the HALT terminator.
+pub mod trace;

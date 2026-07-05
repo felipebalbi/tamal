@@ -8,28 +8,20 @@
 //! v1 targets the Arty A7's **USB-UART**; the [`transport`] module is shaped so
 //! a future FX3 USB backend slots in without touching [`tamal_abi`].
 //!
-//! Nothing here is implemented yet — these are placeholders for the structure.
+//! It implements the wire transport and the [`Device`] session over
+//! [`tamal_abi`]; the result-plane drain and verdict handling land as the
+//! engine grows.
 
 #![forbid(unsafe_code)]
 
-/// Pluggable link layers between host and device.
-pub mod transport {
-    // Placeholder. The first backend will be UART (`serialport`); a future FX3
-    // GPIF II slave-FIFO backend can be added alongside it.
-}
+/// Pluggable link layers between host and device (UART today; FX3 later).
+pub mod transport;
 
-/// A connected tamal rig — control + result streams.
-///
-/// Placeholder type; the real connection lifecycle, program-load API, and
-/// result subscription land in a later plan.
-#[derive(Debug, Default)]
-pub struct Device {
-    _private: (),
-}
+/// Loader error taxonomy and program-input validation.
+pub mod error;
 
-impl Device {
-    /// Create a placeholder handle. Real construction will take a transport.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
+/// The [`Device`] session: frame + ship control messages, read + decode drains.
+pub mod device;
+
+pub use device::{Device, RunOptions};
+pub use error::{Error, MAX_PROGRAM_WORDS, validate_program_bytes};

@@ -181,6 +181,22 @@ mod tests {
     }
 
     #[test]
+    fn boundary_254_then_zero_keeps_the_zero() {
+        // A full 254-byte group terminated by a zero must flush as a 0xFF
+        // continuation and then emit a SEPARATE empty group for the zero
+        // (FF,<254>,01,01) — folding the zero into the 0xFF group would drop it.
+        // (Regression: this exact case was a shared bug in the plan + HDL oracle.)
+        let mut raw: Vec<u8> = (1..=254u16).map(|x| x as u8).collect();
+        raw.push(0x00);
+        let mut exp: Vec<u8> = vec![0xFFu8];
+        exp.extend_from_slice(&raw[..254]);
+        exp.push(0x01);
+        exp.push(0x01);
+        assert_eq!(cobs_encode(&raw), exp);
+        assert_eq!(cobs_decode(&exp).unwrap(), raw);
+    }
+
+    #[test]
     fn malformed_inputs_classified() {
         assert!(matches!(cobs_decode(&[]), Err(CobsError::Empty)));
         assert!(matches!(cobs_decode(&[0x05, 0x11]), Err(CobsError::TruncatedGroup)));
@@ -239,20 +255,18 @@ pub fn cobs_encode(data: &[u8]) -> Vec<u8> {
             if last {
                 out.push(1); // trailing zero owes a final empty group
             }
-        } else if group.len() == 254 {
-            // full group: close as code 255 (no consumed zero), start a new group
-            out.push(255);
-            out.extend_from_slice(&group);
-            group.clear();
-            group.push(b);
-            if last {
-                out.push(group.len() as u8 + 1);
-                out.extend_from_slice(&group);
-                group.clear();
-            }
         } else {
             group.push(b);
-            if last {
+            if group.len() == 254 {
+                // Full group: flush EAGERLY as a 0xFF continuation (no implied
+                // zero), then start a fresh group. Flushing here — not lazily on
+                // the next byte — is load-bearing: a 0x00 arriving on a full group
+                // must terminate a *fresh* empty group (…FF,<254>,01,…), never fold
+                // into the full group (0xFF carries no implied zero) and be dropped.
+                out.push(0xFF);
+                out.extend_from_slice(&group);
+                group.clear();
+            } else if last {
                 out.push(group.len() as u8 + 1);
                 out.extend_from_slice(&group);
                 group.clear();

@@ -108,20 +108,24 @@ cobsEncodeStep s (mIn, dsReady) = case eMode s of
   EFilling -> case mIn of
     Nothing -> (s, (True, Nothing, False))
     Just (b, lst)
+      | eFill s == 254 ->
+          -- Full group FIRST (before the @b == 0@ case): a 254-byte group flushes
+          -- as a 0xFF continuation, then @b@ is reprocessed via 'ePend'. A zero
+          -- landing here must terminate a *fresh* empty group, not fold into the
+          -- full group (0xFF carries no implied zero) — see the pb==0 case below.
+          ( s
+              { eMode = EEmitting
+              , eIx = 0
+              , ePend = Just (b, lst)
+              }
+          , (True, Nothing, False)
+          )
       | b == 0 ->
           ( s
               { eMode = EEmitting
               , eIx = 0
               , eFinal = lst
               , eLast = lst
-              }
-          , (True, Nothing, False)
-          )
-      | eFill s == 254 ->
-          ( s
-              { eMode = EEmitting
-              , eIx = 0
-              , ePend = Just (b, lst)
               }
           , (True, Nothing, False)
           )
@@ -155,6 +159,21 @@ cobsEncodeStep s (mIn, dsReady) = case eMode s of
         )
     | otherwise -> case ePend s of
         Just (pb, pl)
+          | pb == 0 ->
+              -- A zero that arrived on a full group: the full group was just
+              -- emitted as a 0xFF continuation; now emit a *fresh* empty group
+              -- for the zero itself. @eFinal@ owes the trailing empty group iff
+              -- the zero was the last input byte (mirrors the b==0 EFilling case).
+              ( s
+                  { eMode = EEmitting
+                  , eFill = 0
+                  , eIx = 0
+                  , ePend = Nothing
+                  , eFinal = pl
+                  , eLast = pl
+                  }
+              , (False, Nothing, False)
+              )
           | pl ->
               ( (store s{eFill = 0} pb)
                   { eMode = EEmitting
