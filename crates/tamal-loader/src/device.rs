@@ -1,6 +1,9 @@
 //! The `Device<T>` session: frame + ship control messages, read + decode drains.
 
-use tamal_abi::wire::{ControlMsg, encode_control};
+use std::time::Duration;
+
+use tamal_abi::trace::{Trace, decode_trace};
+use tamal_abi::wire::{ControlMsg, decode_result, encode_control};
 
 use crate::error::Error;
 use crate::transport::Transport;
@@ -28,6 +31,13 @@ impl<T: Transport> Device<T> {
         let frame = encode_control(&ControlMsg::Trigger);
         self.transport.send(&frame)?;
         Ok(())
+    }
+
+    /// Read the next frame, decode it as a `TRACE_DRAIN`, and parse the trace ring.
+    pub fn read_trace(&mut self, timeout: Duration) -> Result<Trace, Error> {
+        let wire = self.transport.read_frame(timeout)?;
+        let words = decode_result(&wire)?;
+        Ok(decode_trace(&words)?)
     }
 }
 
@@ -70,7 +80,6 @@ mod tests {
     }
 
     /// Build a valid `TRACE_DRAIN` wire frame from ring words. Reused by Tasks 8–9.
-    #[allow(dead_code)] // exercised by the drain tests Tasks 8–9 add to this module.
     pub(super) fn drain_frame(words: &[u32]) -> Vec<u8> {
         let mut logical = vec![OP_TRACE_DRAIN];
         logical.extend_from_slice(&words_to_le_bytes(words));
@@ -86,5 +95,29 @@ mod tests {
         let sent = &dev.transport.sent;
         assert_eq!(sent[0], encode_control(&ControlMsg::LoadProgram(words)));
         assert_eq!(sent[1], vec![0x03, 0x02, 0x0E, 0x00]); // pinned TRIGGER frame
+    }
+
+    #[test]
+    fn read_trace_decodes_a_good_drain() {
+        // REVISION 0.1.0, CAPTURE nbits=8 byte=0x5A, HALT status=0.
+        let words = vec![0x0001_0000u32, 0x0000_085A, 0xC000_0000];
+        let mut dev = Device::new(MockTransport::new(vec![Ok(drain_frame(&words))]));
+        let trace = dev.read_trace(Duration::from_secs(1)).unwrap();
+        assert_eq!(trace.revision, tamal_abi::trace::Revision::EXPECTED);
+        assert_eq!(trace.records.len(), 1);
+        assert_eq!(trace.halt.status, 0);
+        assert!(!trace.halt.trap);
+    }
+
+    #[test]
+    fn read_trace_surfaces_a_corrupt_drain_as_wire_error() {
+        let words = vec![0x0001_0000u32, 0xC000_0000];
+        let mut frame = drain_frame(&words);
+        frame[2] ^= 0x01; // flip a payload byte -> CRC/COBS failure
+        let mut dev = Device::new(MockTransport::new(vec![Ok(frame)]));
+        assert!(matches!(
+            dev.read_trace(Duration::from_secs(1)),
+            Err(Error::Wire(_))
+        ));
     }
 }
