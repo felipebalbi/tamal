@@ -1,16 +1,22 @@
 //! Host-side connection to a tamal rig.
 //!
-//! This crate owns the live link to the FPGA: it drives the **control plane**
-//! (load a compiled program, set role/IO-mode/CRC/injection, arm/trigger) and
-//! ingests the **result plane** (the observed-transaction + verdict stream),
-//! speaking the [`tamal_abi`] wire format over a pluggable transport.
+//! This crate owns the live link to the FPGA. It drives the **control plane**
+//! (`LOAD_PROGRAM` a compiled program, then `TRIGGER` a run) and ingests the
+//! **result plane** (the drained trace ring), speaking the [`tamal_abi`] wire
+//! format over a pluggable [`transport`]. Run configuration (role, I/O mode,
+//! CRC, error injection) is baked into the bytecode via the engine's
+//! `SET_CONFIG` instruction, not carried as separate control commands.
 //!
-//! v1 targets the Arty A7's **USB-UART**; the [`transport`] module is shaped so
-//! a future FX3 USB backend slots in without touching [`tamal_abi`].
+//! The [`Device`] session ties it together: [`Device::load_program`],
+//! [`Device::trigger`], [`Device::read_trace`], and [`Device::run`] — the
+//! fire-and-forget load → trigger → drain cycle with a timeout + auto-retry
+//! recovery loop. [`validate_program_bytes`] enforces the multiple-of-4 /
+//! 1024-word limits before anything is sent.
 //!
-//! It implements the wire transport and the [`Device`] session over
-//! [`tamal_abi`]; the result-plane drain and verdict handling land as the
-//! engine grows.
+//! v1 targets the Arty A7's **USB-UART** ([`transport::UartTransport`]); the
+//! [`transport::Transport`] trait is shaped so a future FX3 USB backend slots
+//! in without touching [`tamal_abi`]. A pass/fail verdict layer over the
+//! decoded trace is a later phase.
 
 #![forbid(unsafe_code)]
 

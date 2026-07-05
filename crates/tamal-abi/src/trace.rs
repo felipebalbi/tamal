@@ -1,5 +1,5 @@
 //! Typed decode of the drained trace ring, mirroring the engine's `encodeRecord`
-//! (design §7.2). Record tags live in bits [31:30]: `00`=CAPTURE, `10`=MARK,
+//! (design §7.2). Record tags live in bits `[31:30]`: `00`=CAPTURE, `10`=MARK,
 //! `11`=HALT terminator.
 
 /// The `REVISION` word (`word[0]`): `[major8 | minor8 | patch16]`.

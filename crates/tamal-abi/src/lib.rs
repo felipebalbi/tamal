@@ -1,19 +1,21 @@
 //! The tamal ABI: everything shared by the host tooling and the FPGA gateware.
 //!
-//! This crate is the project ABI. It defines two things:
+//! This crate is the project ABI — a byte-exact Rust counterpart to the HDL
+//! that both sides implement. It defines:
 //!
 //! 1. The **bytecode / ISA encoding** ([`isa`]) — the 32-bit instruction words
 //!    the [`tamal-asm`](../tamal_asm/index.html) assembler emits and the FPGA
-//!    engine executes.
-//! 2. The **wire format** exchanged with a running rig: the **control plane**
-//!    (host → FPGA) and the **result/trace plane** (FPGA → host).
+//!    engine executes — plus the [`config`] `SET_CONFIG` payload codec.
+//! 2. The **wire format** exchanged with a running rig: [`crc8`] (CRC-8/PEC),
+//!    [`cobs`] (COBS framing), [`wire`] (the `LOAD_PROGRAM`/`TRIGGER`/
+//!    `TRACE_DRAIN` frame + message layer over the **control** and **result**
+//!    planes), and [`trace`] (typed decode of the drained trace ring).
 //!
-//! It is deliberately **transport-agnostic** — it knows nothing about UART,
-//! JTAG, or a future FX3 USB link. Transports live in `tamal-loader`.
-//!
-//! The wire mirror (`crc8`, `cobs`, `wire`, `trace`) is a byte-exact Rust
-//! counterpart to the HDL `Tamal.Crc`/`Tamal.Wire`/engine record encodings;
-//! it stays transport-agnostic (transports live in `tamal-loader`).
+//! Every module mirrors an HDL counterpart (`Tamal.Isa`/`Config`/`Crc`/
+//! `Wire.Cobs`/`Wire`/engine record encodings) byte-for-byte, so the host and
+//! gateware cannot silently disagree. It is deliberately **transport-agnostic**
+//! — it knows nothing about UART, JTAG, or a future FX3 USB link; transports
+//! live in `tamal-loader`.
 
 #![forbid(unsafe_code)]
 

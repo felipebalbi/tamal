@@ -128,9 +128,13 @@ Vivado's Tcl-batch model (no discrete `map/fit/asm` binaries):
 ## Clash notes
 
 - Single `topEntity` in `src/Tamal.hs`; `Dom100` clock domain in
-  `src/Tamal/Domain.hs`. The current top is a **placeholder heartbeat**
-  (an LED blink) so the Clash→Vivado pipeline has a real entity to build until
-  the eSPI cycle engine lands.
+  `src/Tamal/Domain.hs`. The top is the thin pin-binding shell around
+  `Tamal.Top.system`, which wires the instruction/trace BRAMs, the UART, the
+  load/drain loader, and the engine (`mealy stepM initState`) — a fully
+  integrated design, validated end-to-end by a whole-system UART/eSPI cosim
+  (`Test.Top`). It is **not** a heartbeat; the status LED just reflects the rig
+  lifecycle (waiting/running/halted). On-hardware bring-up (a timing-clean
+  bitstream + the live serial path) is the remaining step.
 - No reset port: the top ties reset permanently de-asserted
   (`unsafeFromActiveHigh (pure False)`), relying on power-up `init`, like the
   sibling examples; Clash then emits no `reset` port.

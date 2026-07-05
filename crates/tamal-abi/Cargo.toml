@@ -2,6 +2,7 @@
 name = "tamal-abi"
 version = "0.1.0"
 description = "Transport-agnostic ABI for tamal: bytecode/ISA encoding plus control and result wire types."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

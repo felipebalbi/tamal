@@ -2,6 +2,7 @@
 name = "tamal-loader"
 version = "0.1.0"
 description = "Host-side loader: ships tamal bytecode to the rig and drains the result stream (UART transport to start)."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

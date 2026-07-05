@@ -59,10 +59,16 @@ role, single (x1) I/O, UART transport; on-hardware bring-up, target role,
 dual/quad I/O, and the error-injection + verdict engine are the next phases. See
 [`hdl/README.md`](hdl/README.md).
 
-**Host tooling (`crates/`): stubs.** The Rust ABI, assembler, and loader crates
-are placeholders that mirror the gateware's wire/bytecode contract; they get
-fleshed out post-silicon. See [`docs/superpowers/specs/`](docs/superpowers/specs/)
-for the designs and `AGENTS.md` for orientation.
+**Host tooling (`crates/`): v1 implemented.** The Rust ABI, assembler, and loader
+are built and tested, mirroring the gateware's wire/bytecode contract byte-for-byte:
+`tamal-abi` (ISA encoding + COBS/CRC-8 wire format + typed trace decode),
+`tamal-asm`/`tamal-asm-cli` (RISC-V-flavored source → raw bytecode), and
+`tamal-loader`/`tamal-loader-cli` (COBS/CRC framing, UART transport, and the
+load → trigger → drain session with a decoded-trace + HALT/TRAP verdict). The live
+serial path is exercised on hardware rather than in CI; the pass/fail conformance
+verdict engine is a later phase. Each crate carries its own README; see also
+[`docs/superpowers/specs/`](docs/superpowers/specs/) for the designs and `AGENTS.md`
+for orientation.
 
 ## Hardware
 
@@ -93,8 +99,11 @@ docs/                 design notes and plans
 
 ```sh
 cargo build            # build all crates
-cargo run -p tamal-asm-cli -- --help
-cargo run -p tamal-loader-cli -- --help
+cargo test             # run the host test suite
+
+# assemble a program, then load + run it on a connected rig
+cargo run -p tamal-asm-cli    -- assemble examples/peripheral_io_read.s -o /tmp/prog.bin
+cargo run -p tamal-loader-cli -- run /tmp/prog.bin --port /dev/tty.usbserial-XXXX
 ```
 
 ### Gateware (Clash -> Vivado)
