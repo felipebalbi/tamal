@@ -31,8 +31,20 @@ alertSync alert = alert''
 {- | The eSPI pad boundary. Per lane: drive @Just o@ when @oe == 1@ else @Nothing@
 (hi-Z); read the pad combinationally into @ioIn@. Sidebands pass through
 (already registered upstream). @ALERT#@ is synchronized via 'alertSync'.
+
+__Per-lane scalar 'BiSignal's, deliberately not a @Vec@.__ The four @IO@ lanes are
+four separate 'BiSignalIn' arguments and four separate 'BiSignalOut' results, so
+each @writeToBiSignal padK ...@ is a direct scalar result. Clash fuses a scalar
+'BiSignalIn' argument with the scalar 'BiSignalOut' result derived from it into one
+@inout@ port per lane — but if the lanes are routed through a @Vec@ of 'BiSignal's
+(@zipWith@/@map@/@:>@ over 'BiSignalIn'/'BiSignalOut'), Clash treats the vector as an
+opaque bundle and __drops the drive__: the @inout@ ports get a read path but no
+tri-state driver (the write collapses to a dead net). So the lanes must stay scalar
+end to end — here and in the topEntity shells. (Verified from the emitted Verilog:
+each @io0@..@io3@ must carry its own tri-state driver.)
 -}
 espiPads ::
+  forall dom.
   (HiddenClockResetEnable dom) =>
   -- | engine @lanesOut@ (per-lane (o, oe))
   Signal dom Lanes ->
@@ -44,23 +56,48 @@ espiPads ::
   Signal dom Bit ->
   -- | @ALERT#@ (raw, async, active-low)
   Signal dom Bit ->
-  -- | the four IO pads (read side)
-  Vec 4 (BiSignalIn 'PullUp dom 1) ->
-  ( Vec 4 (BiSignalOut 'PullUp dom 1) -- the four IO pads (drive side)
+  -- | @IO0@ pad (read side)
+  BiSignalIn 'PullUp dom 1 ->
+  -- | @IO1@ pad (read side)
+  BiSignalIn 'PullUp dom 1 ->
+  -- | @IO2@ pad (read side)
+  BiSignalIn 'PullUp dom 1 ->
+  -- | @IO3@ pad (read side)
+  BiSignalIn 'PullUp dom 1 ->
+  ( BiSignalOut 'PullUp dom 1 -- @IO0@ pad (drive side)
+  , BiSignalOut 'PullUp dom 1 -- @IO1@ pad (drive side)
+  , BiSignalOut 'PullUp dom 1 -- @IO2@ pad (drive side)
+  , BiSignalOut 'PullUp dom 1 -- @IO3@ pad (drive side)
   , Signal dom Bit -- @CS#@   pin out
   , Signal dom Bit -- @SCK@   pin out
   , Signal dom Bit -- @RESET#@ pin out
   , Signal dom (Vec 4 Bit) -- @ioIn@    -> @BusIn.ioIn@
   , Signal dom Bit -- @alertIn@ -> @BusIn.alertIn@
   )
-espiPads lanesOut csOut sckOut rstOut alert padsIn =
-  (padsOut, csOut, sckOut, rstOut, ioIn, alert')
+espiPads lanesOut csOut sckOut rstOut alert pad0 pad1 pad2 pad3 =
+  ( drive 0 pad0
+  , drive 1 pad1
+  , drive 2 pad2
+  , drive 3 pad3
+  , csOut
+  , sckOut
+  , rstOut
+  , ioIn
+  , alert'
+  )
  where
   alert' = alertSync alert
   laneSigs = unbundle lanesOut
-  padsOut = zipWith drive padsIn laneSigs
-  ioIn = bundle (map readFromBiSignal padsIn)
-  drive padIn laneSig = writeToBiSignal padIn (toDrive <$> laneSig)
+  drive :: Index 4 -> BiSignalIn 'PullUp dom 1 -> BiSignalOut 'PullUp dom 1
+  drive i padIn = writeToBiSignal padIn (toDrive <$> (laneSigs !! i))
+  ioIn =
+    bundle
+      ( readFromBiSignal pad0
+          :> readFromBiSignal pad1
+          :> readFromBiSignal pad2
+          :> readFromBiSignal pad3
+          :> Nil
+      )
   toDrive (o, oe) =
     if oe == 1
       then Just o

@@ -42,9 +42,8 @@ topEntity ::
 topEntity clk uartRx io0 io1 io2 io3 alertN =
   withClockResetEnable clk noReset enableGen
     $ let (txLine, lanesO, csO, sckO, rstO, ledOut) = system uartRx ioIn alertIn
-          (ioDrive, csPin, sckPin, rstPin, ioIn, alertIn) =
-            espiPads lanesO csO sckO rstO alertN (io0 :> io1 :> io2 :> io3 :> Nil)
-          (d0 :> d1 :> d2 :> d3 :> Nil) = ioDrive
+          (d0, d1, d2, d3, csPin, sckPin, rstPin, ioIn, alertIn) =
+            espiPads lanesO csO sckO rstO alertN io0 io1 io2 io3
        in (d0, d1, d2, d3, txLine, csPin, sckPin, rstPin, ledOut)
  where
   noReset = unsafeFromActiveHigh (pure False)

@@ -59,6 +59,41 @@ handed a read-side it does not actually depend on.
 idleNet :: Vec 4 (BiSignalIn 'PullUp Dom100 1)
 idleNet = repeat (veryUnsafeToBiSignalIn (mempty :: BiSignalOut 'PullUp Dom100 1))
 
+{- | Test shim presenting the old @Vec 4@ pad interface over the scalar-per-lane
+'espiPads'. Bundling 'BiSignal's in a @Vec@ is fine in /simulation/ (only Clash
+/synthesis/ needs the scalar-per-lane form for @inout@ fusion — see 'espiPads'), so
+the harnesses below keep their @Vec@-shaped drivers/readers unchanged.
+-}
+espiPadsVec ::
+  (HiddenClockResetEnable dom) =>
+  Signal dom Lanes ->
+  Signal dom Bit ->
+  Signal dom Bit ->
+  Signal dom Bit ->
+  Signal dom Bit ->
+  Vec 4 (BiSignalIn 'PullUp dom 1) ->
+  ( Vec 4 (BiSignalOut 'PullUp dom 1)
+  , Signal dom Bit
+  , Signal dom Bit
+  , Signal dom Bit
+  , Signal dom (Vec 4 Bit)
+  , Signal dom Bit
+  )
+espiPadsVec lanes cs sck rst alert pads =
+  (d0 :> d1 :> d2 :> d3 :> Nil, csO, sckO, rstO, ioIn, alertO)
+ where
+  (d0, d1, d2, d3, csO, sckO, rstO, ioIn, alertO) =
+    espiPads
+      lanes
+      cs
+      sck
+      rst
+      alert
+      (pads !! (0 :: Index 4))
+      (pads !! (1 :: Index 4))
+      (pads !! (2 :: Index 4))
+      (pads !! (3 :: Index 4))
+
 {- | Sample direction: all four lanes tri-stated on our side; a per-lane DUT
 drives the net; espiPads reads it into @ioIn@. The DUT drivers are bound to the
 throwaway 'idleNet' pad (only @seq@'d by 'writeToBiSignal', never affecting the
@@ -72,7 +107,7 @@ simSample dutL = sampleN (L.length dutL) go
   go = ioIn
    where
     dutS = unbundle (fromList (dutL <> L.repeat (repeat Nothing)))
-    (_outs, _, _, _, ioIn, _) = espiPads (pure hiZ) (pure 0) (pure 0) (pure 1) (pure 1) padsIn
+    (_outs, _, _, _, ioIn, _) = espiPadsVec (pure hiZ) (pure 0) (pure 0) (pure 1) (pure 1) padsIn
     dutOuts = zipWith writeToBiSignal idleNet dutS
     padsIn = map veryUnsafeToBiSignalIn dutOuts
 
@@ -87,7 +122,7 @@ simDrive lanesL = sampleN (L.length lanesL) go
   go = bundle (map readFromBiSignal readNet)
    where
     lanesS = fromList (lanesL <> L.repeat hiZ)
-    (outs, _, _, _, _ioIn, _) = espiPads lanesS (pure 0) (pure 0) (pure 1) (pure 1) idleNet
+    (outs, _, _, _, _ioIn, _) = espiPadsVec lanesS (pure 0) (pure 0) (pure 1) (pure 1) idleNet
     readNet = map veryUnsafeToBiSignalIn outs
 
 {- | Sideband outputs pass straight through espiPads (combinational). espiPads
@@ -100,7 +135,7 @@ simSide sideL = sampleN (L.length sideL) go
   go = bundle (csO, sckO, rstO)
    where
     (csS, sckS, rstS) = unbundle (fromList (sideL <> L.repeat (0, 0, 1)))
-    (_outs, csO, sckO, rstO, _ioIn, _) = espiPads (pure hiZ) csS sckS rstS (pure 1) idleNet
+    (_outs, csO, sckO, rstO, _ioIn, _) = espiPadsVec (pure hiZ) csS sckS rstS (pure 1) idleNet
 
 -- | Sample oracle: each lane reads the DUT value, or the pull-up idle-high (1).
 sampleOracle :: Vec 4 (Maybe Bit) -> Vec 4 Bit
