@@ -113,11 +113,12 @@ the pin-shell + toolchain differ):
 Two stages, mirroring the sibling Clash/Quartus examples but retargeted to
 Vivado's Tcl-batch model (no discrete `map/fit/asm` binaries):
 
-1. **Clash → Verilog:** `cabal run clash -- Tamal --verilog` →
-   `verilog/Tamal.topEntity/`.
-2. **Verilog → bitstream:** stage HDL into `_build/Tamal/01-hdl/`, then a
-   **single non-project flow** (`vivado/build.tcl`, one Vivado launch) under
-   `_build/Tamal/02-vivado/`: synth → opt → place → route → `tamal.bit`.
+1. **Clash → Verilog:** `cabal run clash -- Tamal.Board.ArtyA7 --verilog` →
+   `verilog/Tamal.Board.ArtyA7.topEntity/`.
+2. **Verilog → bitstream:** stage HDL into `_build/Tamal.Board.ArtyA7/01-hdl/`,
+   then a **single non-project flow** (`vivado/build.tcl`, one Vivado launch)
+   under `_build/Tamal.Board.ArtyA7/02-vivado/`: synth → opt → place → route →
+   `tamal.bit`.
    It still writes `post_synth.dcp`/`post_route.dcp` + timing/util/DRC reports
    for inspection — one launch instead of three because Vivado's startup cost
    dominates at this size. `program.tcl` flashes over JTAG.
@@ -141,8 +142,9 @@ Constraints: `constraints/arty_a7.xdc` (Vivado), `constraints/c5g.sdc` +
 
 ## Clash notes
 
-- Single `topEntity` in `src/Tamal.hs`; `Dom100` clock domain in
-  `src/Tamal/Domain.hs`. The top is the thin pin-binding shell around
+- Board `topEntity` shells in `src/Tamal/Board/` (`ArtyA7.hs` /
+  `CycloneV.hs`); `Dom100` clock domain in `src/Tamal/Domain.hs`. Each top is a
+  thin pin-binding shell around
   `Tamal.Top.system`, which wires the instruction/trace BRAMs, the UART, the
   load/drain loader, and the engine (`mealy stepM initState`) — a fully
   integrated design, validated end-to-end by a whole-system UART/eSPI cosim

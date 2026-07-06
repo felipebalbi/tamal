@@ -53,10 +53,11 @@ tested in Clash — the RISC-V-flavored cycle engine, the instruction + trace-ri
 block RAMs, the COBS/CRC-8 wire format, the UART load/drain loader, the tri-state
 eSPI pad boundary, and the `topEntity` that wires it all to the Arty A7 pins. A
 whole-system cosim streams a program in over UART, runs it, and checks the drained
-trace end to end; `cabal run clash -- Tamal --verilog` emits a synthesizable top
-(four `inout` IO lanes) and `cd hdl && make` builds a bitstream. v1 is controller
-role, single (x1) I/O, UART transport; on-hardware bring-up, target role,
-dual/quad I/O, and the error-injection + verdict engine are the next phases. See
+trace end to end; `cabal run clash -- Tamal.Board.ArtyA7 --verilog` emits a
+synthesizable top (four `inout` IO lanes) and `cd hdl && make` builds a
+bitstream. v1 is controller role, single (x1) I/O, UART transport; on-hardware
+bring-up, target role, dual/quad I/O, and the error-injection + verdict engine
+are the next phases. See
 [`hdl/README.md`](hdl/README.md).
 
 **Host tooling (`crates/`): v1 implemented.** The Rust ABI, assembler, and loader

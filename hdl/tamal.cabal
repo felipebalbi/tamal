@@ -91,8 +91,8 @@ common common-options
 library
   import: common-options
   hs-source-dirs: src
-  -- exposed-modules grows per implementation-plan task; start with the clock
-  -- domain and the placeholder heartbeat top.
+  -- exposed-modules grows per implementation-plan task: the clock domain, the
+  -- shared cores, and the per-board top shells (Tamal.Board.ArtyA7 / CycloneV).
   exposed-modules:
     Tamal.Domain
     Tamal.Params

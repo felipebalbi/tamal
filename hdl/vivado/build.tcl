@@ -1,6 +1,6 @@
 # Single-shot non-project Vivado flow: synth -> opt -> place -> route -> bitstream.
 #
-# Invoked by the Makefile from _build/Tamal/02-vivado/ as:
+# Invoked by the Makefile from _build/Tamal.Board.ArtyA7/02-vivado/ as:
 #   vivado -mode batch -source <abs>/vivado/build.tcl \
 #          -tclargs <part> <top> <hdldir> <xdc> <proj>
 #

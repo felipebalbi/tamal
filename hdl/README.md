@@ -45,8 +45,9 @@ make format-check    # fourmolu style gate
 make clean
 ```
 
-Two stages (both under `_build/Tamal/`): (1) `cabal run clash -- Tamal --verilog`
-emits `verilog/Tamal.topEntity/`; (2) a single non-project Vivado flow
+Two stages (both under `_build/Tamal.Board.ArtyA7/`):
+(1) `cabal run clash -- Tamal.Board.ArtyA7 --verilog` emits
+`verilog/Tamal.Board.ArtyA7.topEntity/`; (2) a single non-project Vivado flow
 (`vivado/build.tcl`) synthesizes to `tamal.bit`, writing timing/util/DRC reports
 for inspection. Tool paths come from `build.cfg` (copy to `build.cfg.local` to
 override; `VIVADO` defaults to `vivado` on `PATH`). Needs GNU Make, a Unix-ish
@@ -65,8 +66,9 @@ covered by:
   `TRIGGER` onto the UART line, run load → run → drain, decode the UART output, and
   assert the drained trace (`REVISION` + records + `HALT` terminator) plus eSPI pin
   activity. This exercises UART → loader → engine → eSPI → ring → drain in one shot.
-- **Codegen gate** — `cabal run clash -- Tamal --verilog` must emit the top with
-  the four `inout` IO lanes; then `make` (Vivado) is the ultimate gate.
+- **Codegen gate** — `cabal run clash -- Tamal.Board.ArtyA7 --verilog` must emit
+  the top with the four `inout` IO lanes; then `make` (Vivado) is the ultimate
+  gate.
 
 ## Pin map (Arty A7-100T)
 
@@ -93,7 +95,8 @@ check.
 
 ## Clash notes
 
-- Single `topEntity` in `src/Tamal.hs`; `Dom100` domain in `src/Tamal/Domain.hs`.
+- Board `topEntity` shells in `src/Tamal/Board/` (`ArtyA7.hs` / `CycloneV.hs`);
+  `Dom100` domain in `src/Tamal/Domain.hs`.
 - **Four scalar `inout` lanes.** Clash fuses a per-lane `BiSignalIn` argument with
   its matching `BiSignalOut` result into one `inout` port; a `Vec` of BiSignals
   does *not* (it lowers to a plain input), so the IO lanes are `io0`..`io3`, not a

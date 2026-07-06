@@ -4,7 +4,7 @@
 ## Pmods (JA data / JB control), and a status LED. Pin numbers from the Arty
 ## A7-100 master XDC (Digilent / hex-five). The four IO lanes are scalar inout
 ## ports (io0..io3) — Clash lowers per-lane BiSignals to one inout each; a Vec
-## of BiSignals does not (see src/Tamal.hs).
+## of BiSignals does not (see src/Tamal/Board/ArtyA7.hs).
 
 ## ---- 100 MHz system clock (CLK100MHZ, bank 35, pin E3) ----------------------
 set_property -dict { PACKAGE_PIN E3  IOSTANDARD LVCMOS33 } [get_ports { clk }]

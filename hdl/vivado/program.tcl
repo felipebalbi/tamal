@@ -1,6 +1,6 @@
 # Program the Arty A7-100T over JTAG via the Vivado hardware manager.
 #
-# Invoked by the Makefile from _build/Tamal/02-vivado/ as:
+# Invoked by the Makefile from _build/Tamal.Board.ArtyA7/02-vivado/ as:
 #   vivado -mode batch -source <abs>/vivado/program.tcl -tclargs <bitfile>
 #
 # This loads the bitstream into the FPGA's volatile SRAM configuration (lost on
