@@ -28,9 +28,11 @@ fabric).
 - **`Tamal.Top` `system`** wires the block RAMs, loader, UART, and engine
   (`mealy stepM initState`) over plain `Signal`s — no `BiSignal`, so the whole
   integration is simulated end-to-end.
-- **`Tamal` (`topEntity`)** is the thin pin shell: the 100 MHz clock, `espiPads`
-  (tri-state IO), and the named ports the XDC binds. No reset port — registers rely
-  on power-up `init` (like the sibling Clash examples).
+- **`Tamal.Board.*` (`topEntity`)** are the thin pin shells — `Tamal.Board.ArtyA7`
+  (100 MHz clock straight from the pin) and `Tamal.Board.CycloneV` (50 MHz pin → an
+  Altera PLL → 100 MHz) — each binding `espiPads` (tri-state IO) and the named ports
+  the constraints bind. No reset port — registers rely on power-up `init` (like the
+  sibling Clash examples).
 
 The module-by-module map and roadmap live in [`PLAN.md`](PLAN.md).
 
