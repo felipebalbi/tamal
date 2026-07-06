@@ -33,6 +33,8 @@ data RxS = RxS
   -- ^ line captured at tick 8
   , rxS9 :: Bit
   -- ^ line captured at tick 9
+  , rxPrev :: Bit
+  -- ^ synced line at the previous tick (for falling-edge start detect)
   }
   deriving stock (Generic, Show, Eq)
   deriving anyclass (NFDataX)
@@ -54,7 +56,7 @@ uartRx tick rxLine = unbundle (mealy rxStep initRx (bundle (tick, synced)))
   -- 2-flop synchronizer, clocked every cycle (not tick-gated); idle line is high.
   sync1 = register high rxLine
   synced = register high sync1
-  initRx = RxS RxIdle 0 0 0 0 0
+  initRx = RxS RxIdle 0 0 0 0 0 high
 
 -- | Majority vote of three bits: high iff at least two of the three are high.
 maj :: Bit -> Bit -> Bit -> Bit
@@ -98,20 +100,37 @@ decideBit s = case rxState s of
   bit' = maj (rxS7 s) (rxS8 s) (rxS9 s)
 
 {- | One receiver step per oversample tick (the Mealy transition). Between ticks
-the state is frozen. On a tick: in 'RxIdle', watch the synced line for the
-falling start edge; otherwise capture a sample and, at the end of the bit window
-(count 15 = 'maxBound'), hand off to 'decideBit', else just advance the counter.
+the state is frozen; 'rxPrev' tracks the synced line at the previous tick so
+'RxIdle' can trigger on the falling start /edge/ (high→low), not a mere low level
+— which keeps a line held low (break, or a low stop bit) from re-triggering. On a
+tick otherwise: capture a sample and hand off to 'decideBit', then advance the
+counter. 'RxStart'/'RxData' resolve at the end of the window (count 15 =
+'maxBound'); 'RxStop' resolves early at its center sample (count 9) so the
+receiver is back in 'RxIdle' with idle-high ticks to spare before a back-to-back
+next frame's start edge.
 -}
 rxStep :: RxS -> (Bool, Bit) -> (RxS, (Maybe (BitVector 8), Bool))
 rxStep s (tick, line)
   | not tick = (s, (Nothing, False)) -- only move on oversample ticks
-  | otherwise = case rxState s of
-      RxIdle
-        | line == low -> (s{rxState = RxStart, rxCnt = 0}, (Nothing, False))
-        | otherwise -> (s, (Nothing, False))
-      _ ->
-        -- RxStart / RxData / RxStop
-        let s1 = captureSample s line
-         in if rxCnt s == maxBound
-              then decideBit s1
-              else (s1{rxCnt = rxCnt s + 1}, (Nothing, False))
+  | otherwise =
+      let s0 = s{rxPrev = line} -- remember this tick's level for next tick
+       in case rxState s of
+            RxIdle
+              | rxPrev s == high && line == low -> (s0{rxState = RxStart, rxCnt = 0}, (Nothing, False))
+              | otherwise -> (s0, (Nothing, False))
+            RxStop ->
+              -- Resolve the stop bit at its center sample (count 9) rather than
+              -- waiting out the whole window: returning to idle ~6 ticks early
+              -- gives the falling-edge detector idle-high ticks to arm rxPrev,
+              -- so a back-to-back next frame (stop immediately followed by start)
+              -- still resyncs.
+              let s1 = captureSample s0 line
+               in if rxCnt s == 9
+                    then decideBit s1
+                    else (s1{rxCnt = rxCnt s + 1}, (Nothing, False))
+            _ ->
+              -- RxStart / RxData
+              let s1 = captureSample s0 line
+               in if rxCnt s == maxBound
+                    then decideBit s1
+                    else (s1{rxCnt = rxCnt s + 1}, (Nothing, False))

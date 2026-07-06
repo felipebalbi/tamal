@@ -33,6 +33,24 @@ frame b stop =
     <> L.concatMap (\i -> L.replicate 16 (bitAt b i)) [0 .. 7]
     <> L.replicate 16 stop
 
+{- | A data-bit cell that carries its true value only in the /center/ (sample
+offsets 6..10) and the complement at the edges. A receiver that samples the bit
+center recovers the value; one that samples the bit boundary (e.g. a half-bit
+early @rxCnt@ init after the start edge) recovers the complement.
+-}
+centerCell :: Bit -> [Bit]
+centerCell v = [if 6 <= j && j <= 10 then v else complement v | j <- [0 .. 15 :: Int]]
+
+{- | An 8N1 frame whose data cells only reveal the byte when sampled at the bit
+center (see 'centerCell'): start (all low), 8 center-weighted data bits LSB-first,
+stop (high). Used to pin center sampling against a boundary-sampling regression.
+-}
+centerFrame :: BitVector 8 -> [Bit]
+centerFrame b =
+  L.replicate 16 low
+    <> L.concatMap (centerCell . bitAt b) [0 .. 7]
+    <> L.replicate 16 high
+
 -- | Flip the sample at index k (glitch injection).
 flipAt :: Int -> [Bit] -> [Bit]
 flipAt k xs = [if j == k then complement x else x | (j, x) <- L.zip ([0 ..] :: [Int]) xs]
@@ -105,6 +123,15 @@ tests =
         b <- forAll genByte
         let out = runRx (flipAt (16 + 3 * 16 + 8) (frame b high))
         recovered out === [b]
+    , testProperty "RX samples the bit center, not the edge" $ property $ do
+        -- Regression guard: after the start edge the sample point must land at
+        -- each data bit's center (offsets 7/8/9), not its leading boundary. A
+        -- half-bit-early rxCnt init recovers the complement and fails here,
+        -- while the constant-cell tests above cannot tell center from edge.
+        b <- forAll genByte
+        let out = runRx (centerFrame b)
+        recovered out === [b]
+        anyErr out === False
     , testProperty "TX->RX fast loopback recovers the byte" $ property $ do
         b <- forAll genByte
         let out = runFastLoop [Nothing, Just b] 400
