@@ -49,7 +49,7 @@ or the board shells must keep the lanes scalar.
 | `Tamal.Io`          | eSPI pad boundary: per-lane `BiSignal` `IO[3:0]` tri-state + `CS#`/`SCK`/`RESET#` buffers + `ALERT#` sync   | done, tested                          |
 | `Tamal.Top`         | `system` (BRAMs + loader + UART + engine `mealy stepM`) + pure helpers (`stepM`/`ringWrite`/`rigState`/`ledPattern`) | done, tested (cosim)        |
 | `Tamal.Domain`      | `Dom100` clock domain                                                                                      | done                                  |
-| `Tamal` (top)       | synthesis entry point: clock + `espiPads` + named pins (4 scalar `inout` IO lanes)                          | done                                  |
+| `Tamal.Board.*`     | per-board synthesis entry points: clock + `espiPads` + named pins (4 scalar `inout` IO lanes); ArtyA7 (100 MHz) / CycloneV (50→100 MHz PLL) | done          |
 
 Nothing absent: the full pipeline (host UART → loader → engine → eSPI pads →
 trace → drain) is wired and cosim-tested;
@@ -199,11 +199,11 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
   diverges in Clash `BiSignal` simulation, so the harnesses use single-driver nets
   bound to a throwaway idle pad (the engine drives XOR samples a lane anyway).
 
-### 5. topEntity — integration  *(done — `Tamal.Top` + `Tamal` shell)*
+### 5. topEntity — integration  *(done — `Tamal.Top` + `Tamal.Board.*` shells)*
 
 - **What:** the synthesis entry point, split into a cosim-testable `Tamal.Top`
   `system` (BRAMs + loader + UART + `engine` `mealy stepM initState` + status LED)
-  and a thin `Tamal` shell (100 MHz clock + `espiPads` + named pins). `system` is
+  and thin `Tamal.Board.*` shells (per-board clock + `espiPads` + named pins). `system` is
   BiSignal-free so the whole integration is cosim-testable; the shell owns the
   tri-state binding.
 - **Decisions made:** `espiPads` lives in the shell (keeps `system` plain-`Signal`);

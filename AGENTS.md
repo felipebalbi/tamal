@@ -132,7 +132,8 @@ Vivado's Tcl-batch model (no discrete `map/fit/asm` binaries):
 
 The build is **two-board**: `make BOARD=arty-a7` (default) runs the Vivado flow above;
 `make BOARD=cyclonev` runs a Quartus flow instead (`quartus_sh -t quartus/build.tcl`
-to create the project, then `quartus_map → quartus_fit → quartus_asm → quartus_sta`,
+to create the project, then `quartus_map → quartus_fit → quartus_asm` (→ `tamal.sof`;
+`quartus_sta` timing via `make timing`),
 then `quartus_pgm` over the embedded USB-Blaster). `BOARD` selects the Clash top module
 (`Tamal.Board.ArtyA7` / `Tamal.Board.CycloneV`) and includes the matching toolchain
 fragment (`Makefile.vivado` / `Makefile.quartus`). The Cyclone V path adds a 50→100 MHz
