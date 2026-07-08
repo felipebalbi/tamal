@@ -64,7 +64,7 @@ bigger because the "shell" is where synthesis, tri-state, and timing live.
   `engine` + a status-LED — over plain `Signal`s, *no BiSignal*. It's fully
   simulatable.
 
-- `Tamal.topEntity` is the **entire impure surface**: bind the 100 MHz clock,
+- `Tamal.Board.ArtyA7.topEntity` is the **entire impure surface**: bind the 100 MHz clock,
   bind the tri-state `IO[3:0]` pads (`espiPads`, the only `BiSignal` in the
   design), name the ports the XDC binds. That's it.
 
@@ -72,7 +72,7 @@ bigger because the "shell" is where synthesis, tri-state, and timing live.
 
 | | LOC | note |
 |---|---|---|
-| Impure shell (`src/Tamal.hs`) | **52** | ~15 lines of actual logic; rest is the port type-sig + comments |
+| Impure shell (`src/Tamal/Board/ArtyA7.hs`) | **52** | ~15 lines of actual logic; rest is the port type-sig + comments |
 | `Tamal.Top` (system + pure helpers) | 113 | pure, cosim-tested |
 | **Total gateware `src/`** | **2,438** across 22 files | all pure & property-tested except the shell |
 | Tests (`tests/`) | 2,036 | ~1:1 test-to-code |
@@ -145,7 +145,7 @@ source both **simulates** (pure Haskell) and **synthesizes** (to Verilog).
 ### One source, two targets
 
 - The exact same `system`/`step` code that the test suite *evaluates* is what Clash
-  *compiles to Verilog*. `cabal run clash -- Tamal --verilog` emits a synthesizable
+  *compiles to Verilog*. `cabal run clash -- Tamal.Board.ArtyA7 --verilog` emits a synthesizable
   top; `cd hdl && make` → `tamal.bit`.
 
 - `clashi` (the Clash REPL) simulates and can `:verilog <expr>` on demand — you can
@@ -362,7 +362,7 @@ the encoding can.** Never blindly trust AI output, even when it's green.
   `testCase` in source (grep overcounts vs the 171 the runner reports — recount
   the exact split for the slide; each property = 100 cases).
 
-- **LOC:** shell 52 (`src/Tamal.hs`); `Tamal.Top` 113; total `src/` 2,438 (22
+- **LOC:** shell 52 (`src/Tamal/Board/ArtyA7.hs`); `Tamal.Top` 113; total `src/` 2,438 (22
   files); tests 2,036.
 
 - **Commits:** ~92 touching `hdl/` + design docs — clean conventional-commit
@@ -372,7 +372,7 @@ the encoding can.** Never blindly trust AI output, even when it's green.
   `docs/superpowers/{specs,plans}/` — good "we designed before we coded"
   evidence, and a source of already-written prose/diagrams.
 
-- **Emitted HDL:** `verilog/Tamal.topEntity/topEntity.v` — the port list (4
+- **Emitted HDL:** `verilog/Tamal.Board.ArtyA7.topEntity/topEntity.v` — the port list (4
   `inout` lanes) is a concrete "one source, real hardware" artifact; consider a
   synth utilization/timing snippet from `make` for a hardware-cred slide.
 

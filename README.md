@@ -74,7 +74,9 @@ for orientation.
 ## Hardware
 
 Target board: **Digilent Arty A7-100T** (`xc7a100tcsg324-1`), 100 MHz system
-clock, JTAG programming.
+clock, JTAG programming. A second board — the **Terasic Cyclone V GX Starter
+Kit** (`5CGXFC5C6F27C7`, Quartus) — is also supported via `make BOARD=cyclonev`;
+see [`hdl/README.md`](hdl/README.md).
 
 > Note on the transport: the Arty's FT2232 exposes **USB-UART + JTAG**, not a
 > USB3 SuperSpeed FIFO. v1 uses UART for the control/result transport. The wire
@@ -114,7 +116,7 @@ The gateware is a self-contained project; build it from its own directory:
 ```sh
 cd hdl
 make                   # Clash -> Verilog -> Vivado synth/impl/bitstream
-make program           # flash the Arty A7 over JTAG
+make load              # load the bitstream onto the Arty A7 over JTAG (volatile)
 make test              # Haskell unit tests (cabal test)
 make clean
 ```

@@ -92,9 +92,9 @@ pair against your board; only the `PACKAGE_PIN`s change. Constraints live in
 | `ALERT#`            | `alert_n`    | in    | C15                | JB, `PULLUP`         |
 | status LED (LD4)    | `led`        | out   | H5                 | Waiting/Running/Done |
 
-The LED encodes the rig lifecycle: slow heartbeat = waiting for a program, fast
-blink = running, solid = halted (trace ready). It's the first on-hardware sanity
-check.
+The LED reflects the rig lifecycle (it is not a free-running heartbeat): a slow
+blink = waiting for a program, a fast blink = running, solid = halted (trace
+ready). It's the first on-hardware sanity check.
 
 ## Clash notes
 

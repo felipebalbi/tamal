@@ -39,8 +39,10 @@ designs.
 > Tamal's on-FPGA engine is programmable. Its instruction set is **inspired by —
 > but not 100% compatible with — the RISC-V 32-bit (RV32I) ISA.**
 
-- **Borrowed from RV32I:** 32-bit fixed-width instructions; a 32-entry register
-  file `x0`..`x31` with `x0` hardwired to zero; the R/I/S/B/U/J format shapes;
+- **Borrowed from RV32I:** 32-bit fixed-width instructions; a 32-name register
+  address space `x0`..`x31` (5-bit selector) with `x0` hardwired to zero (v1
+  implements 16 physical registers — `x16`..`x31` alias their low-4 twin); the
+  R/I/S/B/U/J format shapes;
   the ABI register names (`zero`/`ra`/`sp`/`gp`/`tp`/`t0`../`s0`../`a0`..);
   familiar directives (`.text`, `.data`, `.word`, `.globl`, `.equ`, `.align`,
   `.macro`, `.option`); numeric local labels (`1f`/`1b`); and common
@@ -64,7 +66,7 @@ crates/                 Rust host tooling (Cargo workspace, members = crates/*)
   tamal-loader/         host-side loader: control + result over a transport
   tamal-loader-cli/     `tamal-loader` binary — clap loader/controller
 hdl/                    Clash gateware + Vivado build (self-contained)
-docs/superpowers/specs/ design + implementation-plan documents
+docs/superpowers/       design specs (specs/) + implementation plans (plans/)
 ```
 
 Rust is built with `cargo` from the repo root. The gateware is built

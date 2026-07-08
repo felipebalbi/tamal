@@ -49,6 +49,7 @@ or the board shells must keep the lanes scalar.
 | `Tamal.Io`          | eSPI pad boundary: per-lane `BiSignal` `IO[3:0]` tri-state + `CS#`/`SCK`/`RESET#` buffers + `ALERT#` sync   | done, tested                          |
 | `Tamal.Top`         | `system` (BRAMs + loader + UART + engine `mealy stepM`) + pure helpers (`stepM`/`ringWrite`/`rigState`/`ledPattern`) | done, tested (cosim)        |
 | `Tamal.Domain`      | `Dom100` clock domain                                                                                      | done                                  |
+| `Tamal.Params`      | shared BRAM address widths: `AW` = 10 (1024-word instr store / PC), `RW` = 12 (4096-word ring)             | done                                  |
 | `Tamal.Board.*`     | per-board synthesis entry points: clock + `espiPads` + named pins (4 scalar `inout` IO lanes); ArtyA7 (100 MHz) / CycloneV (50→100 MHz PLL) | done          |
 
 Nothing absent: the full pipeline (host UART → loader → engine → eSPI pads →
