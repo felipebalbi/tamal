@@ -19,9 +19,18 @@ BIT = $(VDIR)/$(PROJ).bit
 
 bitstream: $(BIT)
 
-# Program the Arty A7 over its built-in JTAG (volatile SRAM config).
-program: $(BIT)
+# Load the Arty A7 over its built-in JTAG (volatile SRAM config, lost on power cycle).
+load: $(BIT)
 	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(PGM_TCL) -tclargs $(PROJ).bit"
+
+# Writing the Arty's on-board QSPI flash (persistent) is not wired up yet — the
+# volatile `load` above is the supported path here. The C5G/Quartus flow does
+# implement `program` (see Makefile.quartus); a future Arty flash target would
+# write_cfgmem the .bit -> .mcs, then program_hw_cfgmem over the hardware manager.
+program:
+	@echo "make program (flash write) is not implemented for the Arty A7 / Vivado yet."
+	@echo "Use 'make load' for volatile JTAG config; flash is wired up only on BOARD=cyclonev."
+	@false
 
 # The whole Vivado flow in one launch: synth -> opt -> place -> route -> bitstream.
 $(BIT): $(HDLDIR)/$(TOP).v $(XDC)
@@ -29,4 +38,4 @@ $(BIT): $(HDLDIR)/$(TOP).v $(XDC)
 	$(NU) -c "mkdir $(VDIR)"
 	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(BUILD_TCL) -tclargs $(PART) $(TOP) $(abspath $(HDLDIR)) $(XDC) $(PROJ)"
 
-.PHONY: bitstream program
+.PHONY: bitstream load program

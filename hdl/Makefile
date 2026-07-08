@@ -8,7 +8,7 @@
 #   make BOARD=cyclonev    Terasic C5G (Cyclone V) -> Quartus -> tamal.sof
 #
 # Common to both: Stage 1 Clash+GHC compile src/ -> Verilog (cabal). The
-# per-toolchain flow (synth/place/route/bitstream + JTAG program) lives in
+# per-toolchain flow (synth/place/route/bitstream + JTAG load / flash program) lives in
 # Makefile.vivado / Makefile.quartus, included below by TOOLCHAIN.
 #
 # NAME is the Haskell module holding the top entity; TOP is the entity itself
@@ -55,8 +55,8 @@ NU = nu
 
 default: bitstream
 
-# Per-toolchain flow: defines `bitstream`, `program`, and the artefact rules,
-# plus board-specific vars (PART/DEVICE, constraints).
+# Per-toolchain flow: defines `bitstream`, `load`, `program`, and the artefact
+# rules, plus board-specific vars (PART/DEVICE, constraints).
 include Makefile.$(TOOLCHAIN)
 
 # Stage the Clash-generated HDL (*.v [+ *.qsys for cyclonev]) into the build tree.
@@ -95,5 +95,5 @@ clean:
 #   Special Targets                                                            #
 ##----------------------------------------------------------------------------##
 
-.PHONY: default bitstream program test clean format format-check
+.PHONY: default bitstream load program test clean format format-check
 .SECONDARY:

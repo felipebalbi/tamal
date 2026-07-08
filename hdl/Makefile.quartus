@@ -8,6 +8,9 @@
 # Cyclone V device on the C5G. The chip is marked 5CGXFC5C6F27C7N; Quartus's DEVICE
 # drops the trailing "N" (lead-free suffix) or quartus_map fails "Part name illegal".
 DEVICE = 5CGXFC5C6F27C7
+# Serial configuration device on the C5G (Active Serial). `make program` writes
+# the design here (via a .jic) so it survives power-cycle.
+CFG_DEVICE = EPCQ256
 QPROJ  = $(PROJ)
 
 QDIR = $(BUILDDIR)/02-quartus
@@ -23,15 +26,28 @@ MAP = $(QDIR)/$(QPROJ).map.rpt
 FIT = $(QDIR)/$(QPROJ).fit.rpt
 SOF = $(QDIR)/$(QPROJ).sof
 STA = $(QDIR)/$(QPROJ).sta.rpt
+JIC = $(QDIR)/$(QPROJ).jic
 
 bitstream: $(SOF)
 timing:    $(STA)
 
-# Program the C5G over its built-in USB-Blaster. `.sof` is volatile SRAM config
+# Load the C5G over its built-in USB-Blaster. `.sof` is volatile SRAM config
 # (lost on power cycle). `-o "p;<file>"` programs the first device in the JTAG
 # chain (the C5G has one); run `jtagconfig` to confirm the cable.
-program: $(SOF)
+load: $(SOF)
 	$(NU) -c "cd $(QDIR); $(QUARTUS_PGM) -m jtag -o \"p;$(QPROJ).sof\""
+
+# Write the design to the C5G's serial config flash so it boots without JTAG.
+# `.jic` bundles a Serial Flash Loader for $(CFG_DEVICE) (bridged by the FPGA);
+# program it indirectly over JTAG with `i`=init bridge device, `p`=program,
+# `v`=verify. Power-cycle afterwards to boot the design from flash.
+program: $(JIC)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_PGM) -m jtag -o \"ipv;$(QPROJ).jic\""
+
+# Convert the SRAM object file to a JTAG Indirect Configuration file for the
+# on-board serial flash ($(CFG_DEVICE)); the FPGA ($(DEVICE)) is the SFL bridge.
+$(JIC): $(SOF)
+	$(NU) -c "cd $(QDIR); $(QUARTUS_CPF) -c -d $(CFG_DEVICE) -s $(DEVICE) $(QPROJ).sof $(QPROJ).jic"
 
 # 6. Timing analysis (off the default path; reports slack against the SDC).
 $(STA): $(SOF)
@@ -56,4 +72,4 @@ $(QSF): $(HDLDIR)/$(TOP).v $(BUILD_TCL) $(SDC) $(PINS)
 	$(NU) -c "mkdir $(QDIR)"
 	$(NU) -c "cd $(QDIR); $(QUARTUS_SH) -t $(BUILD_TCL) $(DEVICE) $(TOP) $(QPROJ) $(abspath $(HDLDIR)) $(SDC) $(PINS)"
 
-.PHONY: bitstream timing program
+.PHONY: bitstream timing load program

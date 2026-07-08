@@ -40,7 +40,8 @@ The module-by-module map and roadmap live in [`PLAN.md`](PLAN.md).
 
 ```sh
 make                 # Clash -> Verilog -> Vivado synth/place/route -> tamal.bit
-make program         # flash the Arty A7 over JTAG
+make load            # load the bitstream over JTAG (volatile SRAM config)
+make program         # write the design to flash, persistent (BOARD=cyclonev)
 make test            # Haskell unit + cosim tests (cabal test)
 make format          # fourmolu (in place)
 make format-check    # fourmolu style gate
