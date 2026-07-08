@@ -12,7 +12,7 @@
 
 **Working directory:** all `cabal` / `make` / `git` commands run from `hdl/` unless noted. Branch: `feat/cyclonev-board`.
 
-**Convention:** run `make format` before committing any `.hs` change (fourmolu; CI runs `make format-check`). Keep the SPDX header (`CERN-OHL-P-2.0`) on every new `hdl/**/*.hs` file.
+**Convention:** run `make format` before committing any `.hs` change (fourmolu; CI runs `make format-check`). Keep the SPDX header (`CERN-OHL-W-2.0`) on every new `hdl/**/*.hs` file.
 
 ---
 
@@ -68,7 +68,7 @@ Content (identical to the current `src/Tamal.hs` except the module name):
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Top entity for the tamal gateware on the Digilent Arty A7-100T: the thin
@@ -194,7 +194,7 @@ git commit -m "refactor(hdl): relocate Arty topEntity to Tamal.Board.ArtyA7"
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Top entity for the tamal gateware on the Terasic Cyclone V GX Starter Kit (C5G):

@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 8N1 UART receiver. Runs one FSM step per oversample tick; a 2-flop synchronizer

@@ -30,7 +30,7 @@ All new `hdl/**/*.hs` files carry the REUSE/SPDX header:
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 ```
 
 **Commands (run from `hdl/`):**
@@ -57,7 +57,7 @@ Establishes `Tamal.Mem` (with `instrRam` real, `ringRam` a deferred stub), the `
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 The two block-RAM memories that flank the engine (design doc
@@ -101,7 +101,7 @@ ringRam = undefined -- implemented in the ring slice (plan Task 3)
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 module Test.Mem (tests) where

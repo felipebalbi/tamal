@@ -29,7 +29,7 @@ Establishes the module, cabal exposure, and an empty `Test.Top` so later tasks a
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 {- |
@@ -96,7 +96,7 @@ system = undefined
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.Top (tests) where
 
@@ -162,7 +162,7 @@ Overwrite `hdl/tests/Test/Top.hs`:
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 module Test.Top (tests) where
@@ -454,7 +454,7 @@ Replace the whole body of `hdl/src/Tamal.hs` (keep the SPDX header):
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Top entity for the tamal gateware: the thin pin-binding shell. It ties the 100 MHz

@@ -78,18 +78,18 @@ Split-licensed along the same `crates/` vs `hdl/` boundary:
 
 - **Host tooling** — the Rust crates under `crates/` — is **MIT** (root
   [`LICENSE`](LICENSE); `license = "MIT"` in the workspace `Cargo.toml`).
-- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-P-2.0** (CERN Open
-  Hardware Licence v2 – Permissive; [`hdl/LICENSE`](hdl/LICENSE)). A permissive
+- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-W-2.0** (CERN Open
+  Hardware Licence v2 – Weakly Reciprocal; [`hdl/LICENSE`](hdl/LICENSE)). An
   open-hardware licence fits hardware description better than a software licence
   like MIT.
 
 Every `hdl/**/*.hs` file carries a REUSE-style header
-(`SPDX-FileCopyrightText` + `SPDX-License-Identifier: CERN-OHL-P-2.0`) — keep it
-on any new HDL file. `hdl/tamal.cabal` uses `license: LicenseRef-CERN-OHL-P-2.0`
-(not the bare `CERN-OHL-P-2.0`) **only** because older Cabal-syntax versions
+(`SPDX-FileCopyrightText` + `SPDX-License-Identifier: CERN-OHL-W-2.0`) — keep it
+on any new HDL file. `hdl/tamal.cabal` uses `license: LicenseRef-CERN-OHL-W-2.0`
+(not the bare `CERN-OHL-W-2.0`) **only** because older Cabal-syntax versions
 predate the SPDX-list entry added in Cabal-syntax 3.14; switch to the bare id
 once the pinned toolchain (`cabal.project` `with-compiler`) ships Cabal-syntax
-≥ 3.14. Note `CERN_OHL_P_2_0` (underscores)
+≥ 3.14. Note `CERN_OHL_W_2_0` (underscores)
 is just the Haskell constructor in `Distribution.SPDX.LicenseId` — the cabal
 field and SPDX headers use the hyphenated string.
 
@@ -187,4 +187,4 @@ ready); tolerate WAIT STATE; drive/observe alerts.
   reproducible (`ratio = 0` is exactly zero; `(seed, ratio)` replays byte for
   byte).
 - Don't relicense `hdl/` under MIT or strip the SPDX headers — the gateware is
-  CERN-OHL-P-2.0; only the Rust host tooling under `crates/` is MIT.
+  CERN-OHL-W-2.0; only the Rust host tooling under `crates/` is MIT.

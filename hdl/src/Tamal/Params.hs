@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Shared machine parameters: the block-RAM address widths that flank the engine.

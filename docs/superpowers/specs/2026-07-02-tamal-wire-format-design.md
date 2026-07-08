@@ -267,7 +267,7 @@ Wire frame = `cobsEncode(opcode ++ words_LE ++ crc) ++ [0x00]`.
 ## 9. The pure modules (API)
 
 Two new modules under `hdl/src/Tamal/`, each carrying the REUSE/SPDX header
-(`SPDX-License-Identifier: CERN-OHL-P-2.0`) per `AGENTS.md`, Clash ADT idioms
+(`SPDX-License-Identifier: CERN-OHL-W-2.0`) per `AGENTS.md`, Clash ADT idioms
 (`deriving stock (Generic, Show, Eq)` / `deriving anyclass NFDataX`).
 
 ### `Tamal.Wire.Cobs`

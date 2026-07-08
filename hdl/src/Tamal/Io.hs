@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 The eSPI pad boundary (design doc 2026-07-02-tamal-io-design.md): four per-lane

@@ -230,7 +230,7 @@ Build order is **BRAM (done) → wire protocol (done) → loader (done) → IOBU
 3. Execute the plan test-first. Everything runs from `hdl/`: `cabal test`,
    `make format` before each commit,
    `cabal run clash -- Tamal.Board.ArtyA7 --verilog` as a codegen smoke. Keep
-   the split-license headers on new `hdl/**/*.hs` files (CERN-OHL-P-2.0).
+   the split-license headers on new `hdl/**/*.hs` files (CERN-OHL-W-2.0).
 
 ## Ordering
 

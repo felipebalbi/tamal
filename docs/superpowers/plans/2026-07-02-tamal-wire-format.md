@@ -17,7 +17,7 @@
 - SPDX header on every new `.hs` file:
   ```haskell
   -- SPDX-FileCopyrightText: 2026 Felipe Balbi
-  -- SPDX-License-Identifier: CERN-OHL-P-2.0
+  -- SPDX-License-Identifier: CERN-OHL-W-2.0
   ```
 - `make format` before each commit; `cabal test` must stay green.
 - **List gotcha:** `Clash.Prelude` re-exports `map`/`(++)`/`reverse`/`foldl'` as the **`Vec`** versions. For `[BitVector 8]` list work use `import qualified Data.List as L` (`L.length`, `L.foldl'`, `L.concatMap`, `L.last`, `L.init`, `L.null`, `L.elem`, `L.zip`), the list `(<>)`/`(:)`, and list comprehensions — never the bare `Vec` ones. `reverse`/`unpack`/`pack`/`toList` on a `Vec` come from `Clash.Prelude` unqualified.
@@ -49,7 +49,7 @@ Leaves reused unchanged: `Tamal.Crc` (`crc8Update`). No `topEntity` change.
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 The tamal wire format (design doc 2026-07-02-tamal-wire-format-design.md): the
@@ -82,7 +82,7 @@ bytesToWordLE = pack . reverse
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.Wire (tests) where
 
@@ -190,7 +190,7 @@ Expected: FAIL — `Tamal.Wire.Cobs` does not exist / `cobsEncode` not in scope 
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Consistent Overhead Byte Stuffing (spec §5): removes every @0x00@ from a byte

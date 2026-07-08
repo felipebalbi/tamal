@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Pure single-I/O (x1) byte serialisation and the turnaround (TAR) beat

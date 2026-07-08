@@ -89,7 +89,7 @@ enabled per-file (as `Domain.hs` does) for `2_000_000`-style literals.
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 ```
 

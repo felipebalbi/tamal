@@ -17,7 +17,7 @@
 - SPDX header on every new `.hs` file:
   ```haskell
   -- SPDX-FileCopyrightText: 2026 Felipe Balbi
-  -- SPDX-License-Identifier: CERN-OHL-P-2.0
+  -- SPDX-License-Identifier: CERN-OHL-W-2.0
   ```
 - `make format` before each commit; `cabal test` must stay green.
 
@@ -107,7 +107,7 @@ git commit -m "feat(hdl): extend Trace HALT record with trap flag + reason"
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 The tamal engine: a pure Mealy transition that composes every leaf into a
@@ -274,7 +274,7 @@ stepHalted s inp
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.Engine (tests) where
 

@@ -7,7 +7,7 @@ run the design on `Dom100` (100 MHz); the C5G's 50 MHz oscillator is multiplied 
 Altera PLL. Self-contained: Clash → Verilog → vendor bitstream, driven by `make`.
 Not a Cargo workspace member.
 
-Licensed **CERN-OHL-P-2.0** (see [`LICENSE`](LICENSE)); every `hdl/**/*.hs` carries
+Licensed **CERN-OHL-W-2.0** (see [`LICENSE`](LICENSE)); every `hdl/**/*.hs` carries
 a REUSE-style SPDX header. (The Rust host tooling under `crates/` is MIT.)
 
 ## What it does

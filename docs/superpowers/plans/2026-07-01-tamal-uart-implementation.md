@@ -55,7 +55,7 @@ Create `hdl/src/Tamal/Uart/BaudGen.hs`:
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 {- |
@@ -89,7 +89,7 @@ Add to `hdl/tamal.cabal` `library exposed-modules` (after `Tamal.RegFile`):
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 module Test.Uart (tests) where
@@ -165,7 +165,7 @@ git commit -m "feat(hdl): UART NCO oversample tick generator (16x, single-domain
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 8N1 UART receiver. Runs one FSM step per oversample tick; a 2-flop synchronizer
@@ -337,7 +337,7 @@ git commit -m "feat(hdl): UART 8N1 receiver (oversampled, majority-vote) with te
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 8N1 UART transmitter. Line idles high; each bit is held for 16 oversample ticks.
@@ -467,7 +467,7 @@ git commit -m "feat(hdl): UART 8N1 transmitter + TX->RX loopback tests"
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 {- |

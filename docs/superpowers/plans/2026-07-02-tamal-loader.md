@@ -17,7 +17,7 @@
 - SPDX header on every new `.hs` file:
   ```haskell
   -- SPDX-FileCopyrightText: 2026 Felipe Balbi
-  -- SPDX-License-Identifier: CERN-OHL-P-2.0
+  -- SPDX-License-Identifier: CERN-OHL-W-2.0
   ```
 - `make format` before each commit; `cabal test` must stay green.
 - **List gotcha:** `Clash.Prelude` re-exports `map`/`(++)`/`reverse`/`foldl'` as the **`Vec`** versions. In `tests/`, for `[BitVector 8]` list work use `import qualified Data.List as L` (`L.length`, `L.filter`, `L.zip`, `L.repeat`, `L.replicate`, `L.take`, `L.drop`, `(L.!!)`), the list `(<>)`/`(:)`, and list comprehensions. `Data.Maybe (mapMaybe, fromMaybe, isJust)` for the stream collectors.
@@ -84,7 +84,7 @@ busOut s =
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 {-# LANGUAGE NumericUnderscores #-}
 
 module Test.Loader (tests) where
@@ -210,7 +210,7 @@ Expected: FAIL — `Tamal.Loader.Cobs` / `cobsDecodeStep` not in scope (module m
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 Streaming COBS codec (spec §9): the per-cycle step functions the loader embeds.
@@ -520,7 +520,7 @@ Expected: FAIL — `Tamal.Loader` / `LoaderIn` / `loader` not in scope.
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 The impure loader (design doc 2026-07-02-tamal-loader-design.md): the

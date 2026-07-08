@@ -130,7 +130,7 @@ Tamal is split-licensed by concern:
 
 - **Host tooling** — the Rust crates under `crates/` — is **MIT**; see
   [`LICENSE`](LICENSE).
-- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-P-2.0** (CERN Open
-  Hardware Licence Version 2 – Permissive); see [`hdl/LICENSE`](hdl/LICENSE). A
-  permissive open-hardware licence fits hardware description better than a
-  software licence like MIT.
+- **Gateware** — the Clash/HDL under `hdl/` — is **CERN-OHL-W-2.0** (CERN Open
+  Hardware Licence Version 2 – Weakly Reciprocal); see [`hdl/LICENSE`](hdl/LICENSE).
+  An open-hardware licence fits hardware description better than a software
+  licence like MIT.

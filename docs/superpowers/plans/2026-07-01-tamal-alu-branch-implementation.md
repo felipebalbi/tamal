@@ -107,7 +107,7 @@ Assistant work. Stand up the module (with an `errorX` stub so the library compil
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 CTRL-group branch comparator (ALU/branch design §8). Pure, combinational,
@@ -158,7 +158,7 @@ Note: literals use **no** numeric underscores — `NumericUnderscores` is not in
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.Branch (tests) where
 
@@ -304,7 +304,7 @@ Remember the name-clash resolution: import the ISA **qualified as `Isa`** so `Al
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 DATA-group compute layer (ALU/branch design §5–7). Two layers:
@@ -384,7 +384,7 @@ Covers both layers (spec §11.1). No numeric underscores in literals. Immediates
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.Alu (tests) where
 

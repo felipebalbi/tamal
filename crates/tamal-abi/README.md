@@ -6,7 +6,7 @@ module, so the two sides of the link cannot silently disagree.
 
 Part of the [tamal](../../README.md) eSPI compliance rig. **MIT-licensed** (host
 tooling); the gateware it mirrors lives under [`hdl/`](../../hdl) and is
-CERN-OHL-P-2.0.
+CERN-OHL-W-2.0.
 
 ## What it provides
 

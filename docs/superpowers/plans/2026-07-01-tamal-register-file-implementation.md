@@ -51,7 +51,7 @@ Stand up the module (with real `initRegs` and `errorX` stubs for `readReg`/`writ
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- |
 16×32 register file (register-file design). A pure leaf: 'Regs' is an opaque
@@ -108,7 +108,7 @@ Literals use **no** numeric underscores (`NumericUnderscores` is not enabled). `
 
 ```haskell
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 module Test.RegFile (tests) where
 

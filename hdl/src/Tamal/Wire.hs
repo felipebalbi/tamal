@@ -1,5 +1,5 @@
 -- SPDX-FileCopyrightText: 2026 Felipe Balbi
--- SPDX-License-Identifier: CERN-OHL-P-2.0
+-- SPDX-License-Identifier: CERN-OHL-W-2.0
 
 {- | The tamal wire format (design doc 2026-07-02-tamal-wire-format-design.md):
 the transport-agnostic control/result byte framing. This module is the frame +
