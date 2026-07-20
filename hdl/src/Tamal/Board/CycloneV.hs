@@ -46,9 +46,9 @@ topEntity ::
 topEntity clk50 uartRx io0 io1 io2 io3 alertN =
   withClockResetEnable clk100 rst100 enableGen
     $ let (txLine, lanesO, csO, sckO, rstO, ledOut) = system uartRx ioIn alertIn
-          (d0, d1, d2, d3, csPin, sckPin, rstPin, ioIn, alertIn) =
+          (d0', d1', d2', d3', csPin, sckPin, rstPin, ioIn, alertIn) =
             espiPads lanesO csO sckO rstO alertN io0 io1 io2 io3
-       in (d0, d1, d2, d3, txLine, csPin, sckPin, rstPin, ledOut)
+       in (d0', d1', d2', d3', txLine, csPin, sckPin, rstPin, ledOut)
  where
   -- PLL areset tied off; (clk100, rst100) come from the Altera PLL. rst100 stays
   -- asserted until the PLL locks, then the design runs on the stable 100 MHz clock.
