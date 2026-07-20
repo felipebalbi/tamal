@@ -80,7 +80,7 @@ imposes hard limits the language must design around, not paper over:
   `repeat N` (compile-time unroll). No user-visible labels or branch mnemonics;
   the compiler owns all branching (gensym'd labels), inspectable via `--emit-asm`.
 - Domain sugar: `config`, `frame { … }` (RAII CS scope with deassert-on-every-exit),
-  `send`, `recv`, `wait_state`, `expect crc else <byte>`, `pass`, `fail <byte>`,
+  `send`, `recv`, `wait_state [name]`, `expect crc else <byte>`, `pass`, `fail <byte>`,
   `mark`.
 - Namespaced `import` with deterministic resolution (canonical-path dedupe,
   cycle detection, duplicate-different-body = error).
@@ -121,6 +121,7 @@ imposes hard limits the language must design around, not paper over:
 | D9 | **`frame { }` guarantees `cs_deassert` on *every* exit, including a failing `expect`.** | Encodes the load-bearing "CS deasserts before the verdict, verdict-independent" invariant that is easy to botch by hand in the `.s`. |
 | D10 | **Deliberate-wrong is first-class and loud, never a bare literal.** `send pkt ++ [crc8(pkt) ^ 0xFF]`; an opt-in `--lint` flags literal CRC bytes disagreeing with `crc8()`. | A compliance rig must send bad CRCs/illegal TARs on purpose; ergonomic abstractions must never silently legalize an intended violation, and intent must be greppable and distinguishable from an accidental stale byte. |
 | D11 | **New crates `tamal-lang` + `tamal-lang-cli` under `crates/`, MIT.** DAG: `tamal-lang → tamal-asm → tamal-abi` (and `tamal-lang → tamal-abi`); never reversed. | Extends the existing clean dependency graph; matches the host-tooling license boundary; the HLL is a strict superstratum. |
+| D12 | **`wait_state` consumes the response-code byte** (that is how it detects WAIT_STATE); by default it discards the byte, or `wait_state name` binds the terminal (non-WAIT_STATE) byte for assertion. `recv` then names only the post-response bytes and `expect crc` consumes the trailing CRC byte. | Byte-faithful to the examples (which read the response into scratch and only distinguish WAIT_STATE + CRC residue); the optional bind lets a conformance test assert the completion type without changing the default byte stream. Resolves the response-byte double-count found in review. |
 
 ---
 
@@ -151,9 +152,9 @@ test io_read {
     frame {                                         // CS# low … CS# high (RAII)
         send [espi.PUT_IORD1, 0x00, 0x64] + crc8    // command phase — the only bytes that vary
         tar 2                                       // legal turnaround
-        wait_state                                  // poll past WAIT_STATE (0x0F)
-        recv resp, data, status0, status1           // response phase
-        expect crc else 0x11                        // RX CRC-8 residue == 0, else verdict 0x11
+        wait_state                                  // poll past WAIT_STATE; consumes the response-code byte
+        recv data, status0, status1                 // response phase: data byte + 2 status bytes
+        expect crc else 0x11                        // consumes trailing CRC byte; residue == 0, else verdict 0x11
     }
     pass                                            // halt 0x00
 }
@@ -212,7 +213,7 @@ test oob_msg {
     espi.command(
         pkt   = [espi.PUT_OOB, 0x21, 0x00, 0x04,   // eSPI OOB header
                  0x10, 0x00, 0x01, 0xAB],          // tunneled SMBus {dest,cmd,count,data}
-        ndata = 1,
+        ndata = 0,                                 // a write completion returns status only, no payload
     )
     pass
 }
@@ -220,7 +221,7 @@ test oob_msg {
 
 The 62-line `oob_smbus_msg.s` collapses to ~10 meaningful lines; its hand-written
 `0xB1` CRC becomes `+ crc8`; the poll/residue/verdict skeleton lives in one
-reviewed library `proc`. Named arguments (`ndata = 1`) make the call
+reviewed library `proc`. Named arguments (`ndata = 0`) make the call
 self-documenting.
 
 ### 4.4 Deliberate-wrong (compliance negative tests)
@@ -275,8 +276,8 @@ never emits `x16`..`x31`; exhaustion is a diagnostic naming the offending scope.
 | `send [a,b,c]` | `put_byte a` · `put_byte b` · `put_byte c` |
 | `send x + crc8` / `crc_region { … }` | the emitted bytes, then `put_byte <folded crc8>` |
 | `crc8(pkt)` in operand position | folded literal byte |
-| `recv a, b, c` / `recv N` | `get_byte`s into allocated regs (`_` = discard) |
-| `wait_state` | the documented `crc_reset`/`get_byte`/`li`/`beq` poll idiom |
+| `recv a, b, c` / `recv N` | one `get_byte` per name/count into allocated regs (`_` = discard); names only the post-response bytes |
+| `wait_state` [`name`] | the `crc_reset`/`get_byte`/`li`/`beq` poll idiom; consumes the response-code byte, optionally binding the terminal (non-WAIT_STATE) byte to `name` |
 | `do { … } while r == K` / `while` / `if`/`else` | `beq/bne/bltu/bgeu` + `j` with gensym'd labels |
 | `repeat N { … }` | compile-time unroll ×N |
 | `expect crc else X` | residue read + branch; on failure `frame` deasserts CS, then `halt X` |
@@ -374,9 +375,10 @@ never the transport frame, its wire-CRC, or the verdict path.
 
 ## 8. Open questions (non-blocking; settle during planning)
 
-1. `wait_state` lowering: reproduce the examples' hand-rolled `beq` poll, or use
-   the ISA's native `wait_on rd, cond, timeout` (tighter, bounded)? The examples
-   hand-roll; a bounded timeout may be safer for the rig.
+1. `wait_state` poll *mechanism*: reproduce the examples' hand-rolled `beq` poll,
+   or use the ISA's native `wait_on rd, cond, timeout` (tighter, bounded)? The
+   examples hand-roll; a bounded timeout may be safer for the rig. (The
+   response-byte accounting is settled — see D12.)
 2. `expect crc` residue read placement vs `frame` deassert: confirm the residue
    is latched inside `frame` (after the trailing `get_byte`) and the branch runs
    on the deassert-then-halt path (D9), byte-matching the `.s`.
@@ -395,8 +397,11 @@ never the transport frame, its wire-CRC, or the verdict path.
 
 - HLL equivalents of the four channel `examples/*.s` (`peripheral_io_read`,
   `oob_smbus_msg`, `virtual_wire_pltrst`, `flash_completion`) plus `smoke_halt`
-  and `mark_trace` compile to **byte-identical** bytecode as the hand-written
-  `.s`, verified against `tamal-asm`.
+  and `mark_trace` compile to bytecode **byte-identical modulo register
+  allocation** to the hand-written `.s` — identical bus behaviour and identical
+  CRC bytes; exact `get_byte`/scratch register numbers coincide only if the
+  allocator reuses a scratch register for dead `recv` values as the references
+  reuse `t0`/`t1`/`t2` (an allocator-strategy detail, not a semantic one).
 - Every hand-computed TX CRC in those examples is replaced by `+ crc8` /
   `crc8()` and re-derives the same byte (`0x16`, `0xB1`, `0xE8`, `0x89`).
 - `import espi` works out of the box; a new user writes `smoke_halt` and a
