@@ -5,3 +5,5 @@
 #![forbid(unsafe_code)]
 
 pub use tamal_asm::{Diagnostic, Severity, Span};
+
+pub mod lexer;
