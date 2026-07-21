@@ -2,6 +2,7 @@
 name = "tamal-lang"
 version = "0.1.0"
 description = "Compiler for tamal-lang: a high-level language that lowers to tamal assembly."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

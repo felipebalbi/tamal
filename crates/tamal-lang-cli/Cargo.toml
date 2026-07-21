@@ -2,6 +2,7 @@
 name = "tamal-lang-cli"
 version = "0.1.0"
 description = "Command-line front-end for the tamal-lang compiler (tamalc)."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
