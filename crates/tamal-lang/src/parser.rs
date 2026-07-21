@@ -80,7 +80,10 @@ impl<'a> P<'a> {
             self.i += 1;
             Ok(t)
         } else {
-            Err(vec![Diagnostic::error(self.span(), format!("expected {what}"))])
+            Err(vec![Diagnostic::error(
+                self.span(),
+                format!("expected {what}"),
+            )])
         }
     }
 
@@ -113,7 +116,11 @@ impl<'a> P<'a> {
                 _ => stmts.push(self.parse_stmt()?),
             }
         }
-        Ok(Test { name, name_span, stmts })
+        Ok(Test {
+            name,
+            name_span,
+            stmts,
+        })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Vec<Diagnostic>> {
@@ -220,7 +227,9 @@ mod tests {
     fn parses_raw_instruction_with_operands() {
         let m = parse_ok("test probe {\n  mark 1, x1\n  pass\n}\n");
         match &m.tests[0].stmts[0] {
-            Stmt::Raw { mnemonic, operands, .. } => {
+            Stmt::Raw {
+                mnemonic, operands, ..
+            } => {
                 assert_eq!(mnemonic, "mark");
                 assert_eq!(operands, &["1".to_string(), "x1".to_string()]);
             }
@@ -233,7 +242,9 @@ mod tests {
     fn parses_zero_operand_instruction() {
         let m = parse_ok("test t {\n  cs_assert\n  pass\n}\n");
         match &m.tests[0].stmts[0] {
-            Stmt::Raw { mnemonic, operands, .. } => {
+            Stmt::Raw {
+                mnemonic, operands, ..
+            } => {
                 assert_eq!(mnemonic, "cs_assert");
                 assert!(operands.is_empty());
             }

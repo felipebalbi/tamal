@@ -52,7 +52,11 @@ fn main() -> Result<ExitCode> {
     color_eyre::install()?;
     let cli = Cli::parse();
     match cli.command {
-        Command::Compile { input, output, emit } => cmd_compile(&input, output, emit),
+        Command::Compile {
+            input,
+            output,
+            emit,
+        } => cmd_compile(&input, output, emit),
     }
 }
 

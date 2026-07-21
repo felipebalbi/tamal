@@ -40,7 +40,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
         match c {
             b' ' | b'\t' | b'\r' => i += 1,
             b'\n' => {
-                toks.push(Token { kind: Tok::Newline, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::Newline,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'/' if i + 1 < b.len() && b[i + 1] == b'/' => {
@@ -66,15 +69,24 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 }
             }
             b'{' => {
-                toks.push(Token { kind: Tok::LBrace, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::LBrace,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'}' => {
-                toks.push(Token { kind: Tok::RBrace, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::RBrace,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b',' => {
-                toks.push(Token { kind: Tok::Comma, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::Comma,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             _ if is_ident_start(c) => {
@@ -83,7 +95,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 while i < b.len() && is_ident_continue(b[i]) {
                     i += 1;
                 }
-                toks.push(Token { kind: Tok::Ident, span: start..i });
+                toks.push(Token {
+                    kind: Tok::Ident,
+                    span: start..i,
+                });
             }
             _ if c.is_ascii_digit() => {
                 let start = i;
@@ -91,7 +106,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 while i < b.len() && is_number_continue(b[i]) {
                     i += 1;
                 }
-                toks.push(Token { kind: Tok::Number, span: start..i });
+                toks.push(Token {
+                    kind: Tok::Number,
+                    span: start..i,
+                });
             }
             _ => {
                 return Err(vec![Diagnostic::error(
@@ -101,7 +119,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             }
         }
     }
-    toks.push(Token { kind: Tok::Eof, span: b.len()..b.len() });
+    toks.push(Token {
+        kind: Tok::Eof,
+        span: b.len()..b.len(),
+    });
     Ok(toks)
 }
 
@@ -132,9 +153,14 @@ mod tests {
         assert_eq!(
             kinds("test smoke {\n  pass\n}\n"),
             vec![
-                Tok::Ident, Tok::Ident, Tok::LBrace, Tok::Newline,
-                Tok::Ident, Tok::Newline,
-                Tok::RBrace, Tok::Newline,
+                Tok::Ident,
+                Tok::Ident,
+                Tok::LBrace,
+                Tok::Newline,
+                Tok::Ident,
+                Tok::Newline,
+                Tok::RBrace,
+                Tok::Newline,
                 Tok::Eof,
             ]
         );
@@ -146,7 +172,13 @@ mod tests {
         let src = "// hi\n/* block */ fail 0x11\n";
         assert_eq!(
             kinds(src),
-            vec![Tok::Newline, Tok::Ident, Tok::Number, Tok::Newline, Tok::Eof]
+            vec![
+                Tok::Newline,
+                Tok::Ident,
+                Tok::Number,
+                Tok::Newline,
+                Tok::Eof
+            ]
         );
     }
 

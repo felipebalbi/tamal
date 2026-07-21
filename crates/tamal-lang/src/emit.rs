@@ -18,7 +18,9 @@ pub fn emit(module: &Module) -> String {
                     out.push_str(code);
                     out.push('\n');
                 }
-                Stmt::Raw { mnemonic, operands, .. } => {
+                Stmt::Raw {
+                    mnemonic, operands, ..
+                } => {
                     out.push('\t');
                     out.push_str(mnemonic);
                     if !operands.is_empty() {
@@ -40,7 +42,11 @@ mod tests {
 
     fn one(stmts: Vec<Stmt>) -> Module {
         Module {
-            tests: vec![Test { name: "t".into(), name_span: 0..1, stmts }],
+            tests: vec![Test {
+                name: "t".into(),
+                name_span: 0..1,
+                stmts,
+            }],
         }
     }
 
@@ -52,14 +58,21 @@ mod tests {
 
     #[test]
     fn emits_fail_code_verbatim() {
-        let asm = emit(&one(vec![Stmt::Fail { code: "0x11".into(), span: 0..1 }]));
+        let asm = emit(&one(vec![Stmt::Fail {
+            code: "0x11".into(),
+            span: 0..1,
+        }]));
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x11\n");
     }
 
     #[test]
     fn emits_raw_instructions() {
         let asm = emit(&one(vec![
-            Stmt::Raw { mnemonic: "cs_assert".into(), operands: vec![], span: 0..1 },
+            Stmt::Raw {
+                mnemonic: "cs_assert".into(),
+                operands: vec![],
+                span: 0..1,
+            },
             Stmt::Raw {
                 mnemonic: "mark".into(),
                 operands: vec!["1".into(), "x1".into()],
