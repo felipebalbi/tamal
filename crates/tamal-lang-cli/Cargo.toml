@@ -1,0 +1,20 @@
+[package]
+name = "tamal-lang-cli"
+version = "0.1.0"
+description = "Command-line front-end for the tamal-lang compiler (tamalc)."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tamalc"
+path = "src/main.rs"
+
+[dependencies]
+tamal-lang.workspace = true
+tamal-asm.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+ariadne.workspace = true

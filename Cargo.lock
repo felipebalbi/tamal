@@ -648,6 +648,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tamal-lang"
+version = "0.1.0"
+dependencies = [
+ "tamal-asm",
+]
+
+[[package]]
+name = "tamal-lang-cli"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "clap",
+ "color-eyre",
+ "tamal-asm",
+ "tamal-lang",
+]
+
+[[package]]
 name = "tamal-loader"
 version = "0.1.0"
 dependencies = [

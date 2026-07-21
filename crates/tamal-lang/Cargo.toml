@@ -1,0 +1,12 @@
+[package]
+name = "tamal-lang"
+version = "0.1.0"
+description = "Compiler for tamal-lang: a high-level language that lowers to tamal assembly."
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tamal-asm.workspace = true

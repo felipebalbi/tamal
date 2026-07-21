@@ -18,6 +18,7 @@ license = "MIT"
 # Intra-workspace libs.
 tamal-abi = { path = "crates/tamal-abi" }
 tamal-asm = { path = "crates/tamal-asm" }
+tamal-lang = { path = "crates/tamal-lang" }
 tamal-loader = { path = "crates/tamal-loader" }
 
 # Third-party.
