@@ -7,3 +7,4 @@
 pub use tamal_asm::{Diagnostic, Severity, Span};
 
 pub mod lexer;
+pub mod parser;
