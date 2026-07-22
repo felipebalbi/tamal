@@ -10,9 +10,11 @@
 set_property -dict { PACKAGE_PIN E3  IOSTANDARD LVCMOS33 } [get_ports { clk }]
 create_clock -name sys_clk -period 10.000 [get_ports { clk }]
 
-## ---- USB-UART (FTDI) — FPGA RX in (D10) / TX out (A9) -----------------------
-set_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports { uart_rx }]
-set_property -dict { PACKAGE_PIN A9  IOSTANDARD LVCMOS33 } [get_ports { uart_tx }]
+## ---- USB-UART (FTDI) — per Arty A7 master XDC ------------------------------
+## A9 = uart_txd_in  : host→FPGA line, so it's the FPGA's RX (input).
+## D10 = uart_rxd_out : FPGA→host line, so it's the FPGA's TX (output).
+set_property -dict { PACKAGE_PIN A9  IOSTANDARD LVCMOS33 } [get_ports { uart_rx }]
+set_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports { uart_tx }]
 
 ## ---- eSPI data lanes IO[3:0] — Pmod JA (bank 15), PULLUP (eSPI idle-high) ----
 set_property -dict { PACKAGE_PIN G13 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { io0 }]
