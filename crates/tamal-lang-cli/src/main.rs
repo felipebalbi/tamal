@@ -65,9 +65,9 @@ fn cmd_compile(input: &Path, output: Option<PathBuf>, emit: Emit) -> Result<Exit
         fs::read_to_string(input).wrap_err_with(|| format!("reading {}", input.display()))?;
     let name = input.display().to_string();
 
-    // Stage 1: lower to asm. Front-end diagnostics point at `.tam` source.
-    let asm = match tamal_lang::lower_to_asm(&source) {
-        Ok(a) => a,
+    // Lower to asm + source map. Front-end diagnostics point at `.tam` source.
+    let lowering = match tamal_lang::lower(&source) {
+        Ok(l) => l,
         Err(diags) => {
             for d in &diags {
                 report(&name, &source, d);
@@ -77,20 +77,19 @@ fn cmd_compile(input: &Path, output: Option<PathBuf>, emit: Emit) -> Result<Exit
     };
 
     if let Emit::Asm = emit {
-        write_text(output, &asm)?;
+        write_text(output, &lowering.asm)?;
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Stage 2: assemble. A backend error is a compiler bug; render it against
-    // the generated assembly so it is still legible.
-    let prog = match tamal_asm::assemble(&asm) {
+    // Assemble. Raw instructions and `fail` values are passed through
+    // unchecked, so a backend error usually reflects a mistake in the user's
+    // source — re-point each diagnostic at the `.tam` via the lowering's map.
+    let prog = match tamal_asm::assemble(&lowering.asm) {
         Ok(p) => p,
         Err(diags) => {
-            let asm_name = format!("{name} (generated asm)");
-            for d in &diags {
-                report(&asm_name, &asm, d);
+            for d in &lowering.remap(diags) {
+                report(&name, &source, d);
             }
-            eprintln!("note: this error is in compiler-generated assembly — please report it");
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -101,7 +100,7 @@ fn cmd_compile(input: &Path, output: Option<PathBuf>, emit: Emit) -> Result<Exit
             fs::write(&out, prog.to_le_bytes())
                 .wrap_err_with(|| format!("writing {}", out.display()))?;
         }
-        Emit::Listing => write_text(output, &prog.listing(&asm))?,
+        Emit::Listing => write_text(output, &prog.listing(&lowering.asm))?,
         Emit::Asm => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)

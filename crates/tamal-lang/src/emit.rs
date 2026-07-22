@@ -1,38 +1,84 @@
-//! Emit: lower a `Module` (Plan-1 subset) to tamal-asm text. A `test` becomes
-//! the entry label; `pass`/`fail`/raw statements become instruction lines.
+//! Emit: lower a `Module` (Plan-1 subset) to tamal-asm text, plus a source map
+//! from generated-asm byte offsets back to the originating `.tam` spans. A
+//! `test` becomes the entry label; `pass`/`fail`/raw statements become lines.
 
 use crate::parser::{Module, Stmt};
+use tamal_asm::{Diagnostic, Span};
+
+/// The product of lowering: the tamal-asm text and a per-line source map so a
+/// backend diagnostic (whose spans index the generated asm) can be re-pointed
+/// at the `.tam` span that produced the offending line.
+pub struct Lowering {
+    /// The generated tamal-asm text.
+    pub asm: String,
+    /// `(asm byte range, originating .tam span)` per emitted line, in order.
+    lines: Vec<(Span, Span)>,
+}
+
+impl Lowering {
+    /// Re-point a batch of backend diagnostics from generated-asm offsets back
+    /// to the `.tam` source spans that produced them.
+    pub fn remap(&self, diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+        diags.into_iter().map(|d| self.remap_one(d)).collect()
+    }
+
+    fn remap_one(&self, mut d: Diagnostic) -> Diagnostic {
+        d.primary = self.tam_span(&d.primary);
+        for (span, _) in &mut d.labels {
+            *span = self.tam_span(span);
+        }
+        d
+    }
+
+    /// Map a generated-asm byte span to the `.tam` span of the line containing
+    /// its start; falls back to the last line, then to an empty span.
+    fn tam_span(&self, asm: &Span) -> Span {
+        self.lines
+            .iter()
+            .find(|(range, _)| range.contains(&asm.start))
+            .or_else(|| self.lines.last())
+            .map(|(_, tam)| tam.clone())
+            .unwrap_or(0..0)
+    }
+}
 
 /// Lower a Plan-1 `Module` (exactly one test, enforced by the driver) to
-/// tamal-asm text: the entry label followed by one line per statement.
-pub fn emit(module: &Module) -> String {
-    let mut out = String::new();
+/// tamal-asm text plus its source map: the entry label followed by one line
+/// per statement.
+pub fn emit(module: &Module) -> Lowering {
+    let mut asm = String::new();
+    let mut lines = Vec::new();
     for test in &module.tests {
-        out.push_str(".globl _start\n");
-        out.push_str("_start:\n");
+        push(&mut asm, &mut lines, ".globl _start\n", &test.name_span);
+        push(&mut asm, &mut lines, "_start:\n", &test.name_span);
         for stmt in &test.stmts {
-            match stmt {
-                Stmt::Pass => out.push_str("\thalt 0x00\n"),
-                Stmt::Fail { code, .. } => {
-                    out.push_str("\thalt ");
-                    out.push_str(code);
-                    out.push('\n');
-                }
+            let (text, span) = match stmt {
+                Stmt::Pass => ("\thalt 0x00\n".to_string(), &test.name_span),
+                Stmt::Fail { code, span } => (format!("\thalt {code}\n"), span),
                 Stmt::Raw {
-                    mnemonic, operands, ..
+                    mnemonic,
+                    operands,
+                    span,
                 } => {
-                    out.push('\t');
-                    out.push_str(mnemonic);
-                    if !operands.is_empty() {
-                        out.push(' ');
-                        out.push_str(&operands.join(", "));
-                    }
-                    out.push('\n');
+                    let text = if operands.is_empty() {
+                        format!("\t{mnemonic}\n")
+                    } else {
+                        format!("\t{mnemonic} {}\n", operands.join(", "))
+                    };
+                    (text, span)
                 }
-            }
+            };
+            push(&mut asm, &mut lines, &text, span);
         }
     }
-    out
+    Lowering { asm, lines }
+}
+
+/// Append one asm line and record its `(asm byte range, .tam span)` mapping.
+fn push(asm: &mut String, lines: &mut Vec<(Span, Span)>, text: &str, span: &Span) {
+    let start = asm.len();
+    asm.push_str(text);
+    lines.push((start..asm.len(), span.clone()));
 }
 
 #[cfg(test)]
@@ -52,7 +98,7 @@ mod tests {
 
     #[test]
     fn emits_entry_and_pass() {
-        let asm = emit(&one(vec![Stmt::Pass]));
+        let asm = emit(&one(vec![Stmt::Pass])).asm;
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
     }
 
@@ -61,7 +107,8 @@ mod tests {
         let asm = emit(&one(vec![Stmt::Fail {
             code: "0x11".into(),
             span: 0..1,
-        }]));
+        }]))
+        .asm;
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x11\n");
     }
 
@@ -79,10 +126,36 @@ mod tests {
                 span: 0..1,
             },
             Stmt::Pass,
-        ]));
+        ]))
+        .asm;
         assert_eq!(
             asm,
             ".globl _start\n_start:\n\tcs_assert\n\tmark 1, x1\n\thalt 0x00\n"
         );
+    }
+
+    #[test]
+    fn remap_points_asm_span_at_originating_tam_span() {
+        // a raw statement whose .tam span is 40..45; its emitted asm line's
+        // offset must remap back to that span.
+        let m = Module {
+            tests: vec![Test {
+                name: "t".into(),
+                name_span: 0..1,
+                stmts: vec![
+                    Stmt::Raw {
+                        mnemonic: "bogus".into(),
+                        operands: vec![],
+                        span: 40..45,
+                    },
+                    Stmt::Pass,
+                ],
+            }],
+        };
+        let low = emit(&m);
+        let idx = low.asm.find("bogus").expect("emitted the raw mnemonic");
+        let d = Diagnostic::error(idx..idx + 5, "unknown instruction");
+        let remapped = low.remap(vec![d]);
+        assert_eq!(remapped[0].primary, 40..45);
     }
 }
