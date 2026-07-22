@@ -60,3 +60,4 @@ vivado_pid*.str
 /.idea
 *.iml
 *.swp
+*.bin

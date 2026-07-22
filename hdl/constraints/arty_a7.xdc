@@ -28,3 +28,15 @@ set_property -dict { PACKAGE_PIN C15 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_port
 
 ## ---- Status LED LD4 (green) — Waiting/Running/Done ---------------------------
 set_property -dict { PACKAGE_PIN H5  IOSTANDARD LVCMOS33 } [get_ports { led }]
+
+## ---- Configuration / QSPI flash boot (for `make program`) -------------------
+## CFGBVS + CONFIG_VOLTAGE are required on Artix-7 (they also silence config DRC).
+## The SPI settings let the FPGA boot the design from the on-board QSPI flash at
+## power-up (MODE jumper on QSPI). These bake config-controller settings into the
+## .bit; they do not affect JTAG configuration (`make load`), placement, or timing.
+set_property CFGBVS VCCO                          [current_design]
+set_property CONFIG_VOLTAGE 3.3                   [current_design]
+set_property CONFIG_MODE SPIx4                    [current_design]
+set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4      [current_design]
+set_property BITSTREAM.CONFIG.CONFIGRATE 33       [current_design]
+set_property BITSTREAM.GENERAL.COMPRESS TRUE      [current_design]

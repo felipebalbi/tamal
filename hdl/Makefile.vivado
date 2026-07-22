@@ -13,24 +13,40 @@ VDIR = $(BUILDDIR)/02-vivado
 XDC = $(abspath constraints/arty_a7.xdc)
 
 BUILD_TCL = $(abspath vivado/build.tcl)
-PGM_TCL   = $(abspath vivado/program.tcl)
+FLASH_TCL = $(abspath vivado/flash.tcl)
 
 BIT = $(VDIR)/$(PROJ).bit
 
+# Digilent Adept device name for the Arty (`djtgcfg enum`); Arty A7 boards
+# enumerate as "Arty". Used by `make load`.
+ADEPT_DEVICE = Arty
+
+# QSPI configuration-flash part for `make program` (a Vivado cfgmem name — the
+# flash chip, not the FPGA). The Arty A7-100T carries a 128 Mbit (16 MB)
+# Spansion/Cypress S25FL128S (validated against Vivado's cfgmem database). If a
+# different board rev reports a flash-ID mismatch, override CFGMEM_PART with a
+# name from `get_cfgmem_parts *128*` in the Vivado Tcl console.
+CFGMEM_PART = s25fl128sxxxxxx0-spi-x1_x2_x4
+
 bitstream: $(BIT)
 
-# Load the Arty A7 over its built-in JTAG (volatile SRAM config, lost on power cycle).
+# make load — volatile SRAM configuration of the FPGA over the Arty's on-board
+# FTDI JTAG using Digilent Adept (djtgcfg); no Vivado hardware manager / cs_server.
+# Configuration is lost on power cycle — use `make program` to persist it to flash.
 load: $(BIT)
-	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(PGM_TCL) -tclargs $(PROJ).bit"
+	$(NU) -c "$(DJTGCFG) prog -d $(ADEPT_DEVICE) -i 0 -f $(abspath $(BIT))"
 
-# Writing the Arty's on-board QSPI flash (persistent) is not wired up yet — the
-# volatile `load` above is the supported path here. The C5G/Quartus flow does
-# implement `program` (see Makefile.quartus); a future Arty flash target would
-# write_cfgmem the .bit -> .mcs, then program_hw_cfgmem over the hardware manager.
-program:
-	@echo "make program (flash write) is not implemented for the Arty A7 / Vivado yet."
-	@echo "Use 'make load' for volatile JTAG config; flash is wired up only on BOARD=cyclonev."
-	@false
+# make program — persist the design to the Arty's QSPI config flash so it boots
+# without JTAG (survives power cycle). flash.tcl builds a flash image
+# (write_cfgmem -> $(PROJ).mcs) and programs it into the SPI flash indirectly
+# through the FPGA over JTAG via the Vivado hardware manager. NOTE: unlike
+# `make load`, this uses cs_server, so on hosts where cs_server is blocked (e.g.
+# enterprise WDAC) it aborts at connect_hw_server after writing the .mcs — flash
+# from a host with a working Vivado hardware manager, or carry the .mcs there.
+# (Digilent Adept cannot program this board's flash, so there is no djtgcfg-only
+# path for `program`.)
+program: $(BIT)
+	$(NU) -c "cd $(VDIR); $(VIVADO) -mode batch -source $(FLASH_TCL) -tclargs $(PART) $(CFGMEM_PART) $(PROJ).bit $(PROJ).mcs"
 
 # The whole Vivado flow in one launch: synth -> opt -> place -> route -> bitstream.
 $(BIT): $(HDLDIR)/$(TOP).v $(XDC)
