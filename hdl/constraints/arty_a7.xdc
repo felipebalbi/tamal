@@ -16,17 +16,19 @@ create_clock -name sys_clk -period 10.000 [get_ports { clk }]
 set_property -dict { PACKAGE_PIN A9  IOSTANDARD LVCMOS33 } [get_ports { uart_rx }]
 set_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports { uart_tx }]
 
-## ---- eSPI data lanes IO[3:0] — Pmod JA (bank 15), PULLUP (eSPI idle-high) ----
+## ---- eSPI data lanes IO[3:0] — Pmod JA top row (JA-1..4), PULLUP (idle-high) -
 set_property -dict { PACKAGE_PIN G13 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { io0 }]
 set_property -dict { PACKAGE_PIN B11 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { io1 }]
 set_property -dict { PACKAGE_PIN A11 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { io2 }]
 set_property -dict { PACKAGE_PIN D12 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { io3 }]
 
-## ---- eSPI control/sideband — Pmod JB (bank 15) ------------------------------
-set_property -dict { PACKAGE_PIN E15 IOSTANDARD LVCMOS33 } [get_ports { sck }]
-set_property -dict { PACKAGE_PIN E16 IOSTANDARD LVCMOS33 } [get_ports { cs_n }]
-set_property -dict { PACKAGE_PIN D15 IOSTANDARD LVCMOS33 } [get_ports { reset_n }]
-set_property -dict { PACKAGE_PIN C15 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { alert_n }]
+## ---- eSPI clock + sideband — Pmod JA bottom row (JA-7..10) ------------------
+## Whole eSPI bus is on JA now: io0..3 on the top row, sck + sideband on the
+## bottom row, with shared GND/3V3 on JA-5/6/11/12 — one Pmod cable to the DUT.
+set_property -dict { PACKAGE_PIN D13 IOSTANDARD LVCMOS33 } [get_ports { sck }]
+set_property -dict { PACKAGE_PIN B18 IOSTANDARD LVCMOS33 } [get_ports { cs_n }]
+set_property -dict { PACKAGE_PIN A18 IOSTANDARD LVCMOS33 } [get_ports { reset_n }]
+set_property -dict { PACKAGE_PIN K16 IOSTANDARD LVCMOS33 PULLUP TRUE } [get_ports { alert_n }]
 
 ## ---- Status LED LD4 (green) — Waiting/Running/Done ---------------------------
 set_property -dict { PACKAGE_PIN H5  IOSTANDARD LVCMOS33 } [get_ports { led }]
