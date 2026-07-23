@@ -6,6 +6,7 @@
 
 pub use tamal_asm::{Diagnostic, Severity, Span};
 
+pub mod consteval;
 pub mod emit;
 pub mod lexer;
 pub mod parser;

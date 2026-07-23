@@ -10,4 +10,5 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+tamal-abi.workspace = true
 tamal-asm.workspace = true
