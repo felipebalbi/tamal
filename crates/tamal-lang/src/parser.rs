@@ -34,6 +34,64 @@ pub enum Stmt {
     },
 }
 
+/// A compile-time expression.
+#[derive(Debug, Clone)]
+pub enum Expr {
+    /// An integer literal (already parsed from its lexeme).
+    Int { value: i64, span: Span },
+    /// A reference to a `const` by name.
+    Name { name: String, span: Span },
+    /// A byte-string literal `[e, e, …]` (each element is a byte).
+    Bytes { elems: Vec<Expr>, span: Span },
+    /// A builtin call: `crc8(e)`, `len(e)`, `lo(e)`, `hi(e)`.
+    Call {
+        func: String,
+        arg: Box<Expr>,
+        span: Span,
+    },
+    /// A binary operation (`^` on ints, `++` on bytes).
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+}
+
+/// The binary operators available in the Plan-2 subset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    /// `^` — bitwise xor on integers (for deliberate-wrong CRCs).
+    Xor,
+    /// `++` — bytes concatenation.
+    Concat,
+}
+
+impl Expr {
+    /// The source span covering this expression.
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Int { span, .. }
+            | Expr::Name { span, .. }
+            | Expr::Bytes { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::Binary { span, .. } => span.clone(),
+        }
+    }
+}
+
+/// Parse a numeric lexeme (`0x..`, `0b..`, decimal, `_` separators allowed).
+fn parse_number(lexeme: &str) -> Option<i64> {
+    let s: String = lexeme.chars().filter(|&c| c != '_').collect();
+    if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        i64::from_str_radix(h, 16).ok()
+    } else if let Some(b) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        i64::from_str_radix(b, 2).ok()
+    } else {
+        s.parse::<i64>().ok()
+    }
+}
+
 /// Parse tokens into a [`Module`], or return diagnostics.
 pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
     let mut p = P { src, toks, i: 0 };
@@ -177,6 +235,67 @@ impl<'a> P<'a> {
         }
     }
 
+    /// Parse an expression. Plan 2: primary only (binary ops added next task).
+    fn parse_expr(&mut self) -> Result<Expr, Vec<Diagnostic>> {
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, Vec<Diagnostic>> {
+        match self.peek() {
+            Tok::Number => {
+                let sp = self.span();
+                self.i += 1;
+                let value = parse_number(self.lexeme(&sp))
+                    .ok_or_else(|| vec![Diagnostic::error(sp.clone(), "invalid number literal")])?;
+                Ok(Expr::Int { value, span: sp })
+            }
+            Tok::Ident => {
+                let sp = self.span();
+                self.i += 1;
+                let name = self.lexeme(&sp).to_string();
+                if self.peek() == Tok::LParen {
+                    self.i += 1;
+                    let arg = self.parse_expr()?;
+                    let close = self.expect(Tok::RParen, "`)`")?;
+                    Ok(Expr::Call {
+                        func: name,
+                        arg: Box::new(arg),
+                        span: sp.start..close.span.end,
+                    })
+                } else {
+                    Ok(Expr::Name { name, span: sp })
+                }
+            }
+            Tok::LBracket => {
+                let start = self.span().start;
+                self.i += 1;
+                let mut elems = Vec::new();
+                if self.peek() != Tok::RBracket {
+                    loop {
+                        elems.push(self.parse_expr()?);
+                        if self.peek() == Tok::Comma {
+                            self.i += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                let close = self.expect(Tok::RBracket, "`]`")?;
+                Ok(Expr::Bytes {
+                    elems,
+                    span: start..close.span.end,
+                })
+            }
+            Tok::LParen => {
+                self.i += 1;
+                let e = self.parse_expr()?;
+                self.expect(Tok::RParen, "`)`")?;
+                Ok(e)
+            }
+            _ => Err(vec![Diagnostic::error(self.span(), "expected an expression")]),
+        }
+    }
+
     fn at_stmt_end(&self) -> bool {
         matches!(self.peek(), Tok::Newline | Tok::RBrace | Tok::Eof)
     }
@@ -264,5 +383,66 @@ mod tests {
         let toks = lex("smoke {\n  pass\n}\n").unwrap();
         let err = parse("smoke {\n  pass\n}\n", &toks).unwrap_err();
         assert!(err[0].message.contains("expected `test`"));
+    }
+
+    fn parse_expr_ok(src: &str) -> Expr {
+        let toks = lex(src).unwrap();
+        let mut p = P {
+            src,
+            toks: &toks,
+            i: 0,
+        };
+        p.parse_expr().unwrap()
+    }
+
+    #[test]
+    fn parses_int_literal() {
+        match parse_expr_ok("0x44") {
+            Expr::Int { value, .. } => assert_eq!(value, 0x44),
+            e => panic!("expected Int, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_name() {
+        match parse_expr_ok("PUT_IORD1") {
+            Expr::Name { name, .. } => assert_eq!(name, "PUT_IORD1"),
+            e => panic!("expected Name, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bytes_literal() {
+        match parse_expr_ok("[0x44, 0x00, 0x64]") {
+            Expr::Bytes { elems, .. } => assert_eq!(elems.len(), 3),
+            e => panic!("expected Bytes, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_call() {
+        match parse_expr_ok("crc8(pkt)") {
+            Expr::Call { func, .. } => assert_eq!(func, "crc8"),
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_parenthesized() {
+        match parse_expr_ok("(0x05)") {
+            Expr::Int { value, .. } => assert_eq!(value, 5),
+            e => panic!("expected Int, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_bad_number() {
+        let toks = lex("0xZZ").unwrap();
+        let mut p = P {
+            src: "0xZZ",
+            toks: &toks,
+            i: 0,
+        };
+        assert!(p.parse_expr().is_err());
     }
 }
