@@ -1027,7 +1027,7 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
                 } => {
                     let mut bs = consteval::eval_bytes(bytes, consts).map_err(|d| vec![d])?;
                     if *append_crc {
-                        bs.push(tamal_abi::crc8(&bs));
+                        bs.push(tamal_abi::crc8::crc8(&bs));
                     }
                     for b in bs {
                         push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
@@ -1177,7 +1177,7 @@ In `crates/tamal-lang/src/emit.rs`, add a `CrcRegion` arm to the `match stmt` in
                     for e in sends {
                         total.extend(consteval::eval_bytes(e, consts).map_err(|d| vec![d])?);
                     }
-                    total.push(tamal_abi::crc8(&total));
+                    total.push(tamal_abi::crc8::crc8(&total));
                     for b in total {
                         push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
                     }
