@@ -235,9 +235,41 @@ impl<'a> P<'a> {
         }
     }
 
-    /// Parse an expression. Plan 2: primary only (binary ops added next task).
+    /// Parse an expression: `++`-concat (lowest) over `^`-xor over primaries.
     fn parse_expr(&mut self) -> Result<Expr, Vec<Diagnostic>> {
-        self.parse_primary()
+        self.parse_concat()
+    }
+
+    fn parse_concat(&mut self) -> Result<Expr, Vec<Diagnostic>> {
+        let mut lhs = self.parse_xor()?;
+        while self.peek() == Tok::PlusPlus {
+            self.i += 1;
+            let rhs = self.parse_xor()?;
+            let span = lhs.span().start..rhs.span().end;
+            lhs = Expr::Binary {
+                op: BinOp::Concat,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_xor(&mut self) -> Result<Expr, Vec<Diagnostic>> {
+        let mut lhs = self.parse_primary()?;
+        while self.peek() == Tok::Caret {
+            self.i += 1;
+            let rhs = self.parse_primary()?;
+            let span = lhs.span().start..rhs.span().end;
+            lhs = Expr::Binary {
+                op: BinOp::Xor,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(lhs)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Vec<Diagnostic>> {
@@ -444,5 +476,44 @@ mod tests {
             i: 0,
         };
         assert!(p.parse_expr().is_err());
+    }
+
+    #[test]
+    fn parses_concat() {
+        match parse_expr_ok("a ++ b") {
+            Expr::Binary {
+                op: BinOp::Concat, ..
+            } => {}
+            e => panic!("expected Concat, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_xor() {
+        match parse_expr_ok("0x16 ^ 0xFF") {
+            Expr::Binary {
+                op: BinOp::Xor,
+                lhs,
+                rhs,
+                ..
+            } => {
+                assert!(matches!(*lhs, Expr::Int { value: 0x16, .. }));
+                assert!(matches!(*rhs, Expr::Int { value: 0xFF, .. }));
+            }
+            e => panic!("expected Xor, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_is_lower_precedence_than_xor() {
+        // `a ++ b ^ c` parses as `a ++ (b ^ c)`
+        match parse_expr_ok("a ++ b ^ c") {
+            Expr::Binary {
+                op: BinOp::Concat,
+                rhs,
+                ..
+            } => assert!(matches!(*rhs, Expr::Binary { op: BinOp::Xor, .. })),
+            e => panic!("expected top-level Concat, got {e:?}"),
+        }
     }
 }
