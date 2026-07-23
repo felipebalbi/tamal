@@ -56,6 +56,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let halts = test.stmts.iter().any(|s| match s {
         parser::Stmt::Pass | parser::Stmt::Fail { .. } => true,
         parser::Stmt::Raw { mnemonic, .. } => mnemonic == "halt",
+        parser::Stmt::Send { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -66,7 +67,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
             .with_help("a test must reach `pass`, `fail`, or a `halt` instruction"),
         ]);
     }
-    Ok(emit::emit(&module))
+    emit::emit(&module, &consts)
 }
 
 /// Lower to just the tamal-asm text (the `--emit asm` artifact).
@@ -173,5 +174,20 @@ mod tests {
     fn rejects_const_with_unknown_name() {
         let err = lower_to_asm("const A = NOPE\ntest t {\n pass\n}\n").unwrap_err();
         assert!(err[0].message.contains("unknown name"));
+    }
+
+    #[test]
+    fn send_lowers_to_put_byte_run() {
+        let asm =
+            lower_to_asm("const OP = 0x44\ntest t {\n send [OP, 0x00, 0x64]\n pass\n}\n").unwrap();
+        assert!(asm.contains("put_byte 0x44"));
+        assert!(asm.contains("put_byte 0x00"));
+        assert!(asm.contains("put_byte 0x64"));
+    }
+
+    #[test]
+    fn send_plus_crc8_appends_folded_byte() {
+        let asm = lower_to_asm("test t {\n send [0x44, 0x00, 0x64] + crc8\n pass\n}\n").unwrap();
+        assert!(asm.contains("put_byte 0x16")); // compile-time CRC-8, poly 0x07
     }
 }

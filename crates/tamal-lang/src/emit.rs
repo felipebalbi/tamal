@@ -5,6 +5,8 @@
 use crate::parser::{Module, Stmt};
 use tamal_asm::{Diagnostic, Span};
 
+use crate::consteval::{self, Consts};
+
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
 /// at the `.tam` span that produced the offending line.
@@ -42,19 +44,21 @@ impl Lowering {
     }
 }
 
-/// Lower a Plan-1 `Module` (exactly one test, enforced by the driver) to
-/// tamal-asm text plus its source map: the entry label followed by one line
-/// per statement.
-pub fn emit(module: &Module) -> Lowering {
+/// Lower a Plan-2 `Module` (exactly one test, enforced by the driver) to
+/// tamal-asm text plus its source map. `send` statements are evaluated to a run
+/// of `put_byte 0xNN` lines under the resolved `const` environment.
+pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic>> {
     let mut asm = String::new();
     let mut lines = Vec::new();
     for test in &module.tests {
         push(&mut asm, &mut lines, ".globl _start\n", &test.name_span);
         push(&mut asm, &mut lines, "_start:\n", &test.name_span);
         for stmt in &test.stmts {
-            let (text, span) = match stmt {
-                Stmt::Pass => ("\thalt 0x00\n".to_string(), &test.name_span),
-                Stmt::Fail { code, span } => (format!("\thalt {code}\n"), span),
+            match stmt {
+                Stmt::Pass => push(&mut asm, &mut lines, "\thalt 0x00\n", &test.name_span),
+                Stmt::Fail { code, span } => {
+                    push(&mut asm, &mut lines, &format!("\thalt {code}\n"), span)
+                }
                 Stmt::Raw {
                     mnemonic,
                     operands,
@@ -65,13 +69,25 @@ pub fn emit(module: &Module) -> Lowering {
                     } else {
                         format!("\t{mnemonic} {}\n", operands.join(", "))
                     };
-                    (text, span)
+                    push(&mut asm, &mut lines, &text, span);
                 }
-            };
-            push(&mut asm, &mut lines, &text, span);
+                Stmt::Send {
+                    bytes,
+                    append_crc,
+                    span,
+                } => {
+                    let mut bs = consteval::eval_bytes(bytes, consts).map_err(|d| vec![d])?;
+                    if *append_crc {
+                        bs.push(tamal_abi::crc8::crc8(&bs));
+                    }
+                    for b in bs {
+                        push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
+                    }
+                }
+            }
         }
     }
-    Lowering { asm, lines }
+    Ok(Lowering { asm, lines })
 }
 
 /// Append one asm line and record its `(asm byte range, .tam span)` mapping.
@@ -99,35 +115,43 @@ mod tests {
 
     #[test]
     fn emits_entry_and_pass() {
-        let asm = emit(&one(vec![Stmt::Pass])).asm;
+        let asm = emit(&one(vec![Stmt::Pass]), &Consts::new()).unwrap().asm;
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
     }
 
     #[test]
     fn emits_fail_code_verbatim() {
-        let asm = emit(&one(vec![Stmt::Fail {
-            code: "0x11".into(),
-            span: 0..1,
-        }]))
+        let asm = emit(
+            &one(vec![Stmt::Fail {
+                code: "0x11".into(),
+                span: 0..1,
+            }]),
+            &Consts::new(),
+        )
+        .unwrap()
         .asm;
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x11\n");
     }
 
     #[test]
     fn emits_raw_instructions() {
-        let asm = emit(&one(vec![
-            Stmt::Raw {
-                mnemonic: "cs_assert".into(),
-                operands: vec![],
-                span: 0..1,
-            },
-            Stmt::Raw {
-                mnemonic: "mark".into(),
-                operands: vec!["1".into(), "x1".into()],
-                span: 0..1,
-            },
-            Stmt::Pass,
-        ]))
+        let asm = emit(
+            &one(vec![
+                Stmt::Raw {
+                    mnemonic: "cs_assert".into(),
+                    operands: vec![],
+                    span: 0..1,
+                },
+                Stmt::Raw {
+                    mnemonic: "mark".into(),
+                    operands: vec!["1".into(), "x1".into()],
+                    span: 0..1,
+                },
+                Stmt::Pass,
+            ]),
+            &Consts::new(),
+        )
+        .unwrap()
         .asm;
         assert_eq!(
             asm,
@@ -154,7 +178,7 @@ mod tests {
                 ],
             }],
         };
-        let low = emit(&m);
+        let low = emit(&m, &Consts::new()).unwrap();
         let idx = low.asm.find("bogus").expect("emitted the raw mnemonic");
         let d = Diagnostic::error(idx..idx + 5, "unknown instruction");
         let remapped = low.remap(vec![d]);

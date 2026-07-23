@@ -40,6 +40,12 @@ pub enum Stmt {
         operands: Vec<String>,
         span: Span,
     },
+    /// `send <bytes-expr>` optionally followed by `+ crc8`.
+    Send {
+        bytes: Expr,
+        append_crc: bool,
+        span: Span,
+    },
 }
 
 /// A compile-time expression.
@@ -223,6 +229,29 @@ impl<'a> P<'a> {
                 let span = head.start..n.span.end;
                 self.end_stmt()?;
                 Ok(Stmt::Fail { code, span })
+            }
+            "send" => {
+                let bytes = self.parse_expr()?;
+                let mut end = bytes.span().end;
+                let mut append_crc = false;
+                if self.peek() == Tok::Plus {
+                    self.i += 1;
+                    let kw = self.expect_ident()?;
+                    if self.lexeme(&kw) != "crc8" {
+                        return Err(vec![Diagnostic::error(
+                            kw,
+                            "expected `crc8` after `+` in a `send`",
+                        )]);
+                    }
+                    append_crc = true;
+                    end = kw.end;
+                }
+                self.end_stmt()?;
+                Ok(Stmt::Send {
+                    bytes,
+                    append_crc,
+                    span: head.start..end,
+                })
             }
             _ => {
                 let mut operands = Vec::new();
@@ -550,6 +579,15 @@ mod tests {
                 ..
             } => assert!(matches!(*rhs, Expr::Binary { op: BinOp::Xor, .. })),
             e => panic!("expected top-level Concat, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_send_with_crc() {
+        let m = parse_ok("test t {\n  send [0x44] + crc8\n  pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Send { append_crc, .. } => assert!(append_crc),
+            s => panic!("expected Send, got {s:?}"),
         }
     }
 }
