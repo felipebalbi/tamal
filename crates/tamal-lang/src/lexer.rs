@@ -17,6 +17,22 @@ pub enum Tok {
     RBrace,
     /// `,`
     Comma,
+    /// `[`
+    LBracket,
+    /// `]`
+    RBracket,
+    /// `(`
+    LParen,
+    /// `)`
+    RParen,
+    /// `=`
+    Eq,
+    /// `+` (the `send … + crc8` sugar)
+    Plus,
+    /// `++` (bytes concatenation)
+    PlusPlus,
+    /// `^` (bitwise xor, for deliberate-wrong CRCs)
+    Caret,
     /// A newline — the statement separator.
     Newline,
     /// End of input.
@@ -87,6 +103,38 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     kind: Tok::Comma,
                     span: i..i + 1,
                 });
+                i += 1;
+            }
+            b'[' => {
+                toks.push(Token { kind: Tok::LBracket, span: i..i + 1 });
+                i += 1;
+            }
+            b']' => {
+                toks.push(Token { kind: Tok::RBracket, span: i..i + 1 });
+                i += 1;
+            }
+            b'(' => {
+                toks.push(Token { kind: Tok::LParen, span: i..i + 1 });
+                i += 1;
+            }
+            b')' => {
+                toks.push(Token { kind: Tok::RParen, span: i..i + 1 });
+                i += 1;
+            }
+            b'=' => {
+                toks.push(Token { kind: Tok::Eq, span: i..i + 1 });
+                i += 1;
+            }
+            b'^' => {
+                toks.push(Token { kind: Tok::Caret, span: i..i + 1 });
+                i += 1;
+            }
+            b'+' if i + 1 < b.len() && b[i + 1] == b'+' => {
+                toks.push(Token { kind: Tok::PlusPlus, span: i..i + 2 });
+                i += 2;
+            }
+            b'+' => {
+                toks.push(Token { kind: Tok::Plus, span: i..i + 1 });
                 i += 1;
             }
             _ if is_ident_start(c) => {
@@ -200,5 +248,57 @@ mod tests {
     fn rejects_unterminated_block_comment() {
         let err = lex("/* nope").unwrap_err();
         assert!(err[0].message.contains("unterminated"));
+    }
+
+    #[test]
+    fn lexes_bracket_paren_operator_tokens() {
+        assert_eq!(
+            kinds("send [a, b] + crc8\n"),
+            vec![
+                Tok::Ident,   // send
+                Tok::LBracket,
+                Tok::Ident,   // a
+                Tok::Comma,
+                Tok::Ident,   // b
+                Tok::RBracket,
+                Tok::Plus,
+                Tok::Ident,   // crc8
+                Tok::Newline,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn distinguishes_plus_from_plusplus() {
+        assert_eq!(
+            kinds("a ++ b ^ (c)\n"),
+            vec![
+                Tok::Ident,
+                Tok::PlusPlus,
+                Tok::Ident,
+                Tok::Caret,
+                Tok::LParen,
+                Tok::Ident,
+                Tok::RParen,
+                Tok::Newline,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_equals() {
+        assert_eq!(
+            kinds("const X = 5\n"),
+            vec![
+                Tok::Ident, // const
+                Tok::Ident, // X
+                Tok::Eq,
+                Tok::Number,
+                Tok::Newline,
+                Tok::Eof,
+            ]
+        );
     }
 }
