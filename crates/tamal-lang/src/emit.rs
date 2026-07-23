@@ -88,6 +88,7 @@ mod tests {
 
     fn one(stmts: Vec<Stmt>) -> Module {
         Module {
+            consts: vec![],
             tests: vec![Test {
                 name: "t".into(),
                 name_span: 0..1,
@@ -139,6 +140,7 @@ mod tests {
         // a raw statement whose .tam span is 40..45; its emitted asm line's
         // offset must remap back to that span.
         let m = Module {
+            consts: vec![],
             tests: vec![Test {
                 name: "t".into(),
                 name_span: 0..1,

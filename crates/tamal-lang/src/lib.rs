@@ -22,6 +22,19 @@ use tamal_asm::Program;
 pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let toks = lexer::lex(source)?;
     let module = parser::parse(source, &toks)?;
+    // Resolve `const`s in source order; each may reference earlier ones.
+    // Duplicate names and references to undefined names are hard errors.
+    let mut consts = consteval::Consts::new();
+    for c in &module.consts {
+        if consts.contains_key(&c.name) {
+            return Err(vec![Diagnostic::error(
+                c.name_span.clone(),
+                format!("duplicate const `{}`", c.name),
+            )]);
+        }
+        let v = consteval::eval(&c.value, &consts).map_err(|d| vec![d])?;
+        consts.insert(c.name.clone(), v);
+    }
     if module.tests.len() != 1 {
         let span = module
             .tests
@@ -143,5 +156,22 @@ mod tests {
             pointed.contains("300"),
             "diagnostic should point at the .tam `fail 300`, got {pointed:?}"
         );
+    }
+
+    #[test]
+    fn resolves_const_referencing_earlier_const() {
+        assert!(lower_to_asm("const A = 0x40\nconst B = A\ntest t {\n pass\n}\n").is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_const() {
+        let err = lower_to_asm("const A = 1\nconst A = 2\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("duplicate const"));
+    }
+
+    #[test]
+    fn rejects_const_with_unknown_name() {
+        let err = lower_to_asm("const A = NOPE\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("unknown name"));
     }
 }

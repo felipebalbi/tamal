@@ -4,11 +4,19 @@
 use crate::lexer::{Tok, Token};
 use tamal_asm::{Diagnostic, Span};
 
-/// A parsed `.tam` module: a list of tests (Plan 1 enforces exactly one at
-/// lowering time; the AST permits many so later plans can relax it).
+/// A parsed `.tam` module: `const` items and tests.
 #[derive(Debug, Clone)]
 pub struct Module {
+    pub consts: Vec<Const>,
     pub tests: Vec<Test>,
+}
+
+/// A `const NAME = expr` item.
+#[derive(Debug, Clone)]
+pub struct Const {
+    pub name: String,
+    pub name_span: Span,
+    pub value: Expr,
 }
 
 /// A single test = one program entry point.
@@ -95,13 +103,24 @@ fn parse_number(lexeme: &str) -> Option<i64> {
 /// Parse tokens into a [`Module`], or return diagnostics.
 pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
     let mut p = P { src, toks, i: 0 };
+    let mut consts = Vec::new();
     let mut tests = Vec::new();
     p.skip_newlines();
     while p.peek() != Tok::Eof {
-        tests.push(p.parse_test()?);
+        let kw = p.expect_ident()?;
+        match p.lexeme(&kw) {
+            "const" => consts.push(p.parse_const()?),
+            "test" => tests.push(p.parse_test()?),
+            other => {
+                return Err(vec![Diagnostic::error(
+                    kw,
+                    format!("expected `const` or `test`, found `{other}`"),
+                )]);
+            }
+        }
         p.skip_newlines();
     }
-    Ok(Module { tests })
+    Ok(Module { consts, tests })
 }
 
 struct P<'a> {
@@ -150,10 +169,6 @@ impl<'a> P<'a> {
     }
 
     fn parse_test(&mut self) -> Result<Test, Vec<Diagnostic>> {
-        let kw = self.expect_ident()?;
-        if self.lexeme(&kw) != "test" {
-            return Err(vec![Diagnostic::error(kw, "expected `test`")]);
-        }
         let name_span = self.expect_ident()?;
         let name = self.lexeme(&name_span).to_string();
         self.expect(Tok::LBrace, "`{`")?;
@@ -178,6 +193,19 @@ impl<'a> P<'a> {
             name,
             name_span,
             stmts,
+        })
+    }
+
+    fn parse_const(&mut self) -> Result<Const, Vec<Diagnostic>> {
+        let name_span = self.expect_ident()?;
+        let name = self.lexeme(&name_span).to_string();
+        self.expect(Tok::Eq, "`=`")?;
+        let value = self.parse_expr()?;
+        self.end_stmt()?;
+        Ok(Const {
+            name,
+            name_span,
+            value,
         })
     }
 
@@ -414,7 +442,15 @@ mod tests {
     fn missing_test_keyword_is_an_error() {
         let toks = lex("smoke {\n  pass\n}\n").unwrap();
         let err = parse("smoke {\n  pass\n}\n", &toks).unwrap_err();
-        assert!(err[0].message.contains("expected `test`"));
+        assert!(err[0].message.contains("expected `const` or `test`"));
+    }
+
+    #[test]
+    fn parses_const_item() {
+        let m = parse_ok("const PUT_IORD1 = 0x44\ntest t {\n  pass\n}\n");
+        assert_eq!(m.consts.len(), 1);
+        assert_eq!(m.consts[0].name, "PUT_IORD1");
+        assert_eq!(m.tests.len(), 1);
     }
 
     fn parse_expr_ok(src: &str) -> Expr {
