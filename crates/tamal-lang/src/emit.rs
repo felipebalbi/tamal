@@ -84,6 +84,16 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
                         push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
                     }
                 }
+                Stmt::CrcRegion { sends, span } => {
+                    let mut total = Vec::new();
+                    for e in sends {
+                        total.extend(consteval::eval_bytes(e, consts).map_err(|d| vec![d])?);
+                    }
+                    total.push(tamal_abi::crc8::crc8(&total));
+                    for b in total {
+                        push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
+                    }
+                }
             }
         }
     }

@@ -57,6 +57,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Pass | parser::Stmt::Fail { .. } => true,
         parser::Stmt::Raw { mnemonic, .. } => mnemonic == "halt",
         parser::Stmt::Send { .. } => false,
+        parser::Stmt::CrcRegion { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -189,5 +190,17 @@ mod tests {
     fn send_plus_crc8_appends_folded_byte() {
         let asm = lower_to_asm("test t {\n send [0x44, 0x00, 0x64] + crc8\n pass\n}\n").unwrap();
         assert!(asm.contains("put_byte 0x16")); // compile-time CRC-8, poly 0x07
+    }
+
+    #[test]
+    fn crc_region_folds_over_all_emitted_bytes() {
+        // the same three bytes as the peripheral command phase → the same 0x16
+        let asm = lower_to_asm(
+            "test t {\n crc_region {\n  send [0x44]\n  send [0x00, 0x64]\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert!(asm.contains("put_byte 0x44"));
+        assert!(asm.contains("put_byte 0x64"));
+        assert!(asm.contains("put_byte 0x16"));
     }
 }

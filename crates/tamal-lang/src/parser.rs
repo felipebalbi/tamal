@@ -46,6 +46,9 @@ pub enum Stmt {
         append_crc: bool,
         span: Span,
     },
+    /// `crc_region { send <expr> … }` — appends a CRC-8 over exactly the bytes
+    /// the block emits, in order.
+    CrcRegion { sends: Vec<Expr>, span: Span },
 }
 
 /// A compile-time expression.
@@ -250,6 +253,42 @@ impl<'a> P<'a> {
                 Ok(Stmt::Send {
                     bytes,
                     append_crc,
+                    span: head.start..end,
+                })
+            }
+            "crc_region" => {
+                self.expect(Tok::LBrace, "`{`")?;
+                let mut sends = Vec::new();
+                let end = loop {
+                    self.skip_newlines();
+                    match self.peek() {
+                        Tok::RBrace => {
+                            let e = self.span().end;
+                            self.i += 1;
+                            break e;
+                        }
+                        Tok::Eof => {
+                            return Err(vec![Diagnostic::error(
+                                self.span(),
+                                "unexpected end of file: missing `}` for `crc_region`",
+                            )]);
+                        }
+                        _ => {
+                            let kw = self.expect_ident()?;
+                            if self.lexeme(&kw) != "send" {
+                                return Err(vec![Diagnostic::error(
+                                    kw,
+                                    "only `send` statements are allowed in a `crc_region`",
+                                )]);
+                            }
+                            sends.push(self.parse_expr()?);
+                            self.end_stmt()?;
+                        }
+                    }
+                };
+                self.end_stmt()?;
+                Ok(Stmt::CrcRegion {
+                    sends,
                     span: head.start..end,
                 })
             }
@@ -588,6 +627,17 @@ mod tests {
         match &m.tests[0].stmts[0] {
             Stmt::Send { append_crc, .. } => assert!(append_crc),
             s => panic!("expected Send, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_crc_region() {
+        let m = parse_ok(
+            "test t {\n crc_region {\n  send [0x44]\n  send [0x00, 0x64]\n }\n pass\n}\n",
+        );
+        match &m.tests[0].stmts[0] {
+            Stmt::CrcRegion { sends, .. } => assert_eq!(sends.len(), 2),
+            s => panic!("expected CrcRegion, got {s:?}"),
         }
     }
 }
