@@ -34,26 +34,38 @@ pub fn eval(e: &Expr, consts: &Consts) -> Result<Value, Diagnostic> {
             }
             Ok(Value::Bytes(out))
         }
-        Expr::Binary { op: BinOp::Concat, lhs, rhs, .. } => {
+        Expr::Binary {
+            op: BinOp::Concat,
+            lhs,
+            rhs,
+            ..
+        } => {
             let mut a = eval_bytes(lhs, consts)?;
             a.extend(eval_bytes(rhs, consts)?);
             Ok(Value::Bytes(a))
         }
-        Expr::Binary { op: BinOp::Xor, lhs, rhs, .. } => {
-            Ok(Value::Int(eval_int(lhs, consts)? ^ eval_int(rhs, consts)?))
-        }
+        Expr::Binary {
+            op: BinOp::Xor,
+            lhs,
+            rhs,
+            ..
+        } => Ok(Value::Int(eval_int(lhs, consts)? ^ eval_int(rhs, consts)?)),
         Expr::Call { func, arg, span } => eval_call(func, arg, span, consts),
     }
 }
 
 fn eval_call(func: &str, arg: &Expr, span: &Span, consts: &Consts) -> Result<Value, Diagnostic> {
     match func {
-        "crc8" => Ok(Value::Int(tamal_abi::crc8::crc8(&eval_bytes(arg, consts)?) as i64)),
+        "crc8" => Ok(Value::Int(
+            tamal_abi::crc8::crc8(&eval_bytes(arg, consts)?) as i64
+        )),
         "len" => Ok(Value::Int(eval_bytes(arg, consts)?.len() as i64)),
         "lo" => Ok(Value::Int(eval_int(arg, consts)? & 0xff)),
         "hi" => Ok(Value::Int((eval_int(arg, consts)? >> 8) & 0xff)),
-        _ => Err(Diagnostic::error(span.clone(), format!("unknown builtin `{func}`"))
-            .with_help("the builtins are crc8, len, lo, hi")),
+        _ => Err(
+            Diagnostic::error(span.clone(), format!("unknown builtin `{func}`"))
+                .with_help("the builtins are crc8, len, lo, hi"),
+        ),
     }
 }
 
@@ -61,7 +73,10 @@ fn eval_call(func: &str, arg: &Expr, span: &Span, consts: &Consts) -> Result<Val
 pub fn eval_int(e: &Expr, consts: &Consts) -> Result<i64, Diagnostic> {
     match eval(e, consts)? {
         Value::Int(n) => Ok(n),
-        Value::Bytes(_) => Err(Diagnostic::error(e.span(), "expected an integer, found bytes")),
+        Value::Bytes(_) => Err(Diagnostic::error(
+            e.span(),
+            "expected an integer, found bytes",
+        )),
     }
 }
 
@@ -69,7 +84,10 @@ pub fn eval_int(e: &Expr, consts: &Consts) -> Result<i64, Diagnostic> {
 pub fn eval_bytes(e: &Expr, consts: &Consts) -> Result<Vec<u8>, Diagnostic> {
     match eval(e, consts)? {
         Value::Bytes(b) => Ok(b),
-        Value::Int(_) => Err(Diagnostic::error(e.span(), "expected bytes, found an integer")),
+        Value::Int(_) => Err(Diagnostic::error(
+            e.span(),
+            "expected bytes, found an integer",
+        )),
     }
 }
 
@@ -85,7 +103,10 @@ mod tests {
     use super::*;
 
     fn int(v: i64) -> Expr {
-        Expr::Int { value: v, span: 0..0 }
+        Expr::Int {
+            value: v,
+            span: 0..0,
+        }
     }
     fn bytes(vs: &[i64]) -> Expr {
         Expr::Bytes {
@@ -117,10 +138,26 @@ mod tests {
         let mut c = Consts::new();
         c.insert("X".into(), Value::Int(0x44));
         assert_eq!(
-            eval(&Expr::Name { name: "X".into(), span: 0..0 }, &c).unwrap(),
+            eval(
+                &Expr::Name {
+                    name: "X".into(),
+                    span: 0..0
+                },
+                &c
+            )
+            .unwrap(),
             Value::Int(0x44)
         );
-        assert!(eval(&Expr::Name { name: "NOPE".into(), span: 0..0 }, &c).is_err());
+        assert!(
+            eval(
+                &Expr::Name {
+                    name: "NOPE".into(),
+                    span: 0..0
+                },
+                &c
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -131,7 +168,10 @@ mod tests {
             rhs: Box::new(bytes(&[0x03])),
             span: 0..0,
         };
-        assert_eq!(eval(&e, &Consts::new()).unwrap(), Value::Bytes(vec![1, 2, 3]));
+        assert_eq!(
+            eval(&e, &Consts::new()).unwrap(),
+            Value::Bytes(vec![1, 2, 3])
+        );
     }
 
     #[test]
@@ -148,9 +188,18 @@ mod tests {
 
     #[test]
     fn len_lo_hi_builtins() {
-        assert_eq!(eval(&call("len", bytes(&[1, 2, 3])), &Consts::new()).unwrap(), Value::Int(3));
-        assert_eq!(eval(&call("lo", int(0xDEAD)), &Consts::new()).unwrap(), Value::Int(0xAD));
-        assert_eq!(eval(&call("hi", int(0xDEAD)), &Consts::new()).unwrap(), Value::Int(0xDE));
+        assert_eq!(
+            eval(&call("len", bytes(&[1, 2, 3])), &Consts::new()).unwrap(),
+            Value::Int(3)
+        );
+        assert_eq!(
+            eval(&call("lo", int(0xDEAD)), &Consts::new()).unwrap(),
+            Value::Int(0xAD)
+        );
+        assert_eq!(
+            eval(&call("hi", int(0xDEAD)), &Consts::new()).unwrap(),
+            Value::Int(0xDE)
+        );
     }
 
     #[test]

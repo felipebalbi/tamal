@@ -420,7 +420,10 @@ impl<'a> P<'a> {
                 self.expect(Tok::RParen, "`)`")?;
                 Ok(e)
             }
-            _ => Err(vec![Diagnostic::error(self.span(), "expected an expression")]),
+            _ => Err(vec![Diagnostic::error(
+                self.span(),
+                "expected an expression",
+            )]),
         }
     }
 
@@ -632,9 +635,8 @@ mod tests {
 
     #[test]
     fn parses_crc_region() {
-        let m = parse_ok(
-            "test t {\n crc_region {\n  send [0x44]\n  send [0x00, 0x64]\n }\n pass\n}\n",
-        );
+        let m =
+            parse_ok("test t {\n crc_region {\n  send [0x44]\n  send [0x00, 0x64]\n }\n pass\n}\n");
         match &m.tests[0].stmts[0] {
             Stmt::CrcRegion { sends, .. } => assert_eq!(sends.len(), 2),
             s => panic!("expected CrcRegion, got {s:?}"),

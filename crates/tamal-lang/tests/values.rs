@@ -16,9 +16,16 @@ fn command_phase_byte_matches_hand_written_asm() {
                      \tcs_assert\n\
                      \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
                      \ttar 2\n\tcs_deassert\n\thalt 0x00\n";
-    let got = tamal_lang::compile(tam).expect("compile .tam").to_le_bytes();
-    let want = tamal_asm::assemble(reference).expect("assemble ref").to_le_bytes();
-    assert_eq!(got, want, "send+crc8 command phase must byte-match hand-written asm");
+    let got = tamal_lang::compile(tam)
+        .expect("compile .tam")
+        .to_le_bytes();
+    let want = tamal_asm::assemble(reference)
+        .expect("assemble ref")
+        .to_le_bytes();
+    assert_eq!(
+        got, want,
+        "send+crc8 command phase must byte-match hand-written asm"
+    );
 }
 
 #[test]
@@ -37,8 +44,12 @@ fn crc_region_byte_matches_the_same_command_phase() {
                      \tcs_assert\n\
                      \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
                      \ttar 2\n\tcs_deassert\n\thalt 0x00\n";
-    let got = tamal_lang::compile(tam).expect("compile .tam").to_le_bytes();
-    let want = tamal_asm::assemble(reference).expect("assemble ref").to_le_bytes();
+    let got = tamal_lang::compile(tam)
+        .expect("compile .tam")
+        .to_le_bytes();
+    let want = tamal_asm::assemble(reference)
+        .expect("assemble ref")
+        .to_le_bytes();
     assert_eq!(got, want, "crc_region must fold the same 0x16 as `+ crc8`");
 }
 
@@ -50,6 +61,12 @@ fn deliberate_wrong_crc_folds_to_xored_byte() {
                \x20   halt 0x00\n\
                }\n";
     let asm = tamal_lang::lower_to_asm(tam).expect("lower");
-    assert!(asm.contains("put_byte 0xE9"), "wrong CRC must fold to 0xE9:\n{asm}");
-    assert!(!asm.contains("put_byte 0x16"), "the correct CRC must not appear");
+    assert!(
+        asm.contains("put_byte 0xE9"),
+        "wrong CRC must fold to 0xE9:\n{asm}"
+    );
+    assert!(
+        !asm.contains("put_byte 0x16"),
+        "the correct CRC must not appear"
+    );
 }

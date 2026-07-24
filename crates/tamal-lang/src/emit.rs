@@ -81,7 +81,12 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
                         bs.push(tamal_abi::crc8::crc8(&bs));
                     }
                     for b in bs {
-                        push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
+                        push(
+                            &mut asm,
+                            &mut lines,
+                            &format!("\tput_byte 0x{b:02X}\n"),
+                            span,
+                        );
                     }
                 }
                 Stmt::CrcRegion { sends, span } => {
@@ -91,7 +96,12 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
                     }
                     total.push(tamal_abi::crc8::crc8(&total));
                     for b in total {
-                        push(&mut asm, &mut lines, &format!("\tput_byte 0x{b:02X}\n"), span);
+                        push(
+                            &mut asm,
+                            &mut lines,
+                            &format!("\tput_byte 0x{b:02X}\n"),
+                            span,
+                        );
                     }
                 }
             }

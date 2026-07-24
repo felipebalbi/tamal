@@ -106,35 +106,59 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 i += 1;
             }
             b'[' => {
-                toks.push(Token { kind: Tok::LBracket, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::LBracket,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b']' => {
-                toks.push(Token { kind: Tok::RBracket, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::RBracket,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'(' => {
-                toks.push(Token { kind: Tok::LParen, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::LParen,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b')' => {
-                toks.push(Token { kind: Tok::RParen, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::RParen,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'=' => {
-                toks.push(Token { kind: Tok::Eq, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::Eq,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'^' => {
-                toks.push(Token { kind: Tok::Caret, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::Caret,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             b'+' if i + 1 < b.len() && b[i + 1] == b'+' => {
-                toks.push(Token { kind: Tok::PlusPlus, span: i..i + 2 });
+                toks.push(Token {
+                    kind: Tok::PlusPlus,
+                    span: i..i + 2,
+                });
                 i += 2;
             }
             b'+' => {
-                toks.push(Token { kind: Tok::Plus, span: i..i + 1 });
+                toks.push(Token {
+                    kind: Tok::Plus,
+                    span: i..i + 1,
+                });
                 i += 1;
             }
             _ if is_ident_start(c) => {
@@ -255,14 +279,14 @@ mod tests {
         assert_eq!(
             kinds("send [a, b] + crc8\n"),
             vec![
-                Tok::Ident,   // send
+                Tok::Ident, // send
                 Tok::LBracket,
-                Tok::Ident,   // a
+                Tok::Ident, // a
                 Tok::Comma,
-                Tok::Ident,   // b
+                Tok::Ident, // b
                 Tok::RBracket,
                 Tok::Plus,
-                Tok::Ident,   // crc8
+                Tok::Ident, // crc8
                 Tok::Newline,
                 Tok::Eof,
             ]
