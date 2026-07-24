@@ -1,5 +1,7 @@
-//! Parser: tokens → the Plan-1 AST (`Module` of one `Test` of statements:
-//! `pass`, `fail N`, or a verbatim raw instruction).
+//! Parser: tokens → the AST — a `Module` of `const` items and a `Test` of
+//! statements (`pass`, `fail N`, `send`/`crc_region`, or a verbatim raw
+//! instruction), plus the compile-time `Expr` grammar (`[bytes]`, `++`, `^`,
+//! builtin calls).
 
 use crate::lexer::{Tok, Token};
 use tamal_asm::{Diagnostic, Span};

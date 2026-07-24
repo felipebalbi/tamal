@@ -1,6 +1,7 @@
-//! Emit: lower a `Module` (Plan-1 subset) to tamal-asm text, plus a source map
-//! from generated-asm byte offsets back to the originating `.tam` spans. A
-//! `test` becomes the entry label; `pass`/`fail`/raw statements become lines.
+//! Emit: lower a `Module` to tamal-asm text, plus a source map from
+//! generated-asm byte offsets back to the originating `.tam` spans. A `test`
+//! becomes the entry label; `pass`/`fail`/raw become lines, and `send`/
+//! `crc_region` evaluate to `put_byte` runs (with the compile-time CRC-8).
 
 use crate::parser::{Module, Stmt};
 use tamal_asm::{Diagnostic, Span};

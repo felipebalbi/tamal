@@ -17,8 +17,9 @@ use tamal_asm::Program;
 
 /// Lower tamal-lang source to tamal-asm text plus its source map.
 ///
-/// Plan 1 requires exactly one `test` per file (one program entry point); zero
-/// or many is a diagnostic, and a test that can never halt is rejected.
+/// Resolves `const`s, then requires exactly one `test` per file (one program
+/// entry point); zero or many is a diagnostic, and a test that can never halt
+/// is rejected.
 pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let toks = lexer::lex(source)?;
     let module = parser::parse(source, &toks)?;

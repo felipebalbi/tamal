@@ -1,10 +1,11 @@
 //! Lexer: `.tam` source text → tokens with byte spans. Skips `//` line and
-//! `/* */` block comments; recognizes identifiers, numbers, `{`, `}`, `,`,
-//! and newlines (statement separators).
+//! `/* */` block comments; recognizes identifiers, numbers, punctuation
+//! (`{} [] () , =`), the operators `+ ++ ^`, and newlines (statement
+//! separators).
 
 use tamal_asm::{Diagnostic, Span};
 
-/// Token kinds for the Plan-1 subset.
+/// Token kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tok {
     /// An identifier: keyword, mnemonic, register, or name.
