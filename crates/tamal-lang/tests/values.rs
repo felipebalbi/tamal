@@ -54,6 +54,34 @@ fn crc_region_byte_matches_the_same_command_phase() {
 }
 
 #[test]
+fn multiline_send_byte_matches_single_line() {
+    // A multi-line bytes literal (with a trailing comma) must compile to the
+    // exact same bytecode as the single-line form.
+    let multiline = "test io {\n\
+                     \x20   send [\n\
+                     \x20       0x44,\n\
+                     \x20       0x00,\n\
+                     \x20       0x64,\n\
+                     \x20   ] + crc8\n\
+                     \x20   halt 0x00\n\
+                     }\n";
+    let single = "test io {\n\
+                  \x20   send [0x44, 0x00, 0x64] + crc8\n\
+                  \x20   halt 0x00\n\
+                  }\n";
+    let got = tamal_lang::compile(multiline)
+        .expect("compile multi-line .tam")
+        .to_le_bytes();
+    let want = tamal_lang::compile(single)
+        .expect("compile single-line .tam")
+        .to_le_bytes();
+    assert_eq!(
+        got, want,
+        "a multi-line send must byte-match the single-line send"
+    );
+}
+
+#[test]
 fn deliberate_wrong_crc_folds_to_xored_byte() {
     // A deliberately-corrupted CRC is greppable and folds to 0x16 ^ 0xFF = 0xE9.
     let tam = "test bad_crc {\n\

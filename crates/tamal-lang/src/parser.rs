@@ -385,7 +385,9 @@ impl<'a> P<'a> {
                 let name = self.lexeme(&sp).to_string();
                 if self.peek() == Tok::LParen {
                     self.i += 1;
+                    self.skip_newlines();
                     let arg = self.parse_expr()?;
+                    self.skip_newlines();
                     let close = self.expect(Tok::RParen, "`)`")?;
                     Ok(Expr::Call {
                         func: name,
@@ -399,14 +401,17 @@ impl<'a> P<'a> {
             Tok::LBracket => {
                 let start = self.span().start;
                 self.i += 1;
+                // Newlines inside `[...]` are not statement terminators, and a
+                // trailing comma before `]` is allowed.
                 let mut elems = Vec::new();
-                if self.peek() != Tok::RBracket {
-                    loop {
-                        elems.push(self.parse_expr()?);
-                        if self.peek() == Tok::Comma {
-                            self.i += 1;
-                            continue;
-                        }
+                self.skip_newlines();
+                while self.peek() != Tok::RBracket {
+                    elems.push(self.parse_expr()?);
+                    self.skip_newlines();
+                    if self.peek() == Tok::Comma {
+                        self.i += 1;
+                        self.skip_newlines();
+                    } else {
                         break;
                     }
                 }
@@ -418,7 +423,9 @@ impl<'a> P<'a> {
             }
             Tok::LParen => {
                 self.i += 1;
+                self.skip_newlines();
                 let e = self.parse_expr()?;
+                self.skip_newlines();
                 self.expect(Tok::RParen, "`)`")?;
                 Ok(e)
             }
@@ -642,6 +649,63 @@ mod tests {
         match &m.tests[0].stmts[0] {
             Stmt::CrcRegion { sends, .. } => assert_eq!(sends.len(), 2),
             s => panic!("expected CrcRegion, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiline_bytes_literal() {
+        // Newlines inside `[...]` are not statement terminators; a trailing
+        // comma is allowed. (The motivating snippet from the Plan-3 prep.)
+        match parse_expr_ok("[\n  0x44,\n  0x00,\n  0x64,\n]") {
+            Expr::Bytes { elems, .. } => assert_eq!(elems.len(), 3),
+            e => panic!("expected Bytes, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bytes_with_trailing_comma() {
+        // A trailing comma before the closing `]` is allowed even on one line.
+        match parse_expr_ok("[0x44, 0x00,]") {
+            Expr::Bytes { elems, .. } => assert_eq!(elems.len(), 2),
+            e => panic!("expected Bytes, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiline_call_arg() {
+        // Newlines after `(` and before `)` are not statement terminators.
+        match parse_expr_ok("crc8(\n  pkt\n)") {
+            Expr::Call { func, .. } => assert_eq!(func, "crc8"),
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiline_parenthesized() {
+        match parse_expr_ok("(\n  0x05\n)") {
+            Expr::Int { value, .. } => assert_eq!(value, 5),
+            e => panic!("expected Int, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiline_send_statement() {
+        // A `send` whose bytes literal spans multiple lines (with a trailing
+        // comma) still parses, and `+ crc8` after the `]` is picked up.
+        let m = parse_ok(
+            "test t {\n  send [\n    0x44,\n    0x00,\n    0x64,\n  ] + crc8\n  pass\n}\n",
+        );
+        match &m.tests[0].stmts[0] {
+            Stmt::Send {
+                bytes, append_crc, ..
+            } => {
+                assert!(append_crc);
+                match bytes {
+                    Expr::Bytes { elems, .. } => assert_eq!(elems.len(), 3),
+                    e => panic!("expected Bytes, got {e:?}"),
+                }
+            }
+            s => panic!("expected Send, got {s:?}"),
         }
     }
 }
