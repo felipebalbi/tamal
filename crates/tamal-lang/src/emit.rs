@@ -45,77 +45,114 @@ impl Lowering {
     }
 }
 
-/// Lower a Plan-2 `Module` (exactly one test, enforced by the driver) to
-/// tamal-asm text plus its source map. `send` statements are evaluated to a run
-/// of `put_byte 0xNN` lines under the resolved `const` environment.
+/// Lower a `Module` (exactly one test, enforced by the driver) to tamal-asm
+/// text plus its source map.
 pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic>> {
-    let mut asm = String::new();
-    let mut lines = Vec::new();
+    let mut e = Emitter::new(consts);
     for test in &module.tests {
-        push(&mut asm, &mut lines, ".globl _start\n", &test.name_span);
-        push(&mut asm, &mut lines, "_start:\n", &test.name_span);
+        e.push(".globl _start\n", &test.name_span);
+        e.push("_start:\n", &test.name_span);
         for stmt in &test.stmts {
-            match stmt {
-                Stmt::Pass => push(&mut asm, &mut lines, "\thalt 0x00\n", &test.name_span),
-                Stmt::Fail { code, span } => {
-                    push(&mut asm, &mut lines, &format!("\thalt {code}\n"), span)
-                }
-                Stmt::Raw {
-                    mnemonic,
-                    operands,
-                    span,
-                } => {
-                    let text = if operands.is_empty() {
-                        format!("\t{mnemonic}\n")
-                    } else {
-                        format!("\t{mnemonic} {}\n", operands.join(", "))
-                    };
-                    push(&mut asm, &mut lines, &text, span);
-                }
-                Stmt::Send {
-                    bytes,
-                    append_crc,
-                    span,
-                } => {
-                    let mut bs = consteval::eval_bytes(bytes, consts).map_err(|d| vec![d])?;
-                    if *append_crc {
-                        bs.push(tamal_abi::crc8::crc8(&bs));
-                    }
-                    for b in bs {
-                        push(
-                            &mut asm,
-                            &mut lines,
-                            &format!("\tput_byte 0x{b:02X}\n"),
-                            span,
-                        );
-                    }
-                }
-                Stmt::CrcRegion { sends, span } => {
-                    let mut total = Vec::new();
-                    for e in sends {
-                        total.extend(consteval::eval_bytes(e, consts).map_err(|d| vec![d])?);
-                    }
-                    total.push(tamal_abi::crc8::crc8(&total));
-                    for b in total {
-                        push(
-                            &mut asm,
-                            &mut lines,
-                            &format!("\tput_byte 0x{b:02X}\n"),
-                            span,
-                        );
-                    }
-                }
-            }
+            e.top_stmt(stmt, &test.name_span)?;
         }
     }
-    Ok(Lowering { asm, lines })
+    Ok(e.finish())
 }
 
-/// Append one asm line and record its `(asm byte range, .tam span)` mapping.
-fn push(asm: &mut String, lines: &mut Vec<(Span, Span)>, text: &str, span: &Span) {
-    let start = asm.len();
-    asm.push_str(text);
-    lines.push((start..asm.len(), span.clone()));
+/// The lowering state: the growing asm text + source map.
+struct Emitter<'a> {
+    consts: &'a Consts,
+    asm: String,
+    lines: Vec<(Span, Span)>,
+}
+
+impl<'a> Emitter<'a> {
+    fn new(consts: &'a Consts) -> Self {
+        Emitter {
+            consts,
+            asm: String::new(),
+            lines: Vec::new(),
+        }
+    }
+
+    fn finish(self) -> Lowering {
+        Lowering {
+            asm: self.asm,
+            lines: self.lines,
+        }
+    }
+
+    /// Append one asm line and record its `(asm byte range, .tam span)` mapping.
+    fn push(&mut self, text: &str, span: &Span) {
+        let start = self.asm.len();
+        self.asm.push_str(text);
+        self.lines.push((start..self.asm.len(), span.clone()));
+    }
+
+    /// Lower one top-level statement. `entry` is the test's name span, used for
+    /// statements (like `pass`) that have no more specific span of their own.
+    fn top_stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
+        match stmt {
+            Stmt::Pass => self.push("\thalt 0x00\n", entry),
+            Stmt::Fail { code, span } => self.push(&format!("\thalt {code}\n"), span),
+            Stmt::Raw { .. } => self.lower_raw(stmt)?,
+            Stmt::Send { .. } => self.lower_send(stmt)?,
+            Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
+        }
+        Ok(())
+    }
+
+    fn lower_raw(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+        let Stmt::Raw {
+            mnemonic,
+            operands,
+            span,
+        } = stmt
+        else {
+            unreachable!("lower_raw called with non-Raw statement")
+        };
+        let text = if operands.is_empty() {
+            format!("\t{mnemonic}\n")
+        } else {
+            format!("\t{mnemonic} {}\n", operands.join(", "))
+        };
+        self.push(&text, span);
+        Ok(())
+    }
+
+    fn lower_send(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+        let Stmt::Send {
+            bytes,
+            append_crc,
+            span,
+        } = stmt
+        else {
+            unreachable!("lower_send called with non-Send statement")
+        };
+        let mut bs = consteval::eval_bytes(bytes, self.consts).map_err(|d| vec![d])?;
+        if *append_crc {
+            bs.push(tamal_abi::crc8::crc8(&bs));
+        }
+        for b in bs {
+            self.push(&format!("\tput_byte 0x{b:02X}\n"), span);
+        }
+        Ok(())
+    }
+
+    fn lower_crc_region(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+        let Stmt::CrcRegion { sends, span } = stmt else {
+            unreachable!("lower_crc_region called with non-CrcRegion statement")
+        };
+        let mut total = Vec::new();
+        for e in sends {
+            total.extend(consteval::eval_bytes(e, self.consts).map_err(|d| vec![d])?);
+        }
+        total.push(tamal_abi::crc8::crc8(&total));
+        for b in total {
+            self.push(&format!("\tput_byte 0x{b:02X}\n"), span);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
