@@ -61,6 +61,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Send { .. } => false,
         parser::Stmt::CrcRegion { .. } => false,
         parser::Stmt::Config { .. } => false,
+        parser::Stmt::Frame { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -224,5 +225,14 @@ mod tests {
         assert!(asm.contains("put_byte 0x44"));
         assert!(asm.contains("put_byte 0x64"));
         assert!(asm.contains("put_byte 0x16"));
+    }
+
+    #[test]
+    fn frame_wraps_body_in_cs_assert_deassert() {
+        let asm = lower_to_asm("test t {\n frame {\n  tar 2\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tcs_assert\n\ttar 2\n\tcs_deassert\n\thalt 0x00\n"
+        );
     }
 }

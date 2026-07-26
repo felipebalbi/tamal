@@ -99,6 +99,7 @@ impl<'a> Emitter<'a> {
             Stmt::Send { .. } => self.lower_send(stmt)?,
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
             Stmt::Config { .. } => self.lower_config(stmt)?,
+            Stmt::Frame { body, span } => self.lower_frame(body, span)?,
         }
         Ok(())
     }
@@ -171,6 +172,40 @@ impl<'a> Emitter<'a> {
             span,
         );
         Ok(())
+    }
+
+    fn lower_frame(&mut self, body: &[Stmt], span: &Span) -> Result<(), Vec<Diagnostic>> {
+        self.push("\tcs_assert\n", span);
+        for stmt in body {
+            self.frame_body_stmt(stmt)?;
+        }
+        self.push("\tcs_deassert\n", span);
+        Ok(())
+    }
+
+    fn frame_body_stmt(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+        match stmt {
+            Stmt::Send { .. } => self.lower_send(stmt),
+            Stmt::CrcRegion { .. } => self.lower_crc_region(stmt),
+            Stmt::Raw { .. } => self.lower_raw(stmt),
+            other => Err(vec![Diagnostic::error(
+                stmt_span(other),
+                "this statement is not allowed inside a `frame`",
+            )]),
+        }
+    }
+}
+
+/// The best source span for a statement, for diagnostics.
+fn stmt_span(stmt: &Stmt) -> Span {
+    match stmt {
+        Stmt::Pass => 0..0,
+        Stmt::Fail { span, .. }
+        | Stmt::Raw { span, .. }
+        | Stmt::Send { span, .. }
+        | Stmt::CrcRegion { span, .. }
+        | Stmt::Config { span, .. }
+        | Stmt::Frame { span, .. } => span.clone(),
     }
 }
 

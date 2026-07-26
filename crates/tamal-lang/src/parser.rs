@@ -60,6 +60,10 @@ pub enum Stmt {
         alert: String,
         span: Span,
     },
+    /// `frame { … }` — a CS scope: `cs_assert` before the body, `cs_deassert`
+    /// on every exit (D9). The body reuses the ordinary statement grammar; the
+    /// emitter enforces which statements are legal inside a frame.
+    Frame { body: Vec<Stmt>, span: Span },
 }
 
 /// A compile-time expression.
@@ -319,6 +323,32 @@ impl<'a> P<'a> {
                     sck: self.lexeme(&sck).to_string(),
                     alert: self.lexeme(&alert).to_string(),
                     span,
+                })
+            }
+            "frame" => {
+                self.expect(Tok::LBrace, "`{`")?;
+                let mut body = Vec::new();
+                let end = loop {
+                    self.skip_newlines();
+                    match self.peek() {
+                        Tok::RBrace => {
+                            let e = self.span().end;
+                            self.i += 1;
+                            break e;
+                        }
+                        Tok::Eof => {
+                            return Err(vec![Diagnostic::error(
+                                self.span(),
+                                "unexpected end of file: missing `}` for `frame`",
+                            )]);
+                        }
+                        _ => body.push(self.parse_stmt()?),
+                    }
+                };
+                self.end_stmt()?;
+                Ok(Stmt::Frame {
+                    body,
+                    span: head.start..end,
                 })
             }
             _ => {
@@ -753,6 +783,15 @@ mod tests {
                 }
             }
             s => panic!("expected Send, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_frame_with_body() {
+        let m = parse_ok("test t {\n frame {\n  send [0x44]\n  tar 2\n }\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Frame { body, .. } => assert_eq!(body.len(), 2),
+            s => panic!("expected Frame, got {s:?}"),
         }
     }
 }
