@@ -98,6 +98,7 @@ impl<'a> Emitter<'a> {
             Stmt::Raw { .. } => self.lower_raw(stmt)?,
             Stmt::Send { .. } => self.lower_send(stmt)?,
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
+            Stmt::Config { .. } => self.lower_config(stmt)?,
         }
         Ok(())
     }
@@ -151,6 +152,24 @@ impl<'a> Emitter<'a> {
         for b in total {
             self.push(&format!("\tput_byte 0x{b:02X}\n"), span);
         }
+        Ok(())
+    }
+
+    fn lower_config(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+        let Stmt::Config {
+            role,
+            io,
+            sck,
+            alert,
+            span,
+        } = stmt
+        else {
+            unreachable!("lower_config called with non-Config statement")
+        };
+        self.push(
+            &format!("\tset_config {role}, {io}, {sck}, {alert}\n"),
+            span,
+        );
         Ok(())
     }
 }

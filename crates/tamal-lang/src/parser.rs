@@ -51,6 +51,15 @@ pub enum Stmt {
     /// `crc_region { send <expr> … }` — appends a CRC-8 over exactly the bytes
     /// the block emits, in order.
     CrcRegion { sends: Vec<Expr>, span: Span },
+    /// `config role, io, sck, alert` → `set_config …` (keywords pass through
+    /// verbatim; the assembler validates them and the v1 restriction).
+    Config {
+        role: String,
+        io: String,
+        sck: String,
+        alert: String,
+        span: Span,
+    },
 }
 
 /// A compile-time expression.
@@ -292,6 +301,24 @@ impl<'a> P<'a> {
                 Ok(Stmt::CrcRegion {
                     sends,
                     span: head.start..end,
+                })
+            }
+            "config" => {
+                let role = self.expect_ident()?;
+                self.expect(Tok::Comma, "`,`")?;
+                let io = self.expect_ident()?;
+                self.expect(Tok::Comma, "`,`")?;
+                let sck = self.expect_ident()?;
+                self.expect(Tok::Comma, "`,`")?;
+                let alert = self.expect_ident()?;
+                let span = head.start..alert.end;
+                self.end_stmt()?;
+                Ok(Stmt::Config {
+                    role: self.lexeme(&role).to_string(),
+                    io: self.lexeme(&io).to_string(),
+                    sck: self.lexeme(&sck).to_string(),
+                    alert: self.lexeme(&alert).to_string(),
+                    span,
                 })
             }
             _ => {
@@ -649,6 +676,26 @@ mod tests {
         match &m.tests[0].stmts[0] {
             Stmt::CrcRegion { sends, .. } => assert_eq!(sends.len(), 2),
             s => panic!("expected CrcRegion, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_config() {
+        let m = parse_ok("test t {\n config controller, x1, sck20, alert_pin\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Config {
+                role,
+                io,
+                sck,
+                alert,
+                ..
+            } => {
+                assert_eq!(role, "controller");
+                assert_eq!(io, "x1");
+                assert_eq!(sck, "sck20");
+                assert_eq!(alert, "alert_pin");
+            }
+            s => panic!("expected Config, got {s:?}"),
         }
     }
 

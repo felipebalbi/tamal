@@ -60,6 +60,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Raw { mnemonic, .. } => mnemonic == "halt",
         parser::Stmt::Send { .. } => false,
         parser::Stmt::CrcRegion { .. } => false,
+        parser::Stmt::Config { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -192,6 +193,25 @@ mod tests {
     fn send_plus_crc8_appends_folded_byte() {
         let asm = lower_to_asm("test t {\n send [0x44, 0x00, 0x64] + crc8\n pass\n}\n").unwrap();
         assert!(asm.contains("put_byte 0x16")); // compile-time CRC-8, poly 0x07
+    }
+
+    #[test]
+    fn config_lowers_to_set_config() {
+        let asm =
+            lower_to_asm("test t {\n config controller, x1, sck20, alert_pin\n pass\n}\n").unwrap();
+        assert!(
+            asm.contains("\tset_config controller, x1, sck20, alert_pin\n"),
+            "got:\n{asm}"
+        );
+    }
+
+    #[test]
+    fn config_assembles_to_the_v1_config_word() {
+        // controller,x1,sck20,alert_pin packs to 0x00 -> SET_CONFIG word 0x5800_0000
+        let prog =
+            compile("test t {\n config controller, x1, sck20, alert_pin\n pass\n}\n").unwrap();
+        let words: Vec<u32> = prog.words().collect();
+        assert_eq!(words[0], 0x5800_0000);
     }
 
     #[test]
