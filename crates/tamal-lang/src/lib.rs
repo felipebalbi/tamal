@@ -64,6 +64,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Frame { .. } => false,
         parser::Stmt::Recv { .. } => false,
         parser::Stmt::WaitState { .. } => false,
+        parser::Stmt::Expect { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -293,5 +294,31 @@ mod tests {
         // poll uses x1 (resp, kept) and x2 (constant, freed); recv d -> x2 reused.
         let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
         assert_eq!(gets, vec!["\tget_byte x1", "\tget_byte x2"]);
+    }
+
+    #[test]
+    fn expect_crc_defers_the_verdict_past_cs_deassert() {
+        let asm =
+            lower_to_asm("test t {\n frame {\n  expect crc else 0x11\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn expect_crc_outside_a_frame_is_an_error() {
+        let err = lower_to_asm("test t {\n expect crc else 0x11\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("inside a `frame`"),
+            "got: {:?}",
+            err[0].message
+        );
     }
 }

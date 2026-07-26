@@ -73,6 +73,10 @@ pub enum Stmt {
     /// `wait_state [name]` — poll past WAIT_STATE; consumes the response-code
     /// byte (D12). `name` binds the terminal (non-WAIT_STATE) byte.
     WaitState { bind: Option<String>, span: Span },
+    /// `expect crc else <byte>` — consume the trailing CRC byte, latch the RX
+    /// residue, and (via the enclosing `frame`) branch to a `fail <byte>` after
+    /// CS deasserts (D9/D12). Only legal inside a `frame`.
+    Expect { else_code: Expr, span: Span },
 }
 
 /// One destination of a `recv`: a named binding or a `_` discard.
@@ -425,6 +429,26 @@ impl<'a> P<'a> {
                     bind,
                     span: head.start..end,
                 })
+            }
+            "expect" => {
+                let crc = self.expect_ident()?;
+                if self.lexeme(&crc) != "crc" {
+                    return Err(vec![Diagnostic::error(
+                        crc,
+                        "expected `crc` after `expect` (the only check in v1)",
+                    )]);
+                }
+                let els = self.expect_ident()?;
+                if self.lexeme(&els) != "else" {
+                    return Err(vec![Diagnostic::error(
+                        els,
+                        "expected `else <byte>` after `expect crc`",
+                    )]);
+                }
+                let else_code = self.parse_expr()?;
+                let span = head.start..else_code.span().end;
+                self.end_stmt()?;
+                Ok(Stmt::Expect { else_code, span })
             }
             _ => {
                 let mut operands = Vec::new();
@@ -905,6 +929,17 @@ mod tests {
         match &m.tests[0].stmts[1] {
             Stmt::WaitState { bind: Some(n), .. } => assert_eq!(n, "term"),
             s => panic!("expected named WaitState, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_expect_crc_else() {
+        let m = parse_ok("test t {\n frame {\n  expect crc else 0x11\n }\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Frame { body, .. } => {
+                assert!(matches!(body[0], Stmt::Expect { .. }));
+            }
+            s => panic!("expected Frame, got {s:?}"),
         }
     }
 }

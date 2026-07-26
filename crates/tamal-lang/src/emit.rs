@@ -60,6 +60,7 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
         for stmt in &test.stmts {
             e.top_stmt(stmt, &test.name_span)?;
         }
+        e.flush_trailers();
     }
     Ok(e.finish())
 }
@@ -71,6 +72,17 @@ struct Emitter<'a> {
     lines: Vec<(Span, Span)>,
     alloc: RegAlloc,
     gensym: u32,
+    trailers: Vec<(Span, String)>,
+}
+
+/// A verdict branch an `expect` deferred to its enclosing `frame`: after CS
+/// deasserts, emit `bnez <reg>, <label>`, and hoist `<label>: halt <code>` to a
+/// per-test trailer.
+struct Deferred {
+    reg: Reg,
+    label: String,
+    code: u8,
+    span: Span,
 }
 
 impl<'a> Emitter<'a> {
@@ -81,6 +93,7 @@ impl<'a> Emitter<'a> {
             lines: Vec::new(),
             alloc: RegAlloc::new(),
             gensym: 0,
+            trailers: Vec::new(),
         }
     }
 
@@ -88,6 +101,13 @@ impl<'a> Emitter<'a> {
         Lowering {
             asm: self.asm,
             lines: self.lines,
+        }
+    }
+
+    fn flush_trailers(&mut self) {
+        let trailers = std::mem::take(&mut self.trailers);
+        for (span, block) in trailers {
+            self.push(&block, &span);
         }
     }
 
@@ -119,6 +139,12 @@ impl<'a> Emitter<'a> {
             Stmt::Frame { body, span } => self.lower_frame(body, span)?,
             Stmt::Recv { targets, span } => self.lower_recv(targets, span)?,
             Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span)?,
+            Stmt::Expect { span, .. } => {
+                return Err(vec![
+                    Diagnostic::error(span.clone(), "`expect crc` must appear inside a `frame`")
+                        .with_help("wrap the response phase in `frame { … }`"),
+                ]);
+            }
         }
         Ok(())
     }
@@ -196,25 +222,62 @@ impl<'a> Emitter<'a> {
     fn lower_frame(&mut self, body: &[Stmt], span: &Span) -> Result<(), Vec<Diagnostic>> {
         self.push("\tcs_assert\n", span);
         self.alloc.enter_scope();
+        let mut deferred: Vec<Deferred> = Vec::new();
         for stmt in body {
-            self.frame_body_stmt(stmt)?;
+            self.frame_body_stmt(stmt, &mut deferred)?;
         }
         self.push("\tcs_deassert\n", span);
+        for d in &deferred {
+            self.push(
+                &format!("\tbnez {}, {}\n", reg_name(d.reg), d.label),
+                &d.span,
+            );
+            self.trailers.push((
+                d.span.clone(),
+                format!("{}:\n\thalt 0x{:02X}\n", d.label, d.code),
+            ));
+        }
         self.alloc.exit_scope();
         Ok(())
     }
 
-    fn frame_body_stmt(&mut self, stmt: &Stmt) -> Result<(), Vec<Diagnostic>> {
+    fn frame_body_stmt(
+        &mut self,
+        stmt: &Stmt,
+        deferred: &mut Vec<Deferred>,
+    ) -> Result<(), Vec<Diagnostic>> {
         match stmt {
             Stmt::Send { .. } => self.lower_send(stmt),
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt),
             Stmt::Raw { .. } => self.lower_raw(stmt),
             Stmt::Recv { targets, span } => self.lower_recv(targets, span),
             Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span),
-            other => Err(vec![Diagnostic::error(
-                stmt_span(other),
-                "this statement is not allowed inside a `frame`",
-            )]),
+            Stmt::Expect { else_code, span } => {
+                let code = consteval::eval_byte(else_code, self.consts).map_err(|d| vec![d])?;
+                // Consume the trailing CRC byte (drives the RX residue to 0).
+                let discard = self.alloc.temp(span).map_err(|d| vec![d])?;
+                self.push(&format!("\tget_byte {}\n", reg_name(discard)), span);
+                self.alloc.free(discard);
+                // Latch the residue; keep it live until the deferred branch.
+                let res = self.alloc.temp(span).map_err(|d| vec![d])?;
+                self.push(&format!("\trdsr {}, crc\n", reg_name(res)), span);
+                let label = self.gensym("fail");
+                deferred.push(Deferred {
+                    reg: res,
+                    label,
+                    code,
+                    span: span.clone(),
+                });
+                Ok(())
+            }
+            // Not legal inside a frame. Listed explicitly (no wildcard) so a new
+            // Stmt variant forces a decision here rather than silently erroring.
+            Stmt::Pass | Stmt::Fail { .. } | Stmt::Config { .. } | Stmt::Frame { .. } => {
+                Err(vec![Diagnostic::error(
+                    stmt_span(stmt),
+                    "this statement is not allowed inside a `frame`",
+                )])
+            }
         }
     }
 
@@ -281,7 +344,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Config { span, .. }
         | Stmt::Frame { span, .. }
         | Stmt::Recv { span, .. }
-        | Stmt::WaitState { span, .. } => span.clone(),
+        | Stmt::WaitState { span, .. }
+        | Stmt::Expect { span, .. } => span.clone(),
     }
 }
 
