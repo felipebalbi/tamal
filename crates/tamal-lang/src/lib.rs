@@ -10,6 +10,7 @@ pub mod consteval;
 pub mod emit;
 pub mod lexer;
 pub mod parser;
+pub mod regalloc;
 
 pub use emit::Lowering;
 
