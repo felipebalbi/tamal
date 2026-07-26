@@ -1507,6 +1507,9 @@ fn peripheral_io_read_byte_matches_asm_modulo_registers() {
 #[test]
 fn peripheral_io_read_lowers_to_the_expected_asm() {
     // Pins the allocator's lowest-free-first numbering and the gensym labels.
+    // NB: gensym is a single shared counter, so `wait_state` takes `__wait0`
+    // (counter -> 1) and the following `expect crc` takes `__fail1` (not
+    // `__fail0`).
     let asm = tamal_lang::lower_to_asm(PERIPHERAL_TAM).unwrap();
     let expected = "\
 .globl _start
@@ -1529,9 +1532,9 @@ __wait0:
 \tget_byte x4
 \trdsr x4, crc
 \tcs_deassert
-\tbnez x4, __fail0
+\tbnez x4, __fail1
 \thalt 0x00
-__fail0:
+__fail1:
 \thalt 0x11
 ";
     assert_eq!(asm, expected);
