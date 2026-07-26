@@ -70,6 +70,9 @@ pub enum Stmt {
         targets: Vec<RecvTarget>,
         span: Span,
     },
+    /// `wait_state [name]` — poll past WAIT_STATE; consumes the response-code
+    /// byte (D12). `name` binds the terminal (non-WAIT_STATE) byte.
+    WaitState { bind: Option<String>, span: Span },
 }
 
 /// One destination of a `recv`: a named binding or a `_` discard.
@@ -405,6 +408,21 @@ impl<'a> P<'a> {
                 self.end_stmt()?;
                 Ok(Stmt::Recv {
                     targets,
+                    span: head.start..end,
+                })
+            }
+            "wait_state" => {
+                let mut end = head.end;
+                let mut bind = None;
+                if self.peek() == Tok::Ident {
+                    let sp = self.span();
+                    self.i += 1;
+                    bind = Some(self.lexeme(&sp).to_string());
+                    end = sp.end;
+                }
+                self.end_stmt()?;
+                Ok(Stmt::WaitState {
+                    bind,
                     span: head.start..end,
                 })
             }
@@ -874,6 +892,19 @@ mod tests {
                 assert!(targets.iter().all(|t| matches!(t, RecvTarget::Discard)));
             }
             s => panic!("expected Recv, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_wait_state_bare_and_named() {
+        let m = parse_ok("test t {\n wait_state\n wait_state term\n pass\n}\n");
+        assert!(matches!(
+            m.tests[0].stmts[0],
+            Stmt::WaitState { bind: None, .. }
+        ));
+        match &m.tests[0].stmts[1] {
+            Stmt::WaitState { bind: Some(n), .. } => assert_eq!(n, "term"),
+            s => panic!("expected named WaitState, got {s:?}"),
         }
     }
 }

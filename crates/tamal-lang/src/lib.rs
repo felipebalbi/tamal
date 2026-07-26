@@ -63,6 +63,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Config { .. } => false,
         parser::Stmt::Frame { .. } => false,
         parser::Stmt::Recv { .. } => false,
+        parser::Stmt::WaitState { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -271,5 +272,26 @@ mod tests {
                 "\tget_byte x2"
             ]
         );
+    }
+
+    #[test]
+    fn wait_state_lowers_to_the_poll_idiom() {
+        let asm = lower_to_asm("test t {\n wait_state\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             __wait0:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait0\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn named_wait_state_keeps_the_terminal_byte_bound() {
+        // `wait_state term` keeps the response register live, so a following
+        // recv allocates the NEXT register (x2), not x1.
+        let asm = lower_to_asm("test t {\n wait_state term\n recv d\n pass\n}\n").unwrap();
+        // poll uses x1 (resp, kept) and x2 (constant, freed); recv d -> x2 reused.
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(gets, vec!["\tget_byte x1", "\tget_byte x2"]);
     }
 }

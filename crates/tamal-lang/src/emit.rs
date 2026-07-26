@@ -10,6 +10,9 @@ use crate::consteval::{self, Consts};
 use crate::regalloc::RegAlloc;
 use tamal_abi::isa::Reg;
 
+/// The eSPI WAIT_STATE response code the `wait_state` poll spins on.
+const WAIT_STATE_CODE: u8 = 0x0F;
+
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
 /// at the `.tam` span that produced the offending line.
@@ -67,6 +70,7 @@ struct Emitter<'a> {
     asm: String,
     lines: Vec<(Span, Span)>,
     alloc: RegAlloc,
+    gensym: u32,
 }
 
 impl<'a> Emitter<'a> {
@@ -76,6 +80,7 @@ impl<'a> Emitter<'a> {
             asm: String::new(),
             lines: Vec::new(),
             alloc: RegAlloc::new(),
+            gensym: 0,
         }
     }
 
@@ -93,6 +98,14 @@ impl<'a> Emitter<'a> {
         self.lines.push((start..self.asm.len(), span.clone()));
     }
 
+    /// A fresh, asm-safe label: `__<prefix><n>` (no leading dot — dots are
+    /// directives in tamal-asm).
+    fn gensym(&mut self, prefix: &str) -> String {
+        let label = format!("__{prefix}{}", self.gensym);
+        self.gensym += 1;
+        label
+    }
+
     /// Lower one top-level statement. `entry` is the test's name span, used for
     /// statements (like `pass`) that have no more specific span of their own.
     fn top_stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
@@ -105,6 +118,7 @@ impl<'a> Emitter<'a> {
             Stmt::Config { .. } => self.lower_config(stmt)?,
             Stmt::Frame { body, span } => self.lower_frame(body, span)?,
             Stmt::Recv { targets, span } => self.lower_recv(targets, span)?,
+            Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span)?,
         }
         Ok(())
     }
@@ -196,6 +210,7 @@ impl<'a> Emitter<'a> {
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt),
             Stmt::Raw { .. } => self.lower_raw(stmt),
             Stmt::Recv { targets, span } => self.lower_recv(targets, span),
+            Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span),
             other => Err(vec![Diagnostic::error(
                 stmt_span(other),
                 "this statement is not allowed inside a `frame`",
@@ -224,6 +239,35 @@ impl<'a> Emitter<'a> {
         }
         Ok(())
     }
+
+    fn lower_wait_state(
+        &mut self,
+        bind: &Option<String>,
+        span: &Span,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let label = self.gensym("wait");
+        self.push(&format!("{label}:\n"), span);
+        self.push("\tcrc_reset\n", span);
+        let resp = match bind {
+            Some(name) => self.alloc.bind(name.clone(), span).map_err(|d| vec![d])?,
+            None => self.alloc.temp(span).map_err(|d| vec![d])?,
+        };
+        self.push(&format!("\tget_byte {}\n", reg_name(resp)), span);
+        let k = self.alloc.temp(span).map_err(|d| vec![d])?;
+        self.push(
+            &format!("\tli {}, 0x{WAIT_STATE_CODE:02X}\n", reg_name(k)),
+            span,
+        );
+        self.push(
+            &format!("\tbeq {}, {}, {label}\n", reg_name(resp), reg_name(k)),
+            span,
+        );
+        self.alloc.free(k);
+        if bind.is_none() {
+            self.alloc.free(resp);
+        }
+        Ok(())
+    }
 }
 
 /// The best source span for a statement, for diagnostics.
@@ -236,7 +280,8 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::CrcRegion { span, .. }
         | Stmt::Config { span, .. }
         | Stmt::Frame { span, .. }
-        | Stmt::Recv { span, .. } => span.clone(),
+        | Stmt::Recv { span, .. }
+        | Stmt::WaitState { span, .. } => span.clone(),
     }
 }
 
