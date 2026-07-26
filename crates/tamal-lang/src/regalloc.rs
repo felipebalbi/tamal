@@ -50,7 +50,12 @@ impl RegAlloc {
     }
 
     /// Close the innermost scope, freeing its registers and dropping its names.
+    /// The root scope is never popped, so an unbalanced `exit_scope` is a no-op
+    /// rather than leaving the allocator scopeless.
     pub fn exit_scope(&mut self) {
+        if self.scopes.len() <= 1 {
+            return;
+        }
         if let Some(scope) = self.scopes.pop() {
             for reg in scope.regs {
                 self.busy[reg.bits() as usize] = false;
@@ -106,10 +111,14 @@ impl RegAlloc {
         self.env.get(name).copied()
     }
 
-    /// Release a register early (before its scope ends). Idempotent: freeing a
-    /// register twice, or one already released by `exit_scope`, is harmless.
+    /// Release a register early (before its scope ends). Intended for anonymous
+    /// `temp` scratch registers; named `bind`ings are released at scope exit.
+    /// Idempotent and panic-free: freeing a register twice, one already released
+    /// by `exit_scope`, or one outside the `x1`..`x15` window is harmless.
     pub fn free(&mut self, reg: Reg) {
-        self.busy[reg.bits() as usize] = false;
+        if let Some(slot) = self.busy.get_mut(reg.bits() as usize) {
+            *slot = false;
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.regs.retain(|&r| r != reg);
         }
@@ -176,5 +185,30 @@ mod tests {
         // the 16th allocation has no register left: a hard error, no spill.
         let err = a.temp(&(0..0)).unwrap_err();
         assert!(err.message.contains("out of registers"));
+    }
+
+    #[test]
+    fn nested_scope_does_not_clobber_a_live_outer_register() {
+        // The module's headline invariant: a nested scope never reuses a live
+        // outer register.
+        let mut a = RegAlloc::new();
+        let outer = a.temp(&(0..0)).unwrap(); // x1, stays live across the scope
+        a.enter_scope();
+        let inner = a.temp(&(0..0)).unwrap();
+        assert_ne!(outer, inner);
+        assert_eq!(inner, r(2));
+        a.exit_scope();
+        // inner (x2) is reclaimed; outer (x1) is still live, so the next temp is
+        // x2 again — never x1.
+        assert_eq!(a.temp(&(0..0)).unwrap(), r(2));
+    }
+
+    #[test]
+    fn freeing_an_unissued_or_already_free_register_is_harmless() {
+        let mut a = RegAlloc::new();
+        a.free(r(1)); // never allocated -> no-op
+        a.free(Reg::new(20).unwrap()); // outside the x1..x15 window -> must NOT panic
+        // the allocator is unaffected and still starts at x1
+        assert_eq!(a.temp(&(0..0)).unwrap(), r(1));
     }
 }
