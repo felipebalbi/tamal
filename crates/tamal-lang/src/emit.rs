@@ -7,6 +7,8 @@ use crate::parser::{Module, Stmt};
 use tamal_asm::{Diagnostic, Span};
 
 use crate::consteval::{self, Consts};
+use crate::regalloc::RegAlloc;
+use tamal_abi::isa::Reg;
 
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
@@ -64,6 +66,7 @@ struct Emitter<'a> {
     consts: &'a Consts,
     asm: String,
     lines: Vec<(Span, Span)>,
+    alloc: RegAlloc,
 }
 
 impl<'a> Emitter<'a> {
@@ -72,6 +75,7 @@ impl<'a> Emitter<'a> {
             consts,
             asm: String::new(),
             lines: Vec::new(),
+            alloc: RegAlloc::new(),
         }
     }
 
@@ -100,6 +104,7 @@ impl<'a> Emitter<'a> {
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
             Stmt::Config { .. } => self.lower_config(stmt)?,
             Stmt::Frame { body, span } => self.lower_frame(body, span)?,
+            Stmt::Recv { targets, span } => self.lower_recv(targets, span)?,
         }
         Ok(())
     }
@@ -176,10 +181,12 @@ impl<'a> Emitter<'a> {
 
     fn lower_frame(&mut self, body: &[Stmt], span: &Span) -> Result<(), Vec<Diagnostic>> {
         self.push("\tcs_assert\n", span);
+        self.alloc.enter_scope();
         for stmt in body {
             self.frame_body_stmt(stmt)?;
         }
         self.push("\tcs_deassert\n", span);
+        self.alloc.exit_scope();
         Ok(())
     }
 
@@ -188,11 +195,34 @@ impl<'a> Emitter<'a> {
             Stmt::Send { .. } => self.lower_send(stmt),
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt),
             Stmt::Raw { .. } => self.lower_raw(stmt),
+            Stmt::Recv { targets, span } => self.lower_recv(targets, span),
             other => Err(vec![Diagnostic::error(
                 stmt_span(other),
                 "this statement is not allowed inside a `frame`",
             )]),
         }
+    }
+
+    fn lower_recv(
+        &mut self,
+        targets: &[crate::parser::RecvTarget],
+        span: &Span,
+    ) -> Result<(), Vec<Diagnostic>> {
+        use crate::parser::RecvTarget;
+        for target in targets {
+            match target {
+                RecvTarget::Name(name) => {
+                    let reg = self.alloc.bind(name.clone(), span).map_err(|d| vec![d])?;
+                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span);
+                }
+                RecvTarget::Discard => {
+                    let reg = self.alloc.temp(span).map_err(|d| vec![d])?;
+                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span);
+                    self.alloc.free(reg);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -205,8 +235,14 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Send { span, .. }
         | Stmt::CrcRegion { span, .. }
         | Stmt::Config { span, .. }
-        | Stmt::Frame { span, .. } => span.clone(),
+        | Stmt::Frame { span, .. }
+        | Stmt::Recv { span, .. } => span.clone(),
     }
+}
+
+/// Render a physical register as its `xN` asm operand.
+fn reg_name(reg: Reg) -> String {
+    format!("x{}", reg.bits())
 }
 
 #[cfg(test)]

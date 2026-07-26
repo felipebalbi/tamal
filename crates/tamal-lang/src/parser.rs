@@ -64,6 +64,21 @@ pub enum Stmt {
     /// on every exit (D9). The body reuses the ordinary statement grammar; the
     /// emitter enforces which statements are legal inside a frame.
     Frame { body: Vec<Stmt>, span: Span },
+    /// `recv a, b, _` (names / discards) or `recv N` (N discards) → one
+    /// `get_byte` per target into an allocated register.
+    Recv {
+        targets: Vec<RecvTarget>,
+        span: Span,
+    },
+}
+
+/// One destination of a `recv`: a named binding or a `_` discard.
+#[derive(Debug, Clone)]
+pub enum RecvTarget {
+    /// Bind the received byte to a named register for the enclosing scope.
+    Name(String),
+    /// Read and discard (a scratch register, freed immediately).
+    Discard,
 }
 
 /// A compile-time expression.
@@ -348,6 +363,48 @@ impl<'a> P<'a> {
                 self.end_stmt()?;
                 Ok(Stmt::Frame {
                     body,
+                    span: head.start..end,
+                })
+            }
+            "recv" => {
+                let mut targets = Vec::new();
+                let end;
+                if self.peek() == Tok::Number {
+                    // `recv N` — N discards.
+                    let n = self.expect(Tok::Number, "a byte count")?;
+                    let count = parse_number(self.lexeme(&n.span))
+                        .filter(|&c| c >= 0)
+                        .ok_or_else(|| {
+                            vec![Diagnostic::error(n.span.clone(), "invalid recv count")]
+                        })?;
+                    for _ in 0..count {
+                        targets.push(RecvTarget::Discard);
+                    }
+                    end = n.span.end;
+                } else {
+                    // `recv a, _, b` — a name/discard list.
+                    let mut last;
+                    loop {
+                        let sp = self.expect_ident()?;
+                        last = sp.end;
+                        let name = self.lexeme(&sp).to_string();
+                        targets.push(if name == "_" {
+                            RecvTarget::Discard
+                        } else {
+                            RecvTarget::Name(name)
+                        });
+                        if self.peek() == Tok::Comma {
+                            self.i += 1;
+                            self.skip_newlines();
+                            continue;
+                        }
+                        break;
+                    }
+                    end = last;
+                }
+                self.end_stmt()?;
+                Ok(Stmt::Recv {
+                    targets,
                     span: head.start..end,
                 })
             }
@@ -792,6 +849,31 @@ mod tests {
         match &m.tests[0].stmts[0] {
             Stmt::Frame { body, .. } => assert_eq!(body.len(), 2),
             s => panic!("expected Frame, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recv_names_and_discard() {
+        let m = parse_ok("test t {\n recv data, _, status\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Recv { targets, .. } => {
+                assert!(matches!(targets[0], RecvTarget::Name(ref n) if n == "data"));
+                assert!(matches!(targets[1], RecvTarget::Discard));
+                assert!(matches!(targets[2], RecvTarget::Name(ref n) if n == "status"));
+            }
+            s => panic!("expected Recv, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recv_count() {
+        let m = parse_ok("test t {\n recv 3\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Recv { targets, .. } => {
+                assert_eq!(targets.len(), 3);
+                assert!(targets.iter().all(|t| matches!(t, RecvTarget::Discard)));
+            }
+            s => panic!("expected Recv, got {s:?}"),
         }
     }
 }

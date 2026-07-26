@@ -62,6 +62,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::CrcRegion { .. } => false,
         parser::Stmt::Config { .. } => false,
         parser::Stmt::Frame { .. } => false,
+        parser::Stmt::Recv { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -233,6 +234,42 @@ mod tests {
         assert_eq!(
             asm,
             ".globl _start\n_start:\n\tcs_assert\n\ttar 2\n\tcs_deassert\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn recv_names_allocate_ascending_registers() {
+        let asm = lower_to_asm("test t {\n recv a, b, c\n pass\n}\n").unwrap();
+        assert!(asm.contains("\tget_byte x1\n"), "got:\n{asm}");
+        assert!(asm.contains("\tget_byte x2\n"), "got:\n{asm}");
+        assert!(asm.contains("\tget_byte x3\n"), "got:\n{asm}");
+    }
+
+    #[test]
+    fn recv_discards_reuse_the_same_scratch_register() {
+        // `_` is freed immediately, so three discards all reuse x1.
+        let asm = lower_to_asm("test t {\n recv _, _, _\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn frame_scope_frees_recv_registers_on_exit() {
+        // recv inside a frame binds x1,x2; after the frame a second recv reuses
+        // x1,x2 (the frame scope released them).
+        let asm =
+            lower_to_asm("test t {\n frame {\n  recv a, b\n }\n recv c, d\n pass\n}\n").unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(
+            gets,
+            vec![
+                "\tget_byte x1",
+                "\tget_byte x2",
+                "\tget_byte x1",
+                "\tget_byte x2"
+            ]
         );
     }
 }
