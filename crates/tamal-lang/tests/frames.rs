@@ -84,7 +84,7 @@ fn peripheral_io_read_lowers_to_the_expected_asm() {
     // NB: gensym is a single shared counter, so `wait_state` takes `__wait0`
     // (counter -> 1) and the following `expect crc` takes `__fail1` (not
     // `__fail0`).
-    let asm = tamal_lang::lower_to_asm(PERIPHERAL_TAM).unwrap();
+    let asm = tamal_lang::lower_to_asm(PERIPHERAL_TAM).expect("lower .tam");
     let expected = "\
 .globl _start
 _start:
