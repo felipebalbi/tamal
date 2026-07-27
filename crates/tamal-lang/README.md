@@ -45,7 +45,7 @@ bundled `espi` stdlib (Plan 5), and `--lint` + compile-time error injection
 
 Named variables (`recv`/`wait_state` bindings) are allocated to `x1`..`x15`
 (`x0` is zero, never allocated); there is no spill, so running out of registers
-is a compile error. Registers are freed at the end of their `frame` scope.
+is a compile error. Registers bound inside a `frame` are freed at the end of that scope; top-level bindings live for the whole test.
 
 ## Public API
 

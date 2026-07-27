@@ -51,9 +51,11 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
             ),
         )]);
     }
-    // M2: every test must be able to halt. With no branches in the Plan-1
-    // subset, execution is linear, so a body containing no terminator (`pass`,
-    // `fail`, or a raw `halt`) would run the engine off the end of the program.
+    // M2: every test must reach a terminator (`pass`, `fail`, or a raw `halt`).
+    // `wait_state`/`expect` add branches (a poll loop, a verdict `bnez`), but
+    // none of them is a program terminator, so this scan for at least one
+    // terminator statement still soundly rejects a body that would run the
+    // engine off the end (e.g. a `frame { expect … }` with no following `pass`).
     let test = &module.tests[0];
     let halts = test.stmts.iter().any(|s| match s {
         parser::Stmt::Pass | parser::Stmt::Fail { .. } => true,
