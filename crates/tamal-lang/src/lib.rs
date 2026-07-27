@@ -321,4 +321,40 @@ mod tests {
             err[0].message
         );
     }
+
+    #[test]
+    fn expect_requires_the_crc_keyword() {
+        let err =
+            lower_to_asm("test t {\n frame {\n  expect foo else 0x11\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("expected `crc`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn expect_requires_the_else_keyword() {
+        // `then` is a valid identifier but not `else`, so it reaches the guard.
+        let err =
+            lower_to_asm("test t {\n frame {\n  expect crc then 0x11\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("`else <byte>`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn config_inside_a_frame_is_rejected() {
+        let err = lower_to_asm(
+            "test t {\n frame {\n  config controller, x1, sck20, alert_pin\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
 }

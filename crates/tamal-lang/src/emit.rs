@@ -226,6 +226,11 @@ impl<'a> Emitter<'a> {
         for stmt in body {
             self.frame_body_stmt(stmt, &mut deferred)?;
         }
+        // D9 (load-bearing): CS deasserts UNCONDITIONALLY, before any verdict
+        // branch. Each `expect` already latched its residue inside the frame;
+        // we deassert here, THEN emit the deferred `bnez` verdict(s), and hoist
+        // each fail-`halt` to a trailer so the `pass` path falls through. Do not
+        // reorder cs_deassert after the bnez — that would strand CS# on a fail.
         self.push("\tcs_deassert\n", span);
         for d in &deferred {
             self.push(
