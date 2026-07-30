@@ -4,7 +4,7 @@
 //! wall-clock, no process environment, no randomness, so identical source folds
 //! to identical bytes.
 
-use crate::parser::{Arg, BinOp, Expr};
+use crate::parser::{Arg, BinOp, Expr, Param, Type};
 use std::collections::HashMap;
 use tamal_asm::{Diagnostic, Span};
 
@@ -64,6 +64,25 @@ impl Env {
     /// one, else a module `const`.
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.locals.get(name).or_else(|| self.consts.get(name))
+    }
+
+    /// This environment with no parameter bindings — the module scope.
+    ///
+    /// A parameter default is written at the callee's *definition* site, so it
+    /// is evaluated here rather than in the caller's scope: a default must
+    /// never be able to capture a caller local that happens to share its name.
+    pub fn module_scope(&self) -> Env {
+        let mut e = self.clone();
+        e.locals.clear();
+        e
+    }
+
+    /// This environment with `bindings` as its parameter scope, replacing any
+    /// locals. The module `const`s survive; the caller's locals do not.
+    pub fn child_for_call_values(&self, bindings: HashMap<String, Value>) -> Env {
+        let mut e = self.clone();
+        e.locals = bindings;
+        e
     }
 }
 
@@ -170,6 +189,119 @@ pub fn eval_byte(e: &Expr, env: &Env) -> Result<u8, Diagnostic> {
     let n = eval_int(e, env)?;
     u8::try_from(n)
         .map_err(|_| Diagnostic::error(e.span(), format!("byte value {n} is out of range 0..=255")))
+}
+
+/// Bind a call's arguments to a callable's parameters.
+///
+/// Positional arguments bind parameters in declaration order; named
+/// (`name = value`) arguments bind by name and must follow every positional
+/// one; each parameter still unbound takes its default, or is an error if it
+/// has none. Every bound value is checked against its declared type.
+///
+/// Shared by `fn` (evaluated here) and `proc` (expanded by the emitter) so the
+/// two callables can never drift apart. Errors are produced by walking `params`
+/// and `args` **in order**, so the same source always yields the same first
+/// diagnostic — the determinism rule applies to error output too.
+pub fn bind_args(
+    callee: &str,
+    params: &[Param],
+    args: &[Arg],
+    env: &Env,
+    call_span: &Span,
+) -> Result<HashMap<String, Value>, Diagnostic> {
+    let mut bound: HashMap<String, Value> = HashMap::new();
+    let mut seen_named = false;
+    for (i, arg) in args.iter().enumerate() {
+        let p = match &arg.name {
+            None => {
+                if seen_named {
+                    return Err(Diagnostic::error(
+                        arg.span.clone(),
+                        "a positional argument cannot follow a named argument",
+                    )
+                    .with_help("pass the positional arguments first, or name them all"));
+                }
+                params.get(i).ok_or_else(|| {
+                    Diagnostic::error(
+                        arg.span.clone(),
+                        format!(
+                            "`{callee}` takes {} argument(s), got {}",
+                            params.len(),
+                            args.len()
+                        ),
+                    )
+                })?
+            }
+            Some(name) => {
+                seen_named = true;
+                params.iter().find(|p| &p.name == name).ok_or_else(|| {
+                    Diagnostic::error(
+                        arg.span.clone(),
+                        format!("`{callee}` has no parameter `{name}`"),
+                    )
+                })?
+            }
+        };
+        if bound.contains_key(&p.name) {
+            return Err(Diagnostic::error(
+                arg.span.clone(),
+                format!("argument `{}` of `{callee}` is bound twice", p.name),
+            ));
+        }
+        let v = eval(&arg.value, env)?;
+        check_type(
+            &v,
+            p.ty,
+            &arg.span,
+            &format!("argument `{}` of `{callee}`", p.name),
+        )?;
+        bound.insert(p.name.clone(), v);
+    }
+    // Fill the rest from defaults, in declaration order so that the first
+    // missing parameter reported is stable across runs.
+    for p in params {
+        if bound.contains_key(&p.name) {
+            continue;
+        }
+        let Some(default) = &p.default else {
+            return Err(Diagnostic::error(
+                call_span.clone(),
+                format!("`{callee}` is missing a value for parameter `{}`", p.name),
+            ));
+        };
+        let v = eval(default, &env.module_scope())?;
+        check_type(
+            &v,
+            p.ty,
+            &p.span,
+            &format!("the default for `{}` of `{callee}`", p.name),
+        )?;
+        bound.insert(p.name.clone(), v);
+    }
+    Ok(bound)
+}
+
+/// Check a value against a declared type; `what` names the position for the
+/// diagnostic. A `byte` additionally range-checks `0..=255` — out of range is
+/// an error, never a silent wrap.
+fn check_type(v: &Value, ty: Type, span: &Span, what: &str) -> Result<(), Diagnostic> {
+    let ok = match (ty, v) {
+        (Type::Bytes, Value::Bytes(_)) => true,
+        (Type::Int, Value::Int(_)) => true,
+        (Type::Byte, Value::Int(n)) => (0..=255).contains(n),
+        _ => false,
+    };
+    if ok {
+        return Ok(());
+    }
+    let found = match v {
+        Value::Int(n) => format!("the integer {n}"),
+        Value::Bytes(b) => format!("{} byte(s)", b.len()),
+    };
+    Err(Diagnostic::error(
+        span.clone(),
+        format!("{what} expects `{}`, found {found}", ty.name()),
+    ))
 }
 
 #[cfg(test)]
@@ -336,5 +468,169 @@ mod tests {
                 .message
                 .contains("does not take named arguments")
         );
+    }
+
+    use crate::parser::{Param, Type};
+
+    fn param(name: &str, ty: Type, default: Option<Expr>) -> Param {
+        Param {
+            name: name.into(),
+            ty,
+            default,
+            span: 0..0,
+        }
+    }
+
+    fn pos(value: Expr) -> Arg {
+        Arg {
+            name: None,
+            value,
+            span: 0..0,
+        }
+    }
+
+    fn named(name: &str, value: Expr) -> Arg {
+        Arg {
+            name: Some(name.into()),
+            value,
+            span: 0..0,
+        }
+    }
+
+    /// `(pkt: bytes, ndata: int, err: byte = 0x11)` — the shape of the library
+    /// `command` proc, which is what this binder exists to serve.
+    fn command_params() -> Vec<Param> {
+        vec![
+            param("pkt", Type::Bytes, None),
+            param("ndata", Type::Int, None),
+            param("err", Type::Byte, Some(int(0x11))),
+        ]
+    }
+
+    fn bind_ok(args: Vec<Arg>) -> std::collections::HashMap<String, Value> {
+        bind_args("command", &command_params(), &args, &Env::new(), &(0..0)).unwrap()
+    }
+
+    fn bind_err(args: Vec<Arg>) -> String {
+        bind_args("command", &command_params(), &args, &Env::new(), &(0..0))
+            .unwrap_err()
+            .message
+    }
+
+    #[test]
+    fn binds_positional_arguments_in_order() {
+        let b = bind_ok(vec![pos(bytes(&[0x44])), pos(int(1))]);
+        assert_eq!(b["pkt"], Value::Bytes(vec![0x44]));
+        assert_eq!(b["ndata"], Value::Int(1));
+    }
+
+    #[test]
+    fn binds_named_arguments_by_name() {
+        let b = bind_ok(vec![named("ndata", int(2)), named("pkt", bytes(&[0x06]))]);
+        assert_eq!(b["pkt"], Value::Bytes(vec![0x06]));
+        assert_eq!(b["ndata"], Value::Int(2));
+    }
+
+    #[test]
+    fn unbound_parameters_take_their_default() {
+        let b = bind_ok(vec![pos(bytes(&[0x44])), pos(int(0))]);
+        assert_eq!(b["err"], Value::Int(0x11));
+    }
+
+    #[test]
+    fn an_explicit_argument_overrides_a_default() {
+        let b = bind_ok(vec![
+            pos(bytes(&[0x44])),
+            pos(int(0)),
+            named("err", int(0x22)),
+        ]);
+        assert_eq!(b["err"], Value::Int(0x22));
+    }
+
+    #[test]
+    fn a_positional_argument_may_not_follow_a_named_one() {
+        let msg = bind_err(vec![named("pkt", bytes(&[0x44])), pos(int(0))]);
+        assert!(msg.contains("cannot follow a named argument"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_unknown_duplicate_and_surplus_arguments() {
+        let unknown = bind_err(vec![named("nope", int(0))]);
+        assert!(unknown.contains("no parameter `nope`"), "got: {unknown}");
+
+        let dup = bind_err(vec![pos(bytes(&[0x44])), named("pkt", bytes(&[0x06]))]);
+        assert!(dup.contains("bound twice"), "got: {dup}");
+
+        let surplus = bind_err(vec![
+            pos(bytes(&[0x44])),
+            pos(int(0)),
+            pos(int(0x11)),
+            pos(int(9)),
+        ]);
+        assert!(surplus.contains("takes 3 argument"), "got: {surplus}");
+    }
+
+    #[test]
+    fn a_missing_required_parameter_is_reported_in_declaration_order() {
+        // Neither `pkt` nor `ndata` is bound; the FIRST declared one is named,
+        // deterministically (params are a Vec, never a HashMap).
+        let msg = bind_err(vec![]);
+        assert!(msg.contains("`pkt`"), "got: {msg}");
+    }
+
+    #[test]
+    fn arguments_are_checked_against_their_declared_type() {
+        let wrong = bind_err(vec![pos(int(5)), pos(int(0))]); // pkt: bytes
+        assert!(wrong.contains("expects `bytes`"), "got: {wrong}");
+
+        let too_big = bind_err(vec![
+            pos(bytes(&[0x44])),
+            pos(int(0)),
+            named("err", int(256)),
+        ]);
+        assert!(too_big.contains("expects `byte`"), "got: {too_big}");
+    }
+
+    #[test]
+    fn a_default_is_evaluated_in_module_scope_not_the_callers() {
+        // The caller has a local `K`; the callee's default refers to `K` too.
+        // Lexical scoping means the default must NOT see the caller's binding —
+        // here there is no module `K`, so it is an "unknown name" error rather
+        // than silently picking up 0x99.
+        let mut caller = Env::new();
+        caller.insert_const("BASE".into(), Value::Int(1));
+        let caller = caller
+            .child_for_call_values([("K".to_string(), Value::Int(0x99))].into_iter().collect());
+        let params = vec![param(
+            "err",
+            Type::Byte,
+            Some(Expr::Name {
+                name: "K".into(),
+                span: 0..0,
+            }),
+        )];
+        let err = bind_args("p", &params, &[], &caller, &(0..0)).unwrap_err();
+        assert!(
+            err.message.contains("unknown name `K`"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_parameter_shadows_a_module_const_of_the_same_name() {
+        // `Env::get` is locals-first: inside a call body, a parameter named like
+        // a module `const` wins. Reversing that lookup order would silently make
+        // every same-named parameter invisible.
+        let mut module = Env::new();
+        module.insert_const("N".into(), Value::Int(1));
+        let inside_call =
+            module.child_for_call_values([("N".to_string(), Value::Int(2))].into_iter().collect());
+        let n = Expr::Name {
+            name: "N".into(),
+            span: 0..0,
+        };
+        assert_eq!(eval(&n, &module).unwrap(), Value::Int(1));
+        assert_eq!(eval(&n, &inside_call).unwrap(), Value::Int(2));
     }
 }

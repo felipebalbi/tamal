@@ -100,6 +100,43 @@ pub struct Arg {
     pub span: Span,
 }
 
+/// A compile-time parameter or return type. (`bool` and `reg` arrive with the
+/// conditionals in Plan 4b.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    /// One wire byte, `0..=255`.
+    Byte,
+    /// A compile-time integer.
+    Int,
+    /// A compile-time byte string (the packet type).
+    Bytes,
+}
+
+impl Type {
+    /// The spelling used in source, and in diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Type::Byte => "byte",
+            Type::Int => "int",
+            Type::Bytes => "bytes",
+        }
+    }
+}
+
+/// One declared parameter of a `fn`/`proc`: `name: type`, with an optional
+/// default (`err: byte = 0x11`).
+#[derive(Debug, Clone)]
+pub struct Param {
+    /// The parameter name, bound in the callee's scope.
+    pub name: String,
+    /// Its declared type; every bound value is checked against it.
+    pub ty: Type,
+    /// The default used when a call does not bind this parameter.
+    pub default: Option<Expr>,
+    /// The span of the declaration, for diagnostics.
+    pub span: Span,
+}
+
 /// A compile-time expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
