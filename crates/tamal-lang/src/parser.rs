@@ -88,6 +88,18 @@ pub enum RecvTarget {
     Discard,
 }
 
+/// One argument at a call site: positional, or `name = value` (named).
+#[derive(Debug, Clone)]
+pub struct Arg {
+    /// `Some(name)` for a named argument (`command(ndata = 0)`), `None` when
+    /// the argument is positional.
+    pub name: Option<String>,
+    /// The argument's value expression.
+    pub value: Expr,
+    /// The span covering the whole argument (the name too, when named).
+    pub span: Span,
+}
+
 /// A compile-time expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -97,10 +109,11 @@ pub enum Expr {
     Name { name: String, span: Span },
     /// A byte-string literal `[e, e, …]` (each element is a byte).
     Bytes { elems: Vec<Expr>, span: Span },
-    /// A builtin call: `crc8(e)`, `len(e)`, `lo(e)`, `hi(e)`.
+    /// A call: a builtin (`crc8(e)`, `len`, `lo`, `hi`) or a user `fn`, with
+    /// positional and/or named arguments.
     Call {
         func: String,
-        arg: Box<Expr>,
+        args: Vec<Arg>,
         span: Span,
     },
     /// A binary operation (`^` on ints, `++` on bytes).
@@ -178,6 +191,14 @@ struct P<'a> {
 impl<'a> P<'a> {
     fn peek(&self) -> Tok {
         self.toks.get(self.i).map(|t| t.kind).unwrap_or(Tok::Eof)
+    }
+
+    /// The token `n` positions ahead (`peek_at(0) == peek()`).
+    fn peek_at(&self, n: usize) -> Tok {
+        self.toks
+            .get(self.i + n)
+            .map(|t| t.kind)
+            .unwrap_or(Tok::Eof)
     }
 
     fn span(&self) -> Span {
@@ -494,6 +515,51 @@ impl<'a> P<'a> {
         self.parse_concat()
     }
 
+    /// Parse a call's argument list, up to but not including the closing `)`
+    /// (the `(` is already consumed). Newlines inside the parens are not
+    /// statement terminators and a trailing comma before `)` is allowed.
+    fn parse_args(&mut self) -> Result<Vec<Arg>, Vec<Diagnostic>> {
+        let mut args = Vec::new();
+        self.skip_newlines();
+        while self.peek() != Tok::RParen {
+            args.push(self.parse_arg()?);
+            self.skip_newlines();
+            if self.peek() == Tok::Comma {
+                self.i += 1;
+                self.skip_newlines();
+            } else {
+                break;
+            }
+        }
+        Ok(args)
+    }
+
+    /// One argument: `name = expr` when an identifier is directly followed by
+    /// `=`, else a positional expression.
+    fn parse_arg(&mut self) -> Result<Arg, Vec<Diagnostic>> {
+        if self.peek() == Tok::Ident && self.peek_at(1) == Tok::Eq {
+            let sp = self.span();
+            self.i += 2; // the name and the `=`
+            let name = self.lexeme(&sp).to_string();
+            self.skip_newlines();
+            let value = self.parse_expr()?;
+            let span = sp.start..value.span().end;
+            Ok(Arg {
+                name: Some(name),
+                value,
+                span,
+            })
+        } else {
+            let value = self.parse_expr()?;
+            let span = value.span();
+            Ok(Arg {
+                name: None,
+                value,
+                span,
+            })
+        }
+    }
+
     fn parse_concat(&mut self) -> Result<Expr, Vec<Diagnostic>> {
         let mut lhs = self.parse_xor()?;
         while self.peek() == Tok::PlusPlus {
@@ -541,13 +607,11 @@ impl<'a> P<'a> {
                 let name = self.lexeme(&sp).to_string();
                 if self.peek() == Tok::LParen {
                     self.i += 1;
-                    self.skip_newlines();
-                    let arg = self.parse_expr()?;
-                    self.skip_newlines();
+                    let args = self.parse_args()?;
                     let close = self.expect(Tok::RParen, "`)`")?;
                     Ok(Expr::Call {
                         func: name,
-                        arg: Box::new(arg),
+                        args,
                         span: sp.start..close.span.end,
                     })
                 } else {
@@ -727,6 +791,48 @@ mod tests {
     fn parses_call() {
         match parse_expr_ok("crc8(pkt)") {
             Expr::Call { func, .. } => assert_eq!(func, "crc8"),
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_call_with_several_positional_args() {
+        match parse_expr_ok("iord_hdr(0x44, 0x0064)") {
+            Expr::Call { func, args, .. } => {
+                assert_eq!(func, "iord_hdr");
+                assert_eq!(args.len(), 2);
+                assert!(args.iter().all(|a| a.name.is_none()));
+            }
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_named_arguments() {
+        match parse_expr_ok("command(pkt = [0x44], ndata = 0)") {
+            Expr::Call { args, .. } => {
+                assert_eq!(args[0].name.as_deref(), Some("pkt"));
+                assert_eq!(args[1].name.as_deref(), Some("ndata"));
+            }
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiline_call_with_trailing_comma() {
+        match parse_expr_ok("command(\n  pkt = [0x44],\n  ndata = 0,\n)") {
+            Expr::Call { args, .. } => assert_eq!(args.len(), 2),
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_zero_argument_call() {
+        match parse_expr_ok("controller()") {
+            Expr::Call { func, args, .. } => {
+                assert_eq!(func, "controller");
+                assert!(args.is_empty());
+            }
             e => panic!("expected Call, got {e:?}"),
         }
     }

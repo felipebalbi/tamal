@@ -4,7 +4,7 @@
 //! wall-clock, no process environment, no randomness, so identical source folds
 //! to identical bytes.
 
-use crate::parser::{BinOp, Expr};
+use crate::parser::{Arg, BinOp, Expr};
 use std::collections::HashMap;
 use tamal_asm::{Diagnostic, Span};
 
@@ -98,23 +98,49 @@ pub fn eval(e: &Expr, env: &Env) -> Result<Value, Diagnostic> {
             rhs,
             ..
         } => Ok(Value::Int(eval_int(lhs, env)? ^ eval_int(rhs, env)?)),
-        Expr::Call { func, arg, span } => eval_call(func, arg, span, env),
+        Expr::Call { func, args, span } => eval_call(func, args, span, env),
     }
 }
 
-fn eval_call(func: &str, arg: &Expr, span: &Span, env: &Env) -> Result<Value, Diagnostic> {
+fn eval_call(func: &str, args: &[Arg], span: &Span, env: &Env) -> Result<Value, Diagnostic> {
     match func {
-        "crc8" => Ok(Value::Int(
-            tamal_abi::crc8::crc8(&eval_bytes(arg, env)?) as i64
+        "crc8" => Ok(Value::Int(tamal_abi::crc8::crc8(&eval_bytes(
+            builtin_arg(func, args, span)?,
+            env,
+        )?) as i64)),
+        "len" => Ok(Value::Int(
+            eval_bytes(builtin_arg(func, args, span)?, env)?.len() as i64,
         )),
-        "len" => Ok(Value::Int(eval_bytes(arg, env)?.len() as i64)),
-        "lo" => Ok(Value::Int(eval_int(arg, env)? & 0xff)),
-        "hi" => Ok(Value::Int((eval_int(arg, env)? >> 8) & 0xff)),
+        "lo" => Ok(Value::Int(
+            eval_int(builtin_arg(func, args, span)?, env)? & 0xff,
+        )),
+        "hi" => Ok(Value::Int(
+            (eval_int(builtin_arg(func, args, span)?, env)? >> 8) & 0xff,
+        )),
         _ => Err(
             Diagnostic::error(span.clone(), format!("unknown builtin `{func}`"))
                 .with_help("the builtins are crc8, len, lo, hi"),
         ),
     }
+}
+
+/// The single positional argument of a builtin call. The builtins take exactly
+/// one positional argument; anything else is a diagnostic (the arity is part of
+/// their contract, not something a caller may vary).
+fn builtin_arg<'a>(func: &str, args: &'a [Arg], span: &Span) -> Result<&'a Expr, Diagnostic> {
+    if args.len() != 1 {
+        return Err(Diagnostic::error(
+            span.clone(),
+            format!("`{func}` takes 1 argument, got {}", args.len()),
+        ));
+    }
+    if let Some(name) = &args[0].name {
+        return Err(Diagnostic::error(
+            args[0].span.clone(),
+            format!("`{func}` does not take named arguments (found `{name} = …`)"),
+        ));
+    }
+    Ok(&args[0].value)
 }
 
 /// Evaluate `e` to an integer.
@@ -165,7 +191,11 @@ mod tests {
     fn call(func: &str, arg: Expr) -> Expr {
         Expr::Call {
             func: func.into(),
-            arg: Box::new(arg),
+            args: vec![Arg {
+                name: None,
+                value: arg,
+                span: 0..0,
+            }],
             span: 0..0,
         }
     }
@@ -251,5 +281,60 @@ mod tests {
     fn type_mismatch_and_unknown_builtin_error() {
         assert!(eval(&call("crc8", int(5)), &Env::new()).is_err()); // crc8 needs bytes
         assert!(eval(&call("nope", int(5)), &Env::new()).is_err()); // unknown builtin
+    }
+
+    #[test]
+    fn builtins_require_exactly_one_positional_argument() {
+        // zero args
+        let none = Expr::Call {
+            func: "crc8".into(),
+            args: vec![],
+            span: 0..0,
+        };
+        assert!(
+            eval(&none, &Env::new())
+                .unwrap_err()
+                .message
+                .contains("takes 1 argument")
+        );
+        // two args
+        let two = Expr::Call {
+            func: "crc8".into(),
+            args: vec![
+                Arg {
+                    name: None,
+                    value: bytes(&[1]),
+                    span: 0..0,
+                },
+                Arg {
+                    name: None,
+                    value: bytes(&[2]),
+                    span: 0..0,
+                },
+            ],
+            span: 0..0,
+        };
+        assert!(
+            eval(&two, &Env::new())
+                .unwrap_err()
+                .message
+                .contains("takes 1 argument")
+        );
+        // a named argument
+        let named = Expr::Call {
+            func: "crc8".into(),
+            args: vec![Arg {
+                name: Some("b".into()),
+                value: bytes(&[1]),
+                span: 0..0,
+            }],
+            span: 0..0,
+        };
+        assert!(
+            eval(&named, &Env::new())
+                .unwrap_err()
+                .message
+                .contains("does not take named arguments")
+        );
     }
 }
