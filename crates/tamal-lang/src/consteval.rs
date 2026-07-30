@@ -104,10 +104,10 @@ pub fn eval(e: &Expr, env: &Env) -> Result<Value, Diagnostic> {
 
 fn eval_call(func: &str, args: &[Arg], span: &Span, env: &Env) -> Result<Value, Diagnostic> {
     match func {
-        "crc8" => Ok(Value::Int(tamal_abi::crc8::crc8(&eval_bytes(
-            builtin_arg(func, args, span)?,
-            env,
-        )?) as i64)),
+        "crc8" => {
+            let b = eval_bytes(builtin_arg(func, args, span)?, env)?;
+            Ok(Value::Int(tamal_abi::crc8::crc8(&b) as i64))
+        }
         "len" => Ok(Value::Int(
             eval_bytes(builtin_arg(func, args, span)?, env)?.len() as i64,
         )),
@@ -127,10 +127,10 @@ fn eval_call(func: &str, args: &[Arg], span: &Span, env: &Env) -> Result<Value, 
 /// The single positional argument of a builtin call. The builtins take exactly
 /// one positional argument; anything else is a diagnostic (the arity is part of
 /// their contract, not something a caller may vary).
-fn builtin_arg<'a>(func: &str, args: &'a [Arg], span: &Span) -> Result<&'a Expr, Diagnostic> {
+fn builtin_arg<'a>(func: &str, args: &'a [Arg], call_span: &Span) -> Result<&'a Expr, Diagnostic> {
     if args.len() != 1 {
         return Err(Diagnostic::error(
-            span.clone(),
+            call_span.clone(),
             format!("`{func}` takes 1 argument, got {}", args.len()),
         ));
     }

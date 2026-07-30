@@ -515,51 +515,6 @@ impl<'a> P<'a> {
         self.parse_concat()
     }
 
-    /// Parse a call's argument list, up to but not including the closing `)`
-    /// (the `(` is already consumed). Newlines inside the parens are not
-    /// statement terminators and a trailing comma before `)` is allowed.
-    fn parse_args(&mut self) -> Result<Vec<Arg>, Vec<Diagnostic>> {
-        let mut args = Vec::new();
-        self.skip_newlines();
-        while self.peek() != Tok::RParen {
-            args.push(self.parse_arg()?);
-            self.skip_newlines();
-            if self.peek() == Tok::Comma {
-                self.i += 1;
-                self.skip_newlines();
-            } else {
-                break;
-            }
-        }
-        Ok(args)
-    }
-
-    /// One argument: `name = expr` when an identifier is directly followed by
-    /// `=`, else a positional expression.
-    fn parse_arg(&mut self) -> Result<Arg, Vec<Diagnostic>> {
-        if self.peek() == Tok::Ident && self.peek_at(1) == Tok::Eq {
-            let sp = self.span();
-            self.i += 2; // the name and the `=`
-            let name = self.lexeme(&sp).to_string();
-            self.skip_newlines();
-            let value = self.parse_expr()?;
-            let span = sp.start..value.span().end;
-            Ok(Arg {
-                name: Some(name),
-                value,
-                span,
-            })
-        } else {
-            let value = self.parse_expr()?;
-            let span = value.span();
-            Ok(Arg {
-                name: None,
-                value,
-                span,
-            })
-        }
-    }
-
     fn parse_concat(&mut self) -> Result<Expr, Vec<Diagnostic>> {
         let mut lhs = self.parse_xor()?;
         while self.peek() == Tok::PlusPlus {
@@ -653,6 +608,51 @@ impl<'a> P<'a> {
                 self.span(),
                 "expected an expression",
             )]),
+        }
+    }
+
+    /// Parse a call's argument list, up to but not including the closing `)`
+    /// (the `(` is already consumed). Newlines *between arguments* are not
+    /// statement terminators and a trailing comma before `)` is allowed.
+    fn parse_args(&mut self) -> Result<Vec<Arg>, Vec<Diagnostic>> {
+        let mut args = Vec::new();
+        self.skip_newlines();
+        while self.peek() != Tok::RParen {
+            args.push(self.parse_arg()?);
+            self.skip_newlines();
+            if self.peek() == Tok::Comma {
+                self.i += 1;
+                self.skip_newlines();
+            } else {
+                break;
+            }
+        }
+        Ok(args)
+    }
+
+    /// One argument: `name = expr` when an identifier is directly followed by
+    /// `=`, else a positional expression.
+    fn parse_arg(&mut self) -> Result<Arg, Vec<Diagnostic>> {
+        if self.peek() == Tok::Ident && self.peek_at(1) == Tok::Eq {
+            let sp = self.span();
+            let name = self.lexeme(&sp).to_string();
+            self.i += 2; // the name and the `=`
+            self.skip_newlines();
+            let value = self.parse_expr()?;
+            let span = sp.start..value.span().end;
+            Ok(Arg {
+                name: Some(name),
+                value,
+                span,
+            })
+        } else {
+            let value = self.parse_expr()?;
+            let span = value.span();
+            Ok(Arg {
+                name: None,
+                value,
+                span,
+            })
         }
     }
 
@@ -811,8 +811,40 @@ mod tests {
     fn parses_named_arguments() {
         match parse_expr_ok("command(pkt = [0x44], ndata = 0)") {
             Expr::Call { args, .. } => {
+                assert_eq!(args.len(), 2);
                 assert_eq!(args[0].name.as_deref(), Some("pkt"));
+                assert!(matches!(&args[0].value, Expr::Bytes { elems, .. } if elems.len() == 1));
                 assert_eq!(args[1].name.as_deref(), Some("ndata"));
+                assert!(matches!(args[1].value, Expr::Int { value: 0, .. }));
+            }
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mixed_positional_and_named_arguments() {
+        // The shape `bind_args` will consume: positional first, then named.
+        match parse_expr_ok("command([0x44], ndata = 0)") {
+            Expr::Call { args, .. } => {
+                assert_eq!(args.len(), 2);
+                assert!(args[0].name.is_none());
+                assert!(matches!(&args[0].value, Expr::Bytes { elems, .. } if elems.len() == 1));
+                assert_eq!(args[1].name.as_deref(), Some("ndata"));
+                assert!(matches!(args[1].value, Expr::Int { value: 0, .. }));
+            }
+            e => panic!("expected Call, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn an_argument_span_covers_its_name_and_value() {
+        // `builtin_arg` anchors its named-argument diagnostic on this span, and
+        // Task 3's binder will too — so the extent is load-bearing.
+        let src = "command(pkt = [0x44], 0x64)";
+        match parse_expr_ok(src) {
+            Expr::Call { args, .. } => {
+                assert_eq!(&src[args[0].span.clone()], "pkt = [0x44]");
+                assert_eq!(&src[args[1].span.clone()], "0x64");
             }
             e => panic!("expected Call, got {e:?}"),
         }
