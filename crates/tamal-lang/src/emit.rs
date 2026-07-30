@@ -6,7 +6,7 @@
 use crate::parser::{Module, Stmt};
 use tamal_asm::{Diagnostic, Span};
 
-use crate::consteval::{self, Consts};
+use crate::consteval::{self, Env};
 use crate::regalloc::RegAlloc;
 use tamal_abi::isa::Reg;
 
@@ -52,8 +52,8 @@ impl Lowering {
 
 /// Lower a `Module` (exactly one test, enforced by the driver) to tamal-asm
 /// text plus its source map.
-pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic>> {
-    let mut e = Emitter::new(consts);
+pub fn emit(module: &Module, env: Env) -> Result<Lowering, Vec<Diagnostic>> {
+    let mut e = Emitter::new(env);
     for test in &module.tests {
         e.push(".globl _start\n", &test.name_span);
         e.push("_start:\n", &test.name_span);
@@ -66,8 +66,8 @@ pub fn emit(module: &Module, consts: &Consts) -> Result<Lowering, Vec<Diagnostic
 }
 
 /// The lowering state: the growing asm text + source map.
-struct Emitter<'a> {
-    consts: &'a Consts,
+struct Emitter {
+    env: Env,
     asm: String,
     lines: Vec<(Span, Span)>,
     alloc: RegAlloc,
@@ -85,10 +85,10 @@ struct Deferred {
     span: Span,
 }
 
-impl<'a> Emitter<'a> {
-    fn new(consts: &'a Consts) -> Self {
+impl Emitter {
+    fn new(env: Env) -> Self {
         Emitter {
-            consts,
+            env,
             asm: String::new(),
             lines: Vec::new(),
             alloc: RegAlloc::new(),
@@ -176,7 +176,7 @@ impl<'a> Emitter<'a> {
         else {
             unreachable!("lower_send called with non-Send statement")
         };
-        let mut bs = consteval::eval_bytes(bytes, self.consts).map_err(|d| vec![d])?;
+        let mut bs = consteval::eval_bytes(bytes, &self.env).map_err(|d| vec![d])?;
         if *append_crc {
             bs.push(tamal_abi::crc8::crc8(&bs));
         }
@@ -192,7 +192,7 @@ impl<'a> Emitter<'a> {
         };
         let mut total = Vec::new();
         for e in sends {
-            total.extend(consteval::eval_bytes(e, self.consts).map_err(|d| vec![d])?);
+            total.extend(consteval::eval_bytes(e, &self.env).map_err(|d| vec![d])?);
         }
         total.push(tamal_abi::crc8::crc8(&total));
         for b in total {
@@ -258,7 +258,7 @@ impl<'a> Emitter<'a> {
             Stmt::Recv { targets, span } => self.lower_recv(targets, span),
             Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span),
             Stmt::Expect { else_code, span } => {
-                let code = consteval::eval_byte(else_code, self.consts).map_err(|d| vec![d])?;
+                let code = consteval::eval_byte(else_code, &self.env).map_err(|d| vec![d])?;
                 // Consume the trailing CRC byte (drives the RX residue to 0).
                 let discard = self.alloc.temp(span).map_err(|d| vec![d])?;
                 self.push(&format!("\tget_byte {}\n", reg_name(discard)), span);
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn emits_entry_and_pass() {
-        let asm = emit(&one(vec![Stmt::Pass]), &Consts::new()).unwrap().asm;
+        let asm = emit(&one(vec![Stmt::Pass]), Env::new()).unwrap().asm;
         assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
     }
 
@@ -388,7 +388,7 @@ mod tests {
                 code: "0x11".into(),
                 span: 0..1,
             }]),
-            &Consts::new(),
+            Env::new(),
         )
         .unwrap()
         .asm;
@@ -411,7 +411,7 @@ mod tests {
                 },
                 Stmt::Pass,
             ]),
-            &Consts::new(),
+            Env::new(),
         )
         .unwrap()
         .asm;
@@ -440,7 +440,7 @@ mod tests {
                 ],
             }],
         };
-        let low = emit(&m, &Consts::new()).unwrap();
+        let low = emit(&m, Env::new()).unwrap();
         let idx = low.asm.find("bogus").expect("emitted the raw mnemonic");
         let d = Diagnostic::error(idx..idx + 5, "unknown instruction");
         let remapped = low.remap(vec![d]);

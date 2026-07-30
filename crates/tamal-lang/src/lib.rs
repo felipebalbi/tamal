@@ -26,16 +26,16 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let module = parser::parse(source, &toks)?;
     // Resolve `const`s in source order; each may reference earlier ones.
     // Duplicate names and references to undefined names are hard errors.
-    let mut consts = consteval::Consts::new();
+    let mut env = consteval::Env::new();
     for c in &module.consts {
-        if consts.contains_key(&c.name) {
+        if env.has_const(&c.name) {
             return Err(vec![Diagnostic::error(
                 c.name_span.clone(),
                 format!("duplicate const `{}`", c.name),
             )]);
         }
-        let v = consteval::eval(&c.value, &consts).map_err(|d| vec![d])?;
-        consts.insert(c.name.clone(), v);
+        let v = consteval::eval(&c.value, &env).map_err(|d| vec![d])?;
+        env.insert_const(c.name.clone(), v);
     }
     if module.tests.len() != 1 {
         let span = module
@@ -77,7 +77,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
             .with_help("a test must reach `pass`, `fail`, or a `halt` instruction"),
         ]);
     }
-    emit::emit(&module, &consts)
+    emit::emit(&module, env)
 }
 
 /// Lower to just the tamal-asm text (the `--emit asm` artifact).
