@@ -30,7 +30,7 @@ pub struct RegAlloc {
     /// The scope stack; index 0 is the root (test) scope.
     scopes: Vec<Scope>,
     /// Every live name binding → its physical register.
-    env: HashMap<String, Reg>,
+    bindings: HashMap<String, Reg>,
 }
 
 impl RegAlloc {
@@ -39,7 +39,7 @@ impl RegAlloc {
         RegAlloc {
             busy: [false; NUM_REGS],
             scopes: vec![Scope::default()],
-            env: HashMap::new(),
+            bindings: HashMap::new(),
         }
     }
 
@@ -61,7 +61,7 @@ impl RegAlloc {
                 self.busy[reg.bits() as usize] = false;
             }
             for name in scope.names {
-                self.env.remove(&name);
+                self.bindings.remove(&name);
             }
         }
     }
@@ -97,7 +97,7 @@ impl RegAlloc {
     /// Allocate a register and bind `name` to it for the current scope.
     pub fn bind(&mut self, name: String, span: &Span) -> Result<Reg, Diagnostic> {
         let reg = self.alloc(span)?;
-        self.env.insert(name.clone(), reg);
+        self.bindings.insert(name.clone(), reg);
         self.scopes
             .last_mut()
             .expect("there is always a root scope")
@@ -108,7 +108,7 @@ impl RegAlloc {
 
     /// The register a name is currently bound to, if any.
     pub fn lookup(&self, name: &str) -> Option<Reg> {
-        self.env.get(name).copied()
+        self.bindings.get(name).copied()
     }
 
     /// Release a register early (before its scope ends). Intended for anonymous

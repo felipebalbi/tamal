@@ -67,6 +67,7 @@ pub fn emit(module: &Module, env: Env) -> Result<Lowering, Vec<Diagnostic>> {
 
 /// The lowering state: the growing asm text + source map.
 struct Emitter {
+    /// Owned, not borrowed: a `proc` expansion swaps this around the callee body.
     env: Env,
     asm: String,
     lines: Vec<(Span, Span)>,

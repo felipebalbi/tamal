@@ -1,7 +1,8 @@
 //! Compile-time evaluation: fold a `parser::Expr` to a `Value` (an integer or a
 //! byte string). `crc8` delegates to `tamal_abi::crc8`, so a folded CRC byte is
-//! the exact value the wire and HDL use — it can never drift. Pure: no clock,
-//! environment, or randomness, so identical source folds to identical bytes.
+//! the exact value the wire and HDL use — it can never drift. Pure: no
+//! wall-clock, no process environment, no randomness, so identical source folds
+//! to identical bytes.
 
 use crate::parser::{BinOp, Expr};
 use std::collections::HashMap;
@@ -24,12 +25,16 @@ pub enum Value {
 /// child built from the module base — never from the caller's locals — so
 /// scoping is lexical: a callee sees its own parameters and the module's
 /// constants, and nothing else.
+///
+/// A plain [`Clone`] copies `locals` verbatim, so it is *not* how you build a
+/// callee scope — use the call-scope constructors for that.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     /// Module-level `const`s: the base scope every call body starts from.
     consts: HashMap<String, Value>,
     /// Parameters bound by the innermost call. Empty at module level; filled by
-    /// `fn`/`proc` expansion.
+    /// `fn`/`proc` expansion. Nothing populates it yet — `fn`/`proc` expansion
+    /// will.
     locals: HashMap<String, Value>,
 }
 
@@ -40,6 +45,12 @@ impl Env {
     }
 
     /// Define a module-level `const`.
+    ///
+    /// Overwrites silently, like the [`HashMap::insert`] it wraps: the
+    /// no-duplicate-`const` rule is a *caller's* obligation, enforced by
+    /// checking [`Env::has_const`] first (see `lower` in `lib.rs`). Checking
+    /// before inserting is load-bearing — it keeps the duplicate diagnostic
+    /// winning over any error from evaluating the duplicate's value.
     pub fn insert_const(&mut self, name: String, value: Value) {
         self.consts.insert(name, value);
     }
@@ -172,15 +183,15 @@ mod tests {
 
     #[test]
     fn resolves_and_rejects_names() {
-        let mut c = Env::new();
-        c.insert_const("X".into(), Value::Int(0x44));
+        let mut env = Env::new();
+        env.insert_const("X".into(), Value::Int(0x44));
         assert_eq!(
             eval(
                 &Expr::Name {
                     name: "X".into(),
                     span: 0..0
                 },
-                &c
+                &env
             )
             .unwrap(),
             Value::Int(0x44)
@@ -191,7 +202,7 @@ mod tests {
                     name: "NOPE".into(),
                     span: 0..0
                 },
-                &c
+                &env
             )
             .is_err()
         );
