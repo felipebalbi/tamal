@@ -368,6 +368,7 @@ mod tests {
     fn one(stmts: Vec<Stmt>) -> Module {
         Module {
             consts: vec![],
+            fns: vec![],
             tests: vec![Test {
                 name: "t".into(),
                 name_span: 0..1,
@@ -428,6 +429,7 @@ mod tests {
         // offset must remap back to that span.
         let m = Module {
             consts: vec![],
+            fns: vec![],
             tests: vec![Test {
                 name: "t".into(),
                 name_span: 0..1,

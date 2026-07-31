@@ -18,15 +18,35 @@ use tamal_asm::Program;
 
 /// Lower tamal-lang source to tamal-asm text plus its source map.
 ///
-/// Resolves `const`s, then requires exactly one `test` per file (one program
-/// entry point); zero or many is a diagnostic, and a test that can never halt
-/// is rejected.
+/// Installs the module's `fn` table, resolves `const`s, then requires exactly
+/// one `test` per file (one program entry point); zero or many is a diagnostic,
+/// and a test that can never halt is rejected.
 pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let toks = lexer::lex(source)?;
     let module = parser::parse(source, &toks)?;
+    let mut env = consteval::Env::new();
+    // Install the `fn` table first: a `const` may be built by a compile-time
+    // helper, and a `fn` body is only evaluated when it is called (by which
+    // time every `const` it names is resolved).
+    for f in &module.fns {
+        if consteval::BUILTINS.contains(&f.name.as_str()) {
+            return Err(vec![
+                Diagnostic::error(
+                    f.name_span.clone(),
+                    format!("`{}` is a builtin and cannot be redefined", f.name),
+                )
+                .with_help("the builtins are crc8, len, lo, hi"),
+            ]);
+        }
+        if !env.define_fn(f.clone()) {
+            return Err(vec![Diagnostic::error(
+                f.name_span.clone(),
+                format!("duplicate fn `{}`", f.name),
+            )]);
+        }
+    }
     // Resolve `const`s in source order; each may reference earlier ones.
     // Duplicate names and references to undefined names are hard errors.
-    let mut env = consteval::Env::new();
     for c in &module.consts {
         if env.has_const(&c.name) {
             return Err(vec![Diagnostic::error(
@@ -358,5 +378,70 @@ mod tests {
             "got: {:?}",
             err[0].message
         );
+    }
+
+    #[test]
+    fn fn_call_folds_to_its_returned_value() {
+        // A `fn` disappears entirely: the call is replaced by its bytes, and
+        // `+ crc8` folds the CRC over exactly those bytes (0x16).
+        let asm = lower_to_asm(
+            "fn iord_hdr(op: byte, addr: int) -> bytes { [op, hi(addr), lo(addr)] }\n\
+             test t {\n send iord_hdr(0x44, 0x0064) + crc8\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_const_can_call_a_fn() {
+        // The `fn` table is installed before `const`s resolve, so a `const` may
+        // be built by a compile-time helper.
+        let asm = lower_to_asm(
+            "fn iord_hdr(op: byte, addr: int) -> bytes { [op, hi(addr), lo(addr)] }\n\
+             const HDR = iord_hdr(0x44, 0x0064)\n\
+             test t {\n send HDR + crc8\n pass\n}\n",
+        )
+        .unwrap();
+        assert!(asm.contains("\tput_byte 0x16\n"), "got:\n{asm}");
+    }
+
+    #[test]
+    fn a_recursive_fn_is_rejected() {
+        let err = lower_to_asm("fn f(n: int) -> int { f(n) }\ntest t {\n send [f(1)]\n pass\n}\n")
+            .unwrap_err();
+        assert!(err[0].message.contains("calls itself"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_fn_body_must_produce_its_declared_type() {
+        let err = lower_to_asm("fn bad(n: int) -> bytes { n }\ntest t {\n send bad(5)\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("expects `bytes`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_fn_may_not_shadow_a_builtin_or_repeat_a_name() {
+        let shadow =
+            lower_to_asm("fn crc8(b: bytes) -> byte { 0 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            shadow[0].message.contains("builtin"),
+            "got: {:?}",
+            shadow[0]
+        );
+
+        let dup = lower_to_asm(
+            "fn f(n: int) -> int { n }\nfn f(n: int) -> int { n }\ntest t {\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(dup[0].message.contains("duplicate fn"), "got: {:?}", dup[0]);
     }
 }

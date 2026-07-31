@@ -11,7 +11,7 @@
 //! and [`bind_args`], the argument binder that `fn` and `proc` share so the two
 //! can never drift apart.
 
-use crate::parser::{Arg, BinOp, Expr, Param, Type};
+use crate::parser::{Arg, BinOp, Expr, FnDef, Param, Type};
 use std::collections::HashMap;
 use tamal_asm::{Diagnostic, Span};
 
@@ -24,9 +24,15 @@ pub enum Value {
     Bytes(Vec<u8>),
 }
 
+/// The compile-time builtins. A user `fn` may not take one of these names — a
+/// builtin must always mean the same thing.
+pub const BUILTINS: [&str; 4] = ["crc8", "len", "lo", "hi"];
+
 /// The compile-time environment threaded through evaluation: the module's
 /// `const`s (the base scope) plus the parameters bound by the innermost
-/// `fn`/`proc` expansion.
+/// `fn`/`proc` expansion. It also carries the module's `fn` table and the chain
+/// of expansions currently in progress, which is what makes recursion
+/// detectable.
 ///
 /// Lookup is **locals first, then consts**, and a call body is evaluated in a
 /// child built from the module base — never from the caller's locals — so
@@ -43,6 +49,12 @@ pub struct Env {
     /// the module `const`s. Empty at module level; populated per call by
     /// [`Env::child_for_call_values`].
     locals: HashMap<String, Value>,
+    /// The module's `fn` table; calls resolve against it.
+    fns: HashMap<String, FnDef>,
+    /// The callables whose expansion is in progress, innermost last. Every call
+    /// is inlined, so a name that appears twice is recursion — rejected,
+    /// because the ISA has no stack to recurse on.
+    active: Vec<String>,
 }
 
 impl Env {
@@ -88,11 +100,38 @@ impl Env {
     /// locals. The module `const`s survive; the caller's locals do not.
     ///
     /// The `_values` suffix marks this as the value-only half of the call-scope
-    /// constructor: Task 4's `child_for_call` will delegate here and
-    /// additionally push the callee onto the recursion chain.
+    /// constructor: [`Env::child_for_call`] delegates here and additionally
+    /// pushes the callee onto the recursion chain.
     pub fn child_for_call_values(&self, bindings: HashMap<String, Value>) -> Env {
         let mut e = self.clone();
         e.locals = bindings;
+        e
+    }
+
+    /// Define a `fn`. Returns `false` if one of that name already exists.
+    pub fn define_fn(&mut self, f: FnDef) -> bool {
+        if self.fns.contains_key(&f.name) {
+            return false;
+        }
+        self.fns.insert(f.name.clone(), f);
+        true
+    }
+
+    /// The `fn` bound to `name`, if any.
+    pub fn get_fn(&self, name: &str) -> Option<&FnDef> {
+        self.fns.get(name)
+    }
+
+    /// Is a call to `name` already in progress (i.e. would this recurse)?
+    pub fn is_active(&self, name: &str) -> bool {
+        self.active.iter().any(|n| n == name)
+    }
+
+    /// The environment a call body is evaluated in: the module scope plus
+    /// `bindings`, with `callee` pushed onto the in-progress chain.
+    pub fn child_for_call(&self, callee: &str, bindings: HashMap<String, Value>) -> Env {
+        let mut e = self.child_for_call_values(bindings);
+        e.active.push(callee.to_string());
         e
     }
 }
@@ -147,11 +186,38 @@ fn eval_call(func: &str, args: &[Arg], span: &Span, env: &Env) -> Result<Value, 
         "hi" => Ok(Value::Int(
             (eval_int(builtin_arg(func, args, span)?, env)? >> 8) & 0xff,
         )),
-        _ => Err(
-            Diagnostic::error(span.clone(), format!("unknown builtin `{func}`"))
-                .with_help("the builtins are crc8, len, lo, hi"),
-        ),
+        _ => match env.get_fn(func) {
+            Some(f) => eval_fn_call(f, args, span, env),
+            None => Err(
+                Diagnostic::error(span.clone(), format!("unknown function `{func}`")).with_help(
+                    "the builtins are crc8, len, lo, hi; a `proc` emits instructions and is called as a statement, not inside an expression",
+                ),
+            ),
+        },
     }
+}
+
+/// Evaluate a `fn` call: bind the arguments, evaluate the body in the callee's
+/// own scope, and check the result against the declared return type. There is
+/// no runtime call — the value simply replaces the call site.
+fn eval_fn_call(f: &FnDef, args: &[Arg], span: &Span, env: &Env) -> Result<Value, Diagnostic> {
+    if env.is_active(&f.name) {
+        return Err(Diagnostic::error(
+            span.clone(),
+            format!("`{}` calls itself: recursion is not possible", f.name),
+        )
+        .with_help("every call is inlined — the tamal ISA has no call/ret and no stack"));
+    }
+    let bindings = bind_args(&f.name, &f.params, args, env, span)?;
+    let child = env.child_for_call(&f.name, bindings);
+    let v = eval(&f.body, &child)?;
+    check_type(
+        &v,
+        f.ret,
+        &f.body.span(),
+        &format!("the body of `{}`", f.name),
+    )?;
+    Ok(v)
 }
 
 /// The single positional argument of a builtin call. The builtins take exactly

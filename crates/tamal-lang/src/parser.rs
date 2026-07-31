@@ -1,15 +1,16 @@
-//! Parser: tokens → the AST — a `Module` of `const` items and a `Test` of
-//! statements (`pass`, `fail N`, `send`/`crc_region`, or a verbatim raw
-//! instruction), plus the compile-time `Expr` grammar (`[bytes]`, `++`, `^`,
-//! builtin calls).
+//! Parser: tokens → the AST — a `Module` of `const` items, `fn` items and a
+//! `Test` of statements (`pass`, `fail N`, `send`/`crc_region`, or a verbatim
+//! raw instruction), plus the compile-time `Expr` grammar (`[bytes]`, `++`,
+//! `^`, builtin and `fn` calls).
 
 use crate::lexer::{Tok, Token};
 use tamal_asm::{Diagnostic, Span};
 
-/// A parsed `.tam` module: `const` items and tests.
+/// A parsed `.tam` module: `const` items, `fn` items, and tests.
 #[derive(Debug, Clone)]
 pub struct Module {
     pub consts: Vec<Const>,
+    pub fns: Vec<FnDef>,
     pub tests: Vec<Test>,
 }
 
@@ -137,6 +138,21 @@ pub struct Param {
     pub span: Span,
 }
 
+/// A `fn NAME(params) -> type { expr }` item: a pure, compile-time function.
+///
+/// A call is replaced by the value the body evaluates to — the tamal ISA has no
+/// `call`/`ret` and no stack, so there is no runtime linkage to invent (D2).
+#[derive(Debug, Clone)]
+pub struct FnDef {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    /// The declared return type; the body's value is checked against it.
+    pub ret: Type,
+    /// The body — a single expression.
+    pub body: Expr,
+}
+
 /// A compile-time expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -200,23 +216,25 @@ fn parse_number(lexeme: &str) -> Option<i64> {
 pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
     let mut p = P { src, toks, i: 0 };
     let mut consts = Vec::new();
+    let mut fns = Vec::new();
     let mut tests = Vec::new();
     p.skip_newlines();
     while p.peek() != Tok::Eof {
         let kw = p.expect_ident()?;
         match p.lexeme(&kw) {
             "const" => consts.push(p.parse_const()?),
+            "fn" => fns.push(p.parse_fn()?),
             "test" => tests.push(p.parse_test()?),
             other => {
                 return Err(vec![Diagnostic::error(
                     kw,
-                    format!("expected `const` or `test`, found `{other}`"),
+                    format!("expected `const`, `fn`, or `test`, found `{other}`"),
                 )]);
             }
         }
         p.skip_newlines();
     }
-    Ok(Module { consts, tests })
+    Ok(Module { consts, fns, tests })
 }
 
 struct P<'a> {
@@ -311,6 +329,92 @@ impl<'a> P<'a> {
             name_span,
             value,
         })
+    }
+
+    fn parse_fn(&mut self) -> Result<FnDef, Vec<Diagnostic>> {
+        let name_span = self.expect_ident()?;
+        let name = self.lexeme(&name_span).to_string();
+        self.expect(Tok::LParen, "`(`")?;
+        let params = self.parse_params()?;
+        self.expect(Tok::RParen, "`)`")?;
+        self.expect(Tok::Arrow, "`->` and a return type")?;
+        let ret = self.parse_type()?;
+        self.expect(Tok::LBrace, "`{`")?;
+        self.skip_newlines();
+        let body = self.parse_expr()?;
+        self.skip_newlines();
+        self.expect(Tok::RBrace, "`}`")?;
+        self.end_stmt()?;
+        Ok(FnDef {
+            name,
+            name_span,
+            params,
+            ret,
+            body,
+        })
+    }
+
+    /// Parse a parameter list up to but not including the closing `)` (the `(`
+    /// is already consumed). Newlines inside the parens are not statement
+    /// terminators and a trailing comma is allowed.
+    ///
+    /// Rejects a repeated parameter name: that is `bind_args`' documented
+    /// precondition, and without this check a named argument would bind the
+    /// first of the pair while the second went silently unchecked. The scan is
+    /// over `params`, a `Vec`, in declaration order — a hash set would report
+    /// whichever name it happened to visit first, and that ordering must never
+    /// reach a diagnostic.
+    fn parse_params(&mut self) -> Result<Vec<Param>, Vec<Diagnostic>> {
+        let mut params: Vec<Param> = Vec::new();
+        self.skip_newlines();
+        while self.peek() != Tok::RParen {
+            let name_span = self.expect_ident()?;
+            let name = self.lexeme(&name_span).to_string();
+            self.expect(Tok::Colon, "`:` and a type")?;
+            let ty = self.parse_type()?;
+            let mut end = name_span.end;
+            let mut default = None;
+            if self.peek() == Tok::Eq {
+                self.i += 1;
+                let e = self.parse_expr()?;
+                end = e.span().end;
+                default = Some(e);
+            }
+            if params.iter().any(|p| p.name == name) {
+                // Anchored on the second declaration — the one to delete.
+                return Err(vec![Diagnostic::error(
+                    name_span,
+                    format!("duplicate parameter `{name}`"),
+                )]);
+            }
+            params.push(Param {
+                name,
+                ty,
+                default,
+                span: name_span.start..end,
+            });
+            self.skip_newlines();
+            if self.peek() == Tok::Comma {
+                self.i += 1;
+                self.skip_newlines();
+            } else {
+                break;
+            }
+        }
+        Ok(params)
+    }
+
+    fn parse_type(&mut self) -> Result<Type, Vec<Diagnostic>> {
+        let sp = self.expect_ident()?;
+        match self.lexeme(&sp) {
+            "byte" => Ok(Type::Byte),
+            "int" => Ok(Type::Int),
+            "bytes" => Ok(Type::Bytes),
+            other => Err(vec![
+                Diagnostic::error(sp, format!("unknown type `{other}`"))
+                    .with_help("the types are byte, int, bytes"),
+            ]),
+        }
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Vec<Diagnostic>> {
@@ -779,7 +883,7 @@ mod tests {
     fn missing_test_keyword_is_an_error() {
         let toks = lex("smoke {\n  pass\n}\n").unwrap();
         let err = parse("smoke {\n  pass\n}\n", &toks).unwrap_err();
-        assert!(err[0].message.contains("expected `const` or `test`"));
+        assert!(err[0].message.contains("expected `const`"));
     }
 
     #[test]
@@ -788,6 +892,48 @@ mod tests {
         assert_eq!(m.consts.len(), 1);
         assert_eq!(m.consts[0].name, "PUT_IORD1");
         assert_eq!(m.tests.len(), 1);
+    }
+
+    #[test]
+    fn parses_fn_item() {
+        let m = parse_ok(
+            "fn iord_hdr(op: byte, addr: int) -> bytes { [op, hi(addr), lo(addr)] }\ntest t {\n pass\n}\n",
+        );
+        assert_eq!(m.fns.len(), 1);
+        let f = &m.fns[0];
+        assert_eq!(f.name, "iord_hdr");
+        assert_eq!(f.ret, Type::Bytes);
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "op");
+        assert_eq!(f.params[0].ty, Type::Byte);
+        assert_eq!(f.params[1].ty, Type::Int);
+        assert!(f.params.iter().all(|p| p.default.is_none()));
+    }
+
+    #[test]
+    fn parses_fn_param_default() {
+        let m = parse_ok("fn f(err: byte = 0x11) -> byte { err }\ntest t {\n pass\n}\n");
+        assert!(m.fns[0].params[0].default.is_some());
+    }
+
+    #[test]
+    fn rejects_an_unknown_param_type() {
+        let src = "fn f(x: word) -> byte { x }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(err[0].message.contains("unknown type `word`"));
+    }
+
+    #[test]
+    fn rejects_duplicate_parameter_names() {
+        let src = "fn f(x: int, x: bytes) -> int { x }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("duplicate parameter `x`"),
+            "got: {}",
+            err[0].message
+        );
     }
 
     fn parse_expr_ok(src: &str) -> Expr {

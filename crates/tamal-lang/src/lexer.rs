@@ -1,7 +1,7 @@
 //! Lexer: `.tam` source text → tokens with byte spans. Skips `//` line and
 //! `/* */` block comments; recognizes identifiers, numbers, punctuation
-//! (`{} [] () , =`), the operators `+ ++ ^`, and newlines (statement
-//! separators).
+//! (`{} [] () , = :` and the `->` of a `fn` return type), the operators
+//! `+ ++ ^`, and newlines (statement separators).
 
 use tamal_asm::{Diagnostic, Span};
 
@@ -28,6 +28,10 @@ pub enum Tok {
     RParen,
     /// `=`
     Eq,
+    /// `:` (a parameter's type annotation)
+    Colon,
+    /// `->` (a `fn`'s return type)
+    Arrow,
     /// `+` (the `send … + crc8` sugar)
     Plus,
     /// `++` (bytes concatenation)
@@ -140,6 +144,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     span: i..i + 1,
                 });
                 i += 1;
+            }
+            b':' => {
+                toks.push(Token {
+                    kind: Tok::Colon,
+                    span: i..i + 1,
+                });
+                i += 1;
+            }
+            b'-' if i + 1 < b.len() && b[i + 1] == b'>' => {
+                toks.push(Token {
+                    kind: Tok::Arrow,
+                    span: i..i + 2,
+                });
+                i += 2;
             }
             b'^' => {
                 toks.push(Token {
@@ -321,6 +339,26 @@ mod tests {
                 Tok::Ident, // X
                 Tok::Eq,
                 Tok::Number,
+                Tok::Newline,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_colon_and_arrow() {
+        assert_eq!(
+            kinds("fn f(n: int) -> byte\n"),
+            vec![
+                Tok::Ident, // fn
+                Tok::Ident, // f
+                Tok::LParen,
+                Tok::Ident, // n
+                Tok::Colon,
+                Tok::Ident, // int
+                Tok::RParen,
+                Tok::Arrow,
+                Tok::Ident, // byte
                 Tok::Newline,
                 Tok::Eof,
             ]
