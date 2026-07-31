@@ -926,12 +926,32 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_parameter_names() {
+        // `bind_args` documents unique parameter names as a precondition: with a
+        // duplicate, a named argument binds the first of the pair and the
+        // defaults loop then treats *both* as bound, so the second is never
+        // type-checked and never reported. Rejecting it here is what makes that
+        // precondition hold.
         let src = "fn f(x: int, x: bytes) -> int { x }\ntest t {\n pass\n}\n";
         let toks = lex(src).unwrap();
         let err = parse(src, &toks).unwrap_err();
         assert!(
             err[0].message.contains("duplicate parameter `x`"),
             "got: {}",
+            err[0].message
+        );
+        // Anchored on the SECOND declaration — the one the author must delete.
+        // `x` occurs at byte 5 and again at byte 13; the caret must be the latter.
+        assert_eq!(&src[err[0].primary.clone()], "x");
+        assert_eq!(err[0].primary, 13..14, "anchored on the second `x`");
+
+        // The scan must cover every parameter declared so far, not just the
+        // previous one: a duplicate need not be adjacent to its twin.
+        let apart = "fn f(x: int, y: int, x: bytes) -> int { y }\ntest t {\n pass\n}\n";
+        let toks = lex(apart).unwrap();
+        let err = parse(apart, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("duplicate parameter `x`"),
+            "a non-adjacent duplicate must be rejected too; got: {}",
             err[0].message
         );
     }
