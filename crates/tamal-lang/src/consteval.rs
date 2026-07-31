@@ -599,8 +599,13 @@ mod tests {
         let unknown = bind_err(vec![named("nope", int(0))]);
         assert!(unknown.contains("no parameter `nope`"), "got: {unknown}");
 
-        let dup = bind_err(vec![pos(bytes(&[0x44])), named("pkt", bytes(&[0x06]))]);
-        assert!(dup.contains("bound twice"), "got: {dup}");
+        let dup = bind_diag(vec![pos(bytes(&[0x44])), named("pkt", bytes(&[0x06]))]);
+        assert!(dup.message.contains("bound twice"), "got: {}", dup.message);
+        assert_eq!(
+            dup.primary,
+            arg_span(1),
+            "anchored on the second, offending argument"
+        );
 
         let surplus = bind_err(vec![
             pos(bytes(&[0x44])),
@@ -643,6 +648,41 @@ mod tests {
             too_big.message
         );
         assert_eq!(too_big.primary, arg_span(2), "anchored on the bad argument");
+
+        // Both ends of the `byte` range are errors, never a silent wrap. There
+        // is no unary minus in the grammar yet, so the negative is built
+        // straight from the AST — Plan 4b's arithmetic makes it reachable from
+        // source.
+        let negative = bind_diag(vec![
+            pos(bytes(&[0x44])),
+            pos(int(0)),
+            named("err", int(-1)),
+        ]);
+        assert!(
+            negative.message.contains("expects `byte`"),
+            "got: {}",
+            negative.message
+        );
+    }
+
+    #[test]
+    fn a_child_scope_replaces_the_callers_locals() {
+        // A call body sees its own parameters and the module `const`s, and
+        // nothing else. Merging the caller's locals in instead of replacing
+        // them would leak an outer `proc`'s parameters into an inner one's body
+        // once Task 6 inlines nested calls.
+        let mut module = Env::new();
+        module.insert_const("BASE".into(), Value::Int(1));
+        let caller = module
+            .child_for_call_values([("outer".to_string(), Value::Int(7))].into_iter().collect());
+        let callee = caller
+            .child_for_call_values([("inner".to_string(), Value::Int(9))].into_iter().collect());
+
+        assert_eq!(callee.get("inner"), Some(&Value::Int(9)));
+        // The load-bearing half: the caller's local is *gone*, not merged in.
+        assert_eq!(callee.get("outer"), None);
+        // The module scope, by contrast, survives every call.
+        assert_eq!(callee.get("BASE"), Some(&Value::Int(1)));
     }
 
     #[test]
