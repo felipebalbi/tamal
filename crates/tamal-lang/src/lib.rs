@@ -444,4 +444,26 @@ mod tests {
         .unwrap_err();
         assert!(dup[0].message.contains("duplicate fn"), "got: {:?}", dup[0]);
     }
+
+    #[test]
+    fn a_fn_argument_resolves_in_the_calling_fns_scope() {
+        // An argument expression is written at the CALL site, so it must be
+        // evaluated in the caller's scope — here `addr` is `hdr`'s parameter,
+        // passed on to `lo_byte`. `bind_args` is handed the caller's `env` for
+        // exactly this reason; passing `env.module_scope()` instead would make
+        // this `unknown name `addr``. Task 3 pins the rule inside the binder;
+        // this pins the `eval_fn_call` call site that feeds it.
+        let asm = lower_to_asm(
+            "fn lo_byte(n: int) -> byte { lo(n) }\n\
+             fn hdr(addr: int) -> bytes { [0x44, hi(addr), lo_byte(addr)] }\n\
+             test t {\n send hdr(0x0064)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\
+             \thalt 0x00\n"
+        );
+    }
 }

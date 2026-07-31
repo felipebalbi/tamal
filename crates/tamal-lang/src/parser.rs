@@ -912,8 +912,15 @@ mod tests {
 
     #[test]
     fn parses_fn_param_default() {
-        let m = parse_ok("fn f(err: byte = 0x11) -> byte { err }\ntest t {\n pass\n}\n");
-        assert!(m.fns[0].params[0].default.is_some());
+        let src = "fn f(err: byte = 0x11) -> byte { err }\ntest t {\n pass\n}\n";
+        let m = parse_ok(src);
+        let p = &m.fns[0].params[0];
+        assert!(p.default.is_some());
+        // The recorded span must reach the END of the default expression, not
+        // stop at the name: `bind_args` anchors its default-type-check
+        // diagnostic on `Param::span`, so a shrinking caret would point the
+        // author at the name when the value is what needs fixing.
+        assert_eq!(&src[p.span.clone()], "err: byte = 0x11");
     }
 
     #[test]
@@ -922,6 +929,32 @@ mod tests {
         let toks = lex(src).unwrap();
         let err = parse(src, &toks).unwrap_err();
         assert!(err[0].message.contains("unknown type `word`"));
+    }
+
+    #[test]
+    fn rejects_a_parameter_with_no_type_annotation() {
+        // Every parameter is typed; the `:` is not optional.
+        let src = "fn f(x int) -> byte { x }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("expected `:` and a type"),
+            "got: {}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn rejects_a_fn_with_no_return_type() {
+        // A `fn` returns a value, so its return type is mandatory.
+        let src = "fn f(x: int) byte { x }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("expected `->` and a return type"),
+            "got: {}",
+            err[0].message
+        );
     }
 
     #[test]
