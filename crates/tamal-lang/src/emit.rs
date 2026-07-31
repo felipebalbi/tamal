@@ -3,7 +3,7 @@
 //! becomes the entry label; `pass`/`fail`/raw become lines, and `send`/
 //! `crc_region` evaluate to `put_byte` runs (with the compile-time CRC-8).
 
-use crate::parser::{Module, Stmt};
+use crate::parser::{Expr, Module, Stmt};
 use tamal_asm::{Diagnostic, Span};
 
 use crate::consteval::{self, Env};
@@ -58,7 +58,7 @@ pub fn emit(module: &Module, env: Env) -> Result<Lowering, Vec<Diagnostic>> {
         e.push(".globl _start\n", &test.name_span);
         e.push("_start:\n", &test.name_span);
         for stmt in &test.stmts {
-            e.top_stmt(stmt, &test.name_span)?;
+            e.stmt(stmt, &test.name_span)?;
         }
         e.flush_trailers();
     }
@@ -74,6 +74,11 @@ struct Emitter {
     alloc: RegAlloc,
     gensym: u32,
     trailers: Vec<(Span, String)>,
+    /// One entry per `frame` currently being lowered, innermost last; each
+    /// holds the verdicts its `expect`s deferred to the frame exit. A stack
+    /// (rather than a parameter) so an inlined `proc` body reaches the
+    /// enclosing frame's list without threading it through the expansion.
+    frames: Vec<Vec<Deferred>>,
 }
 
 /// A verdict branch an `expect` deferred to its enclosing `frame`: after CS
@@ -95,6 +100,7 @@ impl Emitter {
             alloc: RegAlloc::new(),
             gensym: 0,
             trailers: Vec::new(),
+            frames: Vec::new(),
         }
     }
 
@@ -127,9 +133,30 @@ impl Emitter {
         label
     }
 
-    /// Lower one top-level statement. `entry` is the test's name span, used for
-    /// statements (like `pass`) that have no more specific span of their own.
-    fn top_stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
+    /// Is a `frame` currently open?
+    fn in_frame(&self) -> bool {
+        !self.frames.is_empty()
+    }
+
+    /// Lower one statement.
+    ///
+    /// `entry` is the test's name span, used by statements (like `pass`) that
+    /// have no more specific span of their own. Legality is context-dependent:
+    /// `pass`/`fail`/`config`/`frame` are rejected inside a `frame`, and
+    /// `expect` is rejected outside one. The match is wildcard-free by design,
+    /// so a new `Stmt` variant forces a decision here.
+    fn stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
+        if self.in_frame()
+            && matches!(
+                stmt,
+                Stmt::Pass | Stmt::Fail { .. } | Stmt::Config { .. } | Stmt::Frame { .. }
+            )
+        {
+            return Err(vec![Diagnostic::error(
+                stmt_span(stmt, entry),
+                "this statement is not allowed inside a `frame`",
+            )]);
+        }
         match stmt {
             Stmt::Pass => self.push("\thalt 0x00\n", entry),
             Stmt::Fail { code, span } => self.push(&format!("\thalt {code}\n"), span),
@@ -137,15 +164,10 @@ impl Emitter {
             Stmt::Send { .. } => self.lower_send(stmt)?,
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
             Stmt::Config { .. } => self.lower_config(stmt)?,
-            Stmt::Frame { body, span } => self.lower_frame(body, span)?,
+            Stmt::Frame { body, span } => self.lower_frame(body, span, entry)?,
             Stmt::Recv { targets, span } => self.lower_recv(targets, span)?,
             Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span)?,
-            Stmt::Expect { span, .. } => {
-                return Err(vec![
-                    Diagnostic::error(span.clone(), "`expect crc` must appear inside a `frame`")
-                        .with_help("wrap the response phase in `frame { … }`"),
-                ]);
-            }
+            Stmt::Expect { else_code, span } => self.lower_expect(else_code, span)?,
         }
         Ok(())
     }
@@ -220,13 +242,25 @@ impl Emitter {
         Ok(())
     }
 
-    fn lower_frame(&mut self, body: &[Stmt], span: &Span) -> Result<(), Vec<Diagnostic>> {
+    fn lower_frame(
+        &mut self,
+        body: &[Stmt],
+        span: &Span,
+        entry: &Span,
+    ) -> Result<(), Vec<Diagnostic>> {
         self.push("\tcs_assert\n", span);
         self.alloc.enter_scope();
-        let mut deferred: Vec<Deferred> = Vec::new();
-        for stmt in body {
-            self.frame_body_stmt(stmt, &mut deferred)?;
+        self.frames.push(Vec::new());
+        let mut result = Ok(());
+        for s in body {
+            if let Err(e) = self.stmt(s, entry) {
+                result = Err(e);
+                break;
+            }
         }
+        // Pop on the error path too, so the frame stack stays balanced.
+        let deferred = self.frames.pop().expect("lower_frame pushed this frame");
+        result?;
         // D9 (load-bearing): CS deasserts UNCONDITIONALLY, before any verdict
         // branch. Each `expect` already latched its residue inside the frame;
         // we deassert here, THEN emit the deferred `bnez` verdict(s), and hoist
@@ -245,46 +279,6 @@ impl Emitter {
         }
         self.alloc.exit_scope();
         Ok(())
-    }
-
-    fn frame_body_stmt(
-        &mut self,
-        stmt: &Stmt,
-        deferred: &mut Vec<Deferred>,
-    ) -> Result<(), Vec<Diagnostic>> {
-        match stmt {
-            Stmt::Send { .. } => self.lower_send(stmt),
-            Stmt::CrcRegion { .. } => self.lower_crc_region(stmt),
-            Stmt::Raw { .. } => self.lower_raw(stmt),
-            Stmt::Recv { targets, span } => self.lower_recv(targets, span),
-            Stmt::WaitState { bind, span } => self.lower_wait_state(bind, span),
-            Stmt::Expect { else_code, span } => {
-                let code = consteval::eval_byte(else_code, &self.env).map_err(|d| vec![d])?;
-                // Consume the trailing CRC byte (drives the RX residue to 0).
-                let discard = self.alloc.temp(span).map_err(|d| vec![d])?;
-                self.push(&format!("\tget_byte {}\n", reg_name(discard)), span);
-                self.alloc.free(discard);
-                // Latch the residue; keep it live until the deferred branch.
-                let res = self.alloc.temp(span).map_err(|d| vec![d])?;
-                self.push(&format!("\trdsr {}, crc\n", reg_name(res)), span);
-                let label = self.gensym("fail");
-                deferred.push(Deferred {
-                    reg: res,
-                    label,
-                    code,
-                    span: span.clone(),
-                });
-                Ok(())
-            }
-            // Not legal inside a frame. Listed explicitly (no wildcard) so a new
-            // Stmt variant forces a decision here rather than silently erroring.
-            Stmt::Pass | Stmt::Fail { .. } | Stmt::Config { .. } | Stmt::Frame { .. } => {
-                Err(vec![Diagnostic::error(
-                    stmt_span(stmt),
-                    "this statement is not allowed inside a `frame`",
-                )])
-            }
-        }
     }
 
     fn lower_recv(
@@ -337,12 +331,44 @@ impl Emitter {
         }
         Ok(())
     }
+
+    /// `expect crc else <byte>` (D12 + D9): consume the trailing CRC byte,
+    /// latch the RX residue, and defer the verdict branch to the enclosing
+    /// frame — it must run *after* `cs_deassert`.
+    fn lower_expect(&mut self, else_code: &Expr, span: &Span) -> Result<(), Vec<Diagnostic>> {
+        if !self.in_frame() {
+            return Err(vec![
+                Diagnostic::error(span.clone(), "`expect crc` must appear inside a `frame`")
+                    .with_help("wrap the response phase in `frame { … }`"),
+            ]);
+        }
+        let code = consteval::eval_byte(else_code, &self.env).map_err(|d| vec![d])?;
+        // Consume the trailing CRC byte (drives the RX residue to 0).
+        let discard = self.alloc.temp(span).map_err(|d| vec![d])?;
+        self.push(&format!("\tget_byte {}\n", reg_name(discard)), span);
+        self.alloc.free(discard);
+        // Latch the residue; keep it live until the deferred branch.
+        let res = self.alloc.temp(span).map_err(|d| vec![d])?;
+        self.push(&format!("\trdsr {}, crc\n", reg_name(res)), span);
+        let label = self.gensym("fail");
+        self.frames
+            .last_mut()
+            .expect("in_frame() was just checked")
+            .push(Deferred {
+                reg: res,
+                label,
+                code,
+                span: span.clone(),
+            });
+        Ok(())
+    }
 }
 
-/// The best source span for a statement, for diagnostics.
-fn stmt_span(stmt: &Stmt) -> Span {
+/// The best source span for a statement, for diagnostics. `pass` carries no
+/// span of its own, so it borrows the test's entry span.
+fn stmt_span(stmt: &Stmt, entry: &Span) -> Span {
     match stmt {
-        Stmt::Pass => 0..0,
+        Stmt::Pass => entry.clone(),
         Stmt::Fail { span, .. }
         | Stmt::Raw { span, .. }
         | Stmt::Send { span, .. }
