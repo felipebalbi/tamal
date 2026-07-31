@@ -3,6 +3,13 @@
 //! the exact value the wire and HDL use — it can never drift. Pure: no
 //! wall-clock, no process environment, no randomness, so identical source folds
 //! to identical bytes.
+//!
+//! This module also owns the semantics both callables share: [`Env`], the
+//! lexical scope model (a module's `const`s plus the innermost call's
+//! parameters, looked up locals-first so a parameter shadows a same-named
+//! `const`, with defaults evaluated in module scope rather than the caller's),
+//! and [`bind_args`], the argument binder that `fn` and `proc` share so the two
+//! can never drift apart.
 
 use crate::parser::{Arg, BinOp, Expr, Param, Type};
 use std::collections::HashMap;
@@ -79,6 +86,10 @@ impl Env {
 
     /// This environment with `bindings` as its parameter scope, replacing any
     /// locals. The module `const`s survive; the caller's locals do not.
+    ///
+    /// The `_values` suffix marks this as the value-only half of the call-scope
+    /// constructor: Task 4's `child_for_call` will delegate here and
+    /// additionally push the callee onto the recursion chain.
     pub fn child_for_call_values(&self, bindings: HashMap<String, Value>) -> Env {
         let mut e = self.clone();
         e.locals = bindings;
@@ -202,6 +213,20 @@ pub fn eval_byte(e: &Expr, env: &Env) -> Result<u8, Diagnostic> {
 /// two callables can never drift apart. Errors are produced by walking `params`
 /// and `args` **in order**, so the same source always yields the same first
 /// diagnostic — the determinism rule applies to error output too.
+///
+/// The returned map is keyed **for lookup only and must never be iterated**:
+/// `HashMap` order is randomised per process, so iterating it to emit, list or
+/// report anything would put that randomness into the output. Both consumers
+/// move it straight into [`Env::locals`], which is only ever read by name. If
+/// you need an order, walk `params` — that is the declaration order.
+///
+/// # Preconditions
+///
+/// `params` must have unique names; the parser is responsible for rejecting a
+/// declaration that repeats one. With a duplicate, a named argument binds the
+/// first of the pair and the defaults loop then treats *both* as bound, so the
+/// second is never type-checked and never reported as missing. The
+/// `debug_assert!` below makes that obligation executable.
 pub fn bind_args(
     callee: &str,
     params: &[Param],
@@ -209,6 +234,13 @@ pub fn bind_args(
     env: &Env,
     call_span: &Span,
 ) -> Result<HashMap<String, Value>, Diagnostic> {
+    debug_assert!(
+        params
+            .iter()
+            .enumerate()
+            .all(|(i, p)| !params[i + 1..].iter().any(|q| q.name == p.name)),
+        "`{callee}` declares a duplicate parameter name; the parser must reject that"
+    );
     let mut bound: HashMap<String, Value> = HashMap::new();
     let mut seen_named = false;
     for (i, arg) in args.iter().enumerate() {
@@ -221,6 +253,8 @@ pub fn bind_args(
                     )
                     .with_help("pass the positional arguments first, or name them all"));
                 }
+                // The check above makes the positional arguments a prefix of
+                // `args`, so `i` is this argument's parameter index directly.
                 params.get(i).ok_or_else(|| {
                     Diagnostic::error(
                         arg.span.clone(),
@@ -258,9 +292,10 @@ pub fn bind_args(
         bound.insert(p.name.clone(), v);
     }
     // Fill the rest from defaults, in declaration order so that the first
-    // missing parameter reported is stable across runs. Every default is
-    // evaluated in the same module scope, so it is built once here rather than
-    // cloned per defaulted parameter.
+    // missing parameter reported is stable across runs. Every default shares
+    // one module scope, built here unconditionally — including when no default
+    // needs it, which is the common case and the only one this costs. At this
+    // scale that clone is irrelevant; making it lazy would not be.
     let module = env.module_scope();
     for p in params {
         if bound.contains_key(&p.name) {
@@ -286,25 +321,19 @@ pub fn bind_args(
 
 /// Check a value against a declared type; `what` names the position for the
 /// diagnostic. A `byte` additionally range-checks `0..=255` — out of range is
-/// an error, never a silent wrap.
+/// an error, never a silent wrap, and it is reported *as* a range error: an
+/// integer that will not fit in a byte has the right type and the wrong
+/// magnitude, so saying "expects `byte`, found the integer 300" would hide the
+/// actual problem. The wording matches `eval_byte`'s.
 fn check_type(v: &Value, ty: Type, span: &Span, what: &str) -> Result<(), Diagnostic> {
-    let ok = match (ty, v) {
-        (Type::Bytes, Value::Bytes(_)) => true,
-        (Type::Int, Value::Int(_)) => true,
-        (Type::Byte, Value::Int(n)) => (0..=255).contains(n),
-        _ => false,
+    let problem = match (ty, v) {
+        (Type::Bytes, Value::Bytes(_)) | (Type::Int, Value::Int(_)) => return Ok(()),
+        (Type::Byte, Value::Int(n)) if (0..=255).contains(n) => return Ok(()),
+        (Type::Byte, Value::Int(n)) => format!("expects `byte`: {n} is out of range 0..=255"),
+        (_, Value::Int(n)) => format!("expects `{}`, found the integer {n}", ty.name()),
+        (_, Value::Bytes(b)) => format!("expects `{}`, found {} byte(s)", ty.name(), b.len()),
     };
-    if ok {
-        return Ok(());
-    }
-    let found = match v {
-        Value::Int(n) => format!("the integer {n}"),
-        Value::Bytes(b) => format!("{} byte(s)", b.len()),
-    };
-    Err(Diagnostic::error(
-        span.clone(),
-        format!("{what} expects `{}`, found {found}", ty.name()),
-    ))
+    Err(Diagnostic::error(span.clone(), format!("{what} {problem}")))
 }
 
 #[cfg(test)]
@@ -500,16 +529,18 @@ mod tests {
     fn pos(value: Expr) -> Arg {
         Arg {
             name: None,
-            value,
+            // Placeholder: `stamped` assigns every argument its real span.
             span: 0..0,
+            value,
         }
     }
 
     fn named(name: &str, value: Expr) -> Arg {
         Arg {
             name: Some(name.into()),
-            value,
+            // Placeholder: `stamped` assigns every argument its real span.
             span: 0..0,
+            value,
         }
     }
 
@@ -595,10 +626,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_duplicate_and_surplus_arguments() {
+    fn rejects_a_named_argument_with_no_matching_parameter() {
         let unknown = bind_err(vec![named("nope", int(0))]);
         assert!(unknown.contains("no parameter `nope`"), "got: {unknown}");
+    }
 
+    #[test]
+    fn rejects_a_parameter_bound_twice() {
         let dup = bind_diag(vec![pos(bytes(&[0x44])), named("pkt", bytes(&[0x06]))]);
         assert!(dup.message.contains("bound twice"), "got: {}", dup.message);
         assert_eq!(
@@ -606,7 +640,10 @@ mod tests {
             arg_span(1),
             "anchored on the second, offending argument"
         );
+    }
 
+    #[test]
+    fn rejects_more_arguments_than_parameters() {
         let surplus = bind_err(vec![
             pos(bytes(&[0x44])),
             pos(int(0)),
@@ -628,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn arguments_are_checked_against_their_declared_type() {
+    fn an_argument_of_the_wrong_type_is_rejected() {
         let wrong = bind_diag(vec![pos(int(5)), pos(int(0))]); // pkt: bytes
         assert!(
             wrong.message.contains("expects `bytes`"),
@@ -636,7 +673,10 @@ mod tests {
             wrong.message
         );
         assert_eq!(wrong.primary, arg_span(0), "anchored on the bad argument");
+    }
 
+    #[test]
+    fn a_byte_argument_above_the_range_is_rejected() {
         let too_big = bind_diag(vec![
             pos(bytes(&[0x44])),
             pos(int(0)),
@@ -647,8 +687,17 @@ mod tests {
             "got: {}",
             too_big.message
         );
+        // A range error says so, rather than reading as a type error.
+        assert!(
+            too_big.message.contains("out of range 0..=255"),
+            "got: {}",
+            too_big.message
+        );
         assert_eq!(too_big.primary, arg_span(2), "anchored on the bad argument");
+    }
 
+    #[test]
+    fn a_byte_argument_below_the_range_is_rejected() {
         // Both ends of the `byte` range are errors, never a silent wrap. There
         // is no unary minus in the grammar yet, so the negative is built
         // straight from the AST — Plan 4b's arithmetic makes it reachable from
@@ -711,6 +760,10 @@ mod tests {
         // A default is as much a source of a wrong value as an argument is, so
         // it gets the same type check — anchored on the *parameter*, since that
         // is the declaration the author must fix.
+        //
+        // The lone parameter deliberately carries `param_span(2)` while sitting
+        // at index 0: the anchor must come from `p.span` itself, not from any
+        // computation over the parameter's position.
         let params = vec![param("err", Type::Byte, Some(int(300)), param_span(2))];
         let d = bind_args("p", &params, &[], &Env::new(), &call_span()).unwrap_err();
         assert!(d.message.contains("the default for"), "got: {}", d.message);
