@@ -2569,13 +2569,34 @@ and add the method to `impl Emitter` (after `reserve_deferred`):
                     break;
                 }
             }
-            self.alloc.exit_scope();
-            self.reserve_deferred();
+            // Task 6's helper: closes the scope *and* re-takes any register a
+            // pending verdict still depends on. Never call `exit_scope` here
+            // directly — that reintroduces the residue-liveness hazard.
+            self.exit_expansion_scope();
             result?;
         }
         Ok(())
     }
 ```
+
+**And a global emission budget (added during execution — the per-construct cap is not enough).** Review of Task 6 showed a per-construct `MAX_UNROLL` does **not** bound composition: `repeat 1024 { p() }` where `p` itself contains `repeat 1024 { … }` is 10⁶ statements, and `proc pN() { pN+1() pN+1() }` nested 22 deep is a 95-line file that emits 2²² statements and hangs the compiler with no diagnostic. So the cap alone does not achieve its own stated rationale ("turn an out-of-memory into a diagnostic").
+
+Add a **central** budget to `Emitter::push`, which every emitted line already funnels through:
+
+```rust
+/// The largest number of asm lines a single program may emit.
+///
+/// A tamal program is capped at 1024 words, so anything beyond this can never
+/// assemble. The per-construct `MAX_UNROLL` gives a *better message* for the
+/// obvious case (`repeat 99999999`), but only a central budget bounds
+/// *composition* — nested `repeat`s, or a `proc` that fans out to two calls per
+/// level. Without it those hang the compiler with no diagnostic.
+const MAX_EMITTED_LINES: usize = 4096;
+```
+
+and have `push` refuse to grow past it, returning a diagnostic rather than emitting. Note `push` is currently infallible and is called from many places, so making it fallible ripples; the cheaper shape is a `budget_exceeded: Option<Diagnostic>` latch on the `Emitter` that `push` sets on first overflow and that `emit` checks before returning `Ok`. Either is acceptable — pick the one that keeps the code clearest, and pin it with a test that a fan-out `proc` and a nested `repeat` each produce a diagnostic instead of hanging.
+
+The budget is deliberately looser than 1024 words: `li` can tile to two words and labels/directives emit lines that are not words, so a tight bound would reject legal programs. Its job is to stop unbounded growth, not to replace the assembler's exact cap.
 
 - [ ] **Step 6: Extend the halt scan**
 
@@ -3044,6 +3065,8 @@ Found by review during execution. None blocks this increment; all are recorded h
 4. **`bind_args` returns a `HashMap`; iterating it would be a determinism violation.** Both consumers move it straight into `Env::locals` and read it by key. The doc comment says so; if a future feature (a listing of per-expansion bindings, an unused-parameter lint, a debug dump) needs an order, walk `params` instead.
 
 5. **A recursion-guard regression aborts the whole test binary.** The name-based chain guard is correct and pinned, but if it is ever broken the resulting stack overflow takes down the entire `--lib` test binary rather than failing one test. Accepted property of recursion guards; noted so a future `SIGABRT` in CI is recognised for what it is.
+
+6. **`RegAlloc::bind` does not shadow — a callee binding a caller's name destroys the caller's binding.** `bind` overwrites `bindings[name]` and records the name in the *current* scope, so `exit_scope` then removes it outright. A `proc` body doing `recv status`, inlined into a test that also bound `status`, leaves the caller's `status` unresolvable afterwards even though its register is still busy. Unreachable today because `RegAlloc::lookup` has no non-test caller — but **Plan 4b wires named references into operand position**, at which point this becomes live, and `proc` inlining makes the collision likely in practice (it is exactly what a shared library `proc` looks like). Fix when 4b lands: make it a per-scope shadow stack (`bindings: HashMap<String, Vec<Reg>>`, popped on `exit_scope`).
 
 ---
 
