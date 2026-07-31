@@ -5,6 +5,7 @@
 
 use crate::parser::{Arg, Expr, Module, ProcDef, Stmt};
 use std::collections::HashMap;
+use std::rc::Rc;
 use tamal_asm::{Diagnostic, Span};
 
 use crate::consteval::{self, Env};
@@ -84,9 +85,18 @@ struct Emitter {
     /// because only emit expands them (a `proc` call is a statement); `fn`s
     /// live in the `Env` because consteval resolves them (a `fn` call is an
     /// expression). Duplicates were already rejected by the driver.
-    procs: HashMap<String, ProcDef>,
+    ///
+    /// Behind an [`Rc`] for the same reason as [`Env`]'s tables: every
+    /// expansion clones the entry to release the `&self` borrow, and a bare
+    /// `ProcDef` would deep-copy the parameters *and the whole body AST* each
+    /// time. With the `Rc` that clone is a refcount bump.
+    procs: HashMap<String, Rc<ProcDef>>,
     /// The `proc`s whose expansion is in progress, innermost last — a name that
     /// appears twice is recursion, which cannot be inlined.
+    ///
+    /// Deliberately independent of [`Env`]'s `active` chain: that one tracks
+    /// `fn`s, which consteval resolves. See `lower_call` for why the two are
+    /// kept apart rather than unified.
     active_procs: Vec<String>,
 }
 
@@ -113,7 +123,7 @@ impl Emitter {
             procs: module
                 .procs
                 .iter()
-                .map(|p| (p.name.clone(), p.clone()))
+                .map(|p| (p.name.clone(), Rc::new(p.clone())))
                 .collect(),
             active_procs: Vec::new(),
         }
@@ -309,6 +319,10 @@ impl Emitter {
                 format!("{}:\n\thalt 0x{:02X}\n", d.label, d.code),
             ));
         }
+        // The one `exit_scope` that is NOT routed through
+        // `exit_expansion_scope`: this frame's verdicts have just been emitted,
+        // so the registers they held are dead and there is nothing left to keep
+        // alive. Every *nested* expansion scope must use the helper instead.
         self.alloc.exit_scope();
         Ok(())
     }
@@ -438,7 +452,14 @@ impl Emitter {
         }
         let bindings =
             consteval::bind_args(name, &p.params, args, &self.env, span).map_err(|d| vec![d])?;
-        let child = self.env.child_for_call(name, bindings);
+        // `child_for_call_values`, NOT `child_for_call`: the callee is pushed
+        // onto `active_procs` below instead of onto `Env`'s chain. The two
+        // chains are kept separate because the `Env` one tracks `fn`s (read
+        // only by consteval's `eval_fn_call`) while this one tracks `proc`s
+        // (read only here). Sharing one chain would work today only because the
+        // driver forbids a `fn` and a `proc` sharing a name — a guarantee that
+        // qualified names (`espi.command`) may weaken. Do not unify them.
+        let child = self.env.child_for_call_values(bindings);
         let saved = std::mem::replace(&mut self.env, child);
         self.active_procs.push(name.to_string());
         self.alloc.enter_scope();
@@ -451,11 +472,24 @@ impl Emitter {
         }
         // Unwind in reverse, on the error path too, so the emitter is never
         // left inside a half-expanded call.
-        self.alloc.exit_scope();
-        self.reserve_deferred();
+        self.exit_expansion_scope();
         self.active_procs.pop();
         self.env = saved;
         result
+    }
+
+    /// Close a nested expansion's register scope, keeping any pending verdict
+    /// registers alive.
+    ///
+    /// Every expansion scope (`proc` inline, `repeat` iteration) must be closed
+    /// through here rather than by calling `exit_scope` directly: the enclosing
+    /// frame's deferred verdicts may hold registers this scope owned, and
+    /// releasing them would let a later statement clobber the value the verdict
+    /// branches on. The frame's *own* exit is the exception — it closes its
+    /// scope after its verdicts are already emitted.
+    fn exit_expansion_scope(&mut self) {
+        self.alloc.exit_scope();
+        self.reserve_deferred();
     }
 
     /// Re-take the registers the open frame's pending verdicts depend on.

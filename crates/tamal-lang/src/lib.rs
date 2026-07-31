@@ -18,9 +18,10 @@ use tamal_asm::Program;
 
 /// Lower tamal-lang source to tamal-asm text plus its source map.
 ///
-/// Installs the module's `fn` table, resolves `const`s, then requires exactly
-/// one `test` per file (one program entry point); zero or many is a diagnostic,
-/// and a test that can never halt is rejected.
+/// Validates the callable names (`fn` and `proc`) and installs the `fn` table,
+/// resolves `const`s, then requires exactly one `test` per file (one program
+/// entry point); zero or many is a diagnostic, and a test that can never halt
+/// is rejected.
 pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let toks = lexer::lex(source)?;
     let module = parser::parse(source, &toks)?;
@@ -31,15 +32,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     // a `const` is expanded at that point — so its body sees only the `const`s
     // defined ABOVE the calling `const`, not the whole module.
     for f in &module.fns {
-        if consteval::BUILTINS.contains(&f.name.as_str()) {
-            return Err(vec![
-                Diagnostic::error(
-                    f.name_span.clone(),
-                    format!("`{}` is a builtin and cannot be redefined", f.name),
-                )
-                .with_help("the builtins are crc8, len, lo, hi"),
-            ]);
-        }
+        check_callable_name(&f.name, &f.name_span, "fn")?;
         if !env.define_fn(f.clone()) {
             return Err(vec![Diagnostic::error(
                 f.name_span.clone(),
@@ -50,12 +43,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     // `proc`s are expanded by the emitter, but their names are validated here,
     // beside the `fn`s, so every callable-name collision is caught in one place.
     for (i, p) in module.procs.iter().enumerate() {
-        if consteval::BUILTINS.contains(&p.name.as_str()) {
-            return Err(vec![Diagnostic::error(
-                p.name_span.clone(),
-                format!("`{}` is a builtin and cannot be redefined", p.name),
-            )]);
-        }
+        check_callable_name(&p.name, &p.name_span, "proc")?;
         if env.get_fn(&p.name).is_some() {
             return Err(vec![Diagnostic::error(
                 p.name_span.clone(),
@@ -125,6 +113,47 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         ]);
     }
     emit::emit(&module, env)
+}
+
+/// Reject a callable name that is already spoken for. `kind` is `"fn"` or
+/// `"proc"`, for the diagnostic.
+///
+/// Two classes of reserved name, shared by both callables because they share
+/// one namespace (a `proc` may not collide with a `fn`, and vice versa), so the
+/// set of legal names must not depend on the kind:
+///
+/// * a compile-time **builtin** — it must always mean the same thing;
+/// * a **statement keyword** — `parse_stmt` matches those before it would ever
+///   see a call, so `proc send() { … }` is definable but uncallable. A `fn` of
+///   that name *is* reachable (calls appear in expression position, e.g.
+///   `send send(1)`), but it is rejected all the same: converting a `fn` to a
+///   `proc` must never turn a legal name illegal.
+fn check_callable_name(name: &str, span: &Span, kind: &str) -> Result<(), Vec<Diagnostic>> {
+    if consteval::BUILTINS.contains(&name) {
+        return Err(vec![
+            Diagnostic::error(
+                span.clone(),
+                format!("`{name}` is a builtin and cannot be redefined"),
+            )
+            .with_help(format!(
+                "the builtins are {}",
+                consteval::BUILTINS.join(", ")
+            )),
+        ]);
+    }
+    if parser::STMT_KEYWORDS.contains(&name) {
+        return Err(vec![
+            Diagnostic::error(
+                span.clone(),
+                format!("`{name}` is a statement keyword and cannot be used as a `{kind}` name"),
+            )
+            .with_help(format!(
+                "the statement keywords are {}",
+                parser::STMT_KEYWORDS.join(", ")
+            )),
+        ]);
+    }
+    Ok(())
 }
 
 /// Lower to just the tamal-asm text (the `--emit asm` artifact).
@@ -692,6 +721,34 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_latched_two_expansions_deep_survives_every_scope_exit() {
+        // The hard case for `exit_expansion_scope`: `inner` latches the
+        // residue, `outer` allocates after it, and the frame allocates after
+        // that. Ownership of the residue register has to walk outward one scope
+        // at a time — inner -> outer -> frame — so a single `reserve` at the
+        // innermost exit is not enough. `mid` and `late` both get x2 (each is
+        // released by the scope that owned it); neither may be handed x1.
+        let asm = lower_to_asm(
+            "proc inner() { expect crc else 0x11 }\n\
+             proc outer() { inner()\n recv mid\n }\n\
+             test t {\n frame {\n  outer()\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
     fn a_recursive_proc_is_rejected() {
         let err = lower_to_asm("proc p() { p() }\ntest t {\n p()\n pass\n}\n").unwrap_err();
         assert!(
@@ -757,6 +814,52 @@ mod tests {
             asm,
             ".globl _start\n_start:\n\tput_byte 0x40\n\thalt 0x00\n"
         );
+    }
+
+    #[test]
+    fn a_proc_may_not_be_named_after_a_statement_keyword() {
+        // `proc send() {…}` is definable but uncallable: `send()` parses as the
+        // `send` statement and dies on the empty expression, with nothing to
+        // suggest the definition is unreachable. Reject it at the definition.
+        let err = lower_to_asm("proc send() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        // Anchored on the name being defined, and the help lists the words.
+        assert_eq!(err[0].primary, 5..9, "anchored on the `proc` name");
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("crc_region")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_fn_may_not_be_named_after_a_statement_keyword_either() {
+        // A `fn` of that name IS reachable (`send send(1)` works, because calls
+        // appear in expression position). It is rejected anyway: `fn` and `proc`
+        // share one namespace, so converting one to the other must never turn a
+        // legal name illegal.
+        let err = lower_to_asm("fn recv(n: int) -> int { n }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(err[0].message.contains("`fn` name"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_proc_may_not_shadow_a_builtin() {
+        // The `fn` rule (`a_fn_may_not_shadow_a_builtin`) applies to `proc`s
+        // too — one namespace, one set of legal names.
+        let err = lower_to_asm("proc crc8() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("builtin"), "got: {:?}", err[0]);
     }
 
     #[test]

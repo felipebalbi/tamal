@@ -1,9 +1,12 @@
 //! Register allocation: bind named runtime variables and scratch temporaries to
 //! the tamal ISA's 15 usable physical registers (`x1`..`x15`; `x0` is the wired
 //! zero and is never allocated). A scoped, lowest-free-first pool: entering a
-//! scope (a `frame`, or later a `proc`) and leaving it frees everything bound
-//! inside it, so a nested scope can never clobber an outer live value. There is
-//! no spill target, so exhaustion is a hard error (spec D5, §7).
+//! scope (a `frame`, or an inlined `proc` expansion) and leaving it frees
+//! everything bound inside it, so a nested scope can never clobber an outer
+//! live value. A value that outlives its scope — an `expect`'s CRC residue,
+//! latched inside an expansion but branched on at the frame's exit — is carried
+//! across by [`RegAlloc::reserve`]. There is no spill target, so exhaustion is
+//! a hard error (spec D5, §7).
 
 use std::collections::HashMap;
 use tamal_abi::isa::Reg;
@@ -43,8 +46,8 @@ impl RegAlloc {
         }
     }
 
-    /// Open a nested scope (a `frame`); its allocations are released by the
-    /// matching [`RegAlloc::exit_scope`].
+    /// Open a nested scope (a `frame`, or a `proc` expansion); its allocations
+    /// are released by the matching [`RegAlloc::exit_scope`].
     pub fn enter_scope(&mut self) {
         self.scopes.push(Scope::default());
     }

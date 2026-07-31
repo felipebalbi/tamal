@@ -235,6 +235,29 @@ fn parse_number(lexeme: &str) -> Option<i64> {
     }
 }
 
+/// The words `parse_stmt` matches before it would ever consider a `proc` call
+/// or a raw instruction.
+///
+/// A callable may not take one of these names: the statement grammar wins, so
+/// `proc send() { … }` would be *definable but uncallable* — `send()` parses as
+/// the `send` statement and fails on the empty expression, with nothing to
+/// suggest the definition is unreachable. The driver rejects such a name up
+/// front instead.
+///
+/// This list must mirror `parse_stmt`'s match arms; `stmt_keywords_shadow_a_call`
+/// fails if an arm is added without updating it.
+pub const STMT_KEYWORDS: &[&str] = &[
+    "pass",
+    "fail",
+    "send",
+    "crc_region",
+    "config",
+    "frame",
+    "recv",
+    "wait_state",
+    "expect",
+];
+
 /// Parse tokens into a [`Module`], or return diagnostics.
 pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
     let mut p = P { src, toks, i: 0 };
@@ -476,6 +499,11 @@ impl<'a> P<'a> {
         }
     }
 
+    /// Parse one statement.
+    ///
+    /// The words in [`STMT_KEYWORDS`] are matched here first; anything else is
+    /// a `proc` call (when followed by `(`) or a raw instruction. Keep the two
+    /// in step — see [`STMT_KEYWORDS`].
     fn parse_stmt(&mut self) -> Result<Stmt, Vec<Diagnostic>> {
         let head = self.expect_ident()?;
         let word = self.lexeme(&head).to_string();
@@ -1138,6 +1166,29 @@ mod tests {
             "got: {}",
             err[0].message
         );
+    }
+
+    #[test]
+    fn stmt_keywords_shadow_a_call() {
+        // The property the driver's name check depends on: for every word in
+        // STMT_KEYWORDS, `word()` is NOT parsed as a `proc` call — the
+        // statement grammar claims it first (usually by failing outright).
+        // Drop an arm from `parse_stmt` without updating the list and this
+        // fails, because the word would start parsing as a call.
+        for kw in STMT_KEYWORDS {
+            let src = format!("test t {{\n {kw}()\n pass\n}}\n");
+            let toks = lex(&src).unwrap();
+            match parse(&src, &toks) {
+                // A parse error is the common outcome and is fine — the point
+                // is only that it never becomes a callable reference.
+                Err(_) => {}
+                Ok(m) => assert!(
+                    !matches!(m.tests[0].stmts[0], Stmt::Call { .. }),
+                    "`{kw}` parsed as a call: it is no longer a statement keyword, \
+                     so remove it from STMT_KEYWORDS"
+                ),
+            }
+        }
     }
 
     fn parse_expr_ok(src: &str) -> Expr {
