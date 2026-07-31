@@ -47,6 +47,28 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
             )]);
         }
     }
+    // `proc`s are expanded by the emitter, but their names are validated here,
+    // beside the `fn`s, so every callable-name collision is caught in one place.
+    for (i, p) in module.procs.iter().enumerate() {
+        if consteval::BUILTINS.contains(&p.name.as_str()) {
+            return Err(vec![Diagnostic::error(
+                p.name_span.clone(),
+                format!("`{}` is a builtin and cannot be redefined", p.name),
+            )]);
+        }
+        if env.get_fn(&p.name).is_some() {
+            return Err(vec![Diagnostic::error(
+                p.name_span.clone(),
+                format!("`{}` is already defined as a `fn`", p.name),
+            )]);
+        }
+        if module.procs[..i].iter().any(|q| q.name == p.name) {
+            return Err(vec![Diagnostic::error(
+                p.name_span.clone(),
+                format!("duplicate proc `{}`", p.name),
+            )]);
+        }
+    }
     // Resolve `const`s in source order; each may reference earlier ones.
     // Duplicate names and references to undefined names are hard errors.
     for c in &module.consts {
@@ -89,6 +111,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::Recv { .. } => false,
         parser::Stmt::WaitState { .. } => false,
         parser::Stmt::Expect { .. } => false,
+        parser::Stmt::Call { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -96,7 +119,9 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
                 test.name_span.clone(),
                 format!("test `{}` never halts", test.name),
             )
-            .with_help("a test must reach `pass`, `fail`, or a `halt` instruction"),
+            .with_help(
+                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame` or `proc` body is not counted",
+            ),
         ]);
     }
     emit::emit(&module, env)
@@ -562,6 +587,272 @@ mod tests {
             ".globl _start\n_start:\n\
              \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\
              \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_proc_call_inlines_its_body() {
+        let asm = lower_to_asm(
+            "proc cfg() { config controller, x1, sck20, alert_pin }\n\
+             test t {\n cfg()\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tset_config controller, x1, sck20, alert_pin\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn proc_parameters_are_visible_in_its_body() {
+        let asm = lower_to_asm(
+            "proc emit_pkt(pkt: bytes) { send pkt + crc8 }\n\
+             test t {\n emit_pkt([0x44, 0x00, 0x64])\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn two_expansions_get_fresh_registers_and_labels() {
+        // Hygiene (D2/D5): each expansion re-uses the same registers (the
+        // previous one released them) but never the same label.
+        let asm =
+            lower_to_asm("proc poll() { wait_state }\ntest t {\n poll()\n poll()\n pass\n}\n")
+                .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             __wait0:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait0\n\
+             __wait1:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait1\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_proc_expansion_cannot_clobber_a_live_caller_register() {
+        let asm = lower_to_asm(
+            "proc read() { recv inner }\n\
+             test t {\n recv keep\n read()\n recv after\n pass\n}\n",
+        )
+        .unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        // `keep` holds x1 across the call, so the callee is handed x2 — and
+        // releases it on exit, so the next binding reuses x2.
+        assert_eq!(
+            gets,
+            vec!["\tget_byte x1", "\tget_byte x2", "\tget_byte x2"]
+        );
+    }
+
+    #[test]
+    fn a_proc_call_inside_a_frame_defers_its_expect_to_that_frame() {
+        let asm = lower_to_asm(
+            "proc verify() { expect crc else 0x11 }\n\
+             test t {\n frame {\n  verify()\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_inside_a_proc_survives_later_allocations() {
+        // The residue lives in the proc's scope but is branched on at the
+        // frame's exit: the `recv` after the call must NOT be handed x1.
+        let asm = lower_to_asm(
+            "proc verify() { expect crc else 0x11 }\n\
+             test t {\n frame {\n  verify()\n  recv extra\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_recursive_proc_is_rejected() {
+        let err = lower_to_asm("proc p() { p() }\ntest t {\n p()\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn mutual_recursion_between_procs_is_rejected() {
+        // The guard must scan the WHOLE in-progress chain, not just its
+        // innermost entry: at the inner call the chain is ["a", "b"] and it is
+        // the *outer* `a` that makes this recursion. Checking only the last
+        // entry does not merely mis-report — it inlines until the host stack
+        // dies (a SIGABRT with no diagnostic at all).
+        let err = lower_to_asm(
+            "proc a() { b() }\n\
+             proc b() { a() }\n\
+             test t {\n a()\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn proc_parameters_do_not_leak_past_the_call() {
+        // D5 hygiene, the caller's half: the expansion swaps in the callee's
+        // value scope and must swap the caller's back. Here `N` is both a
+        // module `const` and a parameter, so a leaked scope is visible in the
+        // emitted bytes — the second `send` would re-emit the argument.
+        let asm = lower_to_asm(
+            "const N = 0x40\n\
+             proc p(N: int) { send [N] }\n\
+             test t {\n p(1)\n send [N]\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x01\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_proc_is_rejected() {
+        // The emitter's `proc` table is a HashMap, so without this the second
+        // definition would silently win.
+        let err = lower_to_asm("proc p() { cs_assert }\nproc p() { tar 2 }\ntest t {\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("duplicate proc"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_terminator_inside_a_proc_body_does_not_satisfy_the_halt_scan() {
+        // The M2 scan is a *top-level* scan of the test's own statements, so a
+        // `pass` reachable only through an expansion does not count. That is
+        // deliberately conservative — this program would in fact halt — and the
+        // help text says so, so both are pinned together.
+        let err = lower_to_asm("proc p() { pass }\ntest t {\n p()\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"), "got: {:?}", err[0]);
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("`proc` body is not counted")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_fn_cannot_be_called_as_a_statement() {
+        let err =
+            lower_to_asm("fn f(n: int) -> int { n }\ntest t {\n f(1)\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("is a `fn`"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn an_unknown_call_is_rejected() {
+        let err = lower_to_asm("test t {\n nope()\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("unknown `proc`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_proc_may_not_collide_with_a_fn() {
+        let err = lower_to_asm(
+            "fn dup(n: int) -> int { n }\nproc dup() { cs_assert }\ntest t {\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("already defined as a `fn`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_in_a_plain_frame_survives_later_allocations() {
+        // The same residue-liveness property as the proc case, without a proc:
+        // the register holding the residue must stay live until the `bnez`.
+        let asm = lower_to_asm(
+            "test t {\n frame {\n  recv a\n  expect crc else 0x11\n  recv b\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\
+             \tget_byte x2\n\trdsr x2, crc\n\
+             \tget_byte x3\n\
+             \tcs_deassert\n\
+             \tbnez x2, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn pass_inside_a_frame_points_at_the_test_not_the_file_start() {
+        // Task 5 gave `pass` a real span; without it the caret lands at 0..0,
+        // i.e. the start of the file.
+        let err = lower_to_asm("test t {\n frame {\n  pass\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(err[0].primary, 5..6, "the caret must land on `t`, not 0..0");
+    }
+
+    #[test]
+    fn fail_inside_a_frame_is_rejected() {
+        let err = lower_to_asm("test t {\n frame {\n  fail 0x22\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_nested_frame_is_rejected() {
+        let err = lower_to_asm("test t {\n frame {\n  frame {\n   tar 2\n  }\n }\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
         );
     }
 }

@@ -6,11 +6,12 @@
 use crate::lexer::{Tok, Token};
 use tamal_asm::{Diagnostic, Span};
 
-/// A parsed `.tam` module: `const` items, `fn` items, and tests.
+/// A parsed `.tam` module: `const` items, `fn` items, `proc` items, and tests.
 #[derive(Debug, Clone)]
 pub struct Module {
     pub consts: Vec<Const>,
     pub fns: Vec<FnDef>,
+    pub procs: Vec<ProcDef>,
     pub tests: Vec<Test>,
 }
 
@@ -78,6 +79,13 @@ pub enum Stmt {
     /// residue, and (via the enclosing `frame`) branch to a `fail <byte>` after
     /// CS deasserts (D9/D12). Only legal inside a `frame`.
     Expect { else_code: Expr, span: Span },
+    /// `name(args)` — a `proc` call, expanded inline at this point.
+    Call {
+        name: String,
+        name_span: Span,
+        args: Vec<Arg>,
+        span: Span,
+    },
 }
 
 /// One destination of a `recv`: a named binding or a `_` discard.
@@ -156,6 +164,18 @@ pub struct FnDef {
     pub body: Expr,
 }
 
+/// A `proc NAME(params) { stmts }` item: a procedure that emits bus activity.
+///
+/// It is **inlined** at every call site — the tamal ISA has no `call`/`ret`, no
+/// stack and no data memory, so there is no runtime linkage to invent (D2).
+#[derive(Debug, Clone)]
+pub struct ProcDef {
+    pub name: String,
+    pub name_span: Span,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
 /// A compile-time expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -220,6 +240,7 @@ pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
     let mut p = P { src, toks, i: 0 };
     let mut consts = Vec::new();
     let mut fns = Vec::new();
+    let mut procs = Vec::new();
     let mut tests = Vec::new();
     p.skip_newlines();
     while p.peek() != Tok::Eof {
@@ -227,17 +248,23 @@ pub fn parse(src: &str, toks: &[Token]) -> Result<Module, Vec<Diagnostic>> {
         match p.lexeme(&kw) {
             "const" => consts.push(p.parse_const()?),
             "fn" => fns.push(p.parse_fn()?),
+            "proc" => procs.push(p.parse_proc()?),
             "test" => tests.push(p.parse_test()?),
             other => {
                 return Err(vec![Diagnostic::error(
                     kw,
-                    format!("expected `const`, `fn`, or `test`, found `{other}`"),
+                    format!("expected `const`, `fn`, `proc`, or `test`, found `{other}`"),
                 )]);
             }
         }
         p.skip_newlines();
     }
-    Ok(Module { consts, fns, tests })
+    Ok(Module {
+        consts,
+        fns,
+        procs,
+        tests,
+    })
 }
 
 struct P<'a> {
@@ -293,27 +320,35 @@ impl<'a> P<'a> {
         Ok(self.expect(Tok::Ident, "an identifier")?.span)
     }
 
-    fn parse_test(&mut self) -> Result<Test, Vec<Diagnostic>> {
-        let name_span = self.expect_ident()?;
-        let name = self.lexeme(&name_span).to_string();
-        self.expect(Tok::LBrace, "`{`")?;
-        let mut stmts = Vec::new();
+    /// Parse statements up to and including the matching `}` (the `{` is
+    /// already consumed); returns the body and the closing brace's end offset.
+    /// `what` names the construct in the unterminated-block diagnostic.
+    fn parse_block(&mut self, what: &str) -> Result<(Vec<Stmt>, usize), Vec<Diagnostic>> {
+        let mut body = Vec::new();
         loop {
             self.skip_newlines();
             match self.peek() {
                 Tok::RBrace => {
+                    let end = self.span().end;
                     self.i += 1;
-                    break;
+                    return Ok((body, end));
                 }
                 Tok::Eof => {
                     return Err(vec![Diagnostic::error(
                         self.span(),
-                        "unexpected end of file: missing `}`",
+                        format!("unexpected end of file: missing `}}` for `{what}`"),
                     )]);
                 }
-                _ => stmts.push(self.parse_stmt()?),
+                _ => body.push(self.parse_stmt()?),
             }
         }
+    }
+
+    fn parse_test(&mut self) -> Result<Test, Vec<Diagnostic>> {
+        let name_span = self.expect_ident()?;
+        let name = self.lexeme(&name_span).to_string();
+        self.expect(Tok::LBrace, "`{`")?;
+        let (stmts, _) = self.parse_block("test")?;
         Ok(Test {
             name,
             name_span,
@@ -353,6 +388,23 @@ impl<'a> P<'a> {
             name_span,
             params,
             ret,
+            body,
+        })
+    }
+
+    fn parse_proc(&mut self) -> Result<ProcDef, Vec<Diagnostic>> {
+        let name_span = self.expect_ident()?;
+        let name = self.lexeme(&name_span).to_string();
+        self.expect(Tok::LParen, "`(`")?;
+        let params = self.parse_params()?;
+        self.expect(Tok::RParen, "`)`")?;
+        self.expect(Tok::LBrace, "`{`")?;
+        let (body, _) = self.parse_block("proc")?;
+        self.end_stmt()?;
+        Ok(ProcDef {
+            name,
+            name_span,
+            params,
             body,
         })
     }
@@ -518,24 +570,7 @@ impl<'a> P<'a> {
             }
             "frame" => {
                 self.expect(Tok::LBrace, "`{`")?;
-                let mut body = Vec::new();
-                let end = loop {
-                    self.skip_newlines();
-                    match self.peek() {
-                        Tok::RBrace => {
-                            let e = self.span().end;
-                            self.i += 1;
-                            break e;
-                        }
-                        Tok::Eof => {
-                            return Err(vec![Diagnostic::error(
-                                self.span(),
-                                "unexpected end of file: missing `}` for `frame`",
-                            )]);
-                        }
-                        _ => body.push(self.parse_stmt()?),
-                    }
-                };
+                let (body, end) = self.parse_block("frame")?;
                 self.end_stmt()?;
                 Ok(Stmt::Frame {
                     body,
@@ -620,6 +655,21 @@ impl<'a> P<'a> {
                 Ok(Stmt::Expect { else_code, span })
             }
             _ => {
+                // `name(...)` is a `proc` call, not a raw instruction: an asm
+                // operand never starts with `(`.
+                if self.peek() == Tok::LParen {
+                    self.i += 1;
+                    let args = self.parse_args()?;
+                    let close = self.expect(Tok::RParen, "`)`")?;
+                    let span = head.start..close.span.end;
+                    self.end_stmt()?;
+                    return Ok(Stmt::Call {
+                        name: word,
+                        name_span: head,
+                        args,
+                        span,
+                    });
+                }
                 let mut operands = Vec::new();
                 let mut end = head.end;
                 if !self.at_stmt_end() {
@@ -1040,6 +1090,47 @@ mod tests {
         // A `fn` is a statement-terminated item: the closing `}` must be
         // followed by a newline (or EOF), not by the next item.
         let src = "fn f(n: int) -> int { n } fn g(n: int) -> int { n }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("expected end of statement"),
+            "got: {}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn parses_proc_item() {
+        let m = parse_ok(
+            "proc command(pkt: bytes, ndata: int, err: byte = 0x11) {\n send pkt + crc8\n tar 2\n}\ntest t {\n pass\n}\n",
+        );
+        assert_eq!(m.procs.len(), 1);
+        let p = &m.procs[0];
+        assert_eq!(p.name, "command");
+        assert_eq!(p.params.len(), 3);
+        assert!(p.params[2].default.is_some());
+        assert_eq!(p.body.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_call_statement() {
+        let m = parse_ok("test t {\n command(pkt = [0x44], 0)\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Call { name, args, .. } => {
+                assert_eq!(name, "command");
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0].name.as_deref(), Some("pkt"));
+                assert!(args[1].name.is_none());
+            }
+            s => panic!("expected Call, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_two_call_statements_on_one_line() {
+        // A `proc` call is statement-terminated like every other statement: the
+        // closing `)` must be followed by a newline (or `}`), not the next call.
+        let src = "test t {\n p() q()\n pass\n}\n";
         let toks = lex(src).unwrap();
         let err = parse(src, &toks).unwrap_err();
         assert!(

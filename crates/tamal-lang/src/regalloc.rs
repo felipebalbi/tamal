@@ -123,6 +123,25 @@ impl RegAlloc {
             scope.regs.retain(|&r| r != reg);
         }
     }
+
+    /// Re-take `reg` in the **current** scope, for a value whose allocating
+    /// scope has ended but which is still live.
+    ///
+    /// The case this exists for: an `expect` inside an inlined `proc` latches
+    /// the RX residue into a register owned by the expansion's scope, but the
+    /// verdict branches on it at the enclosing `frame`'s exit. Without this the
+    /// register would look free and a later statement could clobber the value
+    /// before it is read. Idempotent.
+    pub fn reserve(&mut self, reg: Reg) {
+        if let Some(slot) = self.busy.get_mut(reg.bits() as usize) {
+            *slot = true;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            if !scope.regs.contains(&reg) {
+                scope.regs.push(reg);
+            }
+        }
+    }
 }
 
 impl Default for RegAlloc {
@@ -201,6 +220,35 @@ mod tests {
         // inner (x2) is reclaimed; outer (x1) is still live, so the next temp is
         // x2 again — never x1.
         assert_eq!(a.temp(&(0..0)).unwrap(), r(2));
+    }
+
+    #[test]
+    fn reserve_retakes_a_register_whose_scope_has_ended() {
+        // The `expect`-inside-a-`proc` case: a value is latched in a nested
+        // scope but read after that scope ends, so the register must be re-taken
+        // or a later allocation would clobber it.
+        let mut a = RegAlloc::new();
+        a.enter_scope();
+        let latched = a.temp(&(0..0)).unwrap(); // x1, owned by the inner scope
+        a.exit_scope(); // x1 would now be free …
+        a.reserve(latched); // … but the value is still live
+        assert_eq!(a.temp(&(0..0)).unwrap(), r(2), "must not hand out x1 again");
+    }
+
+    #[test]
+    fn a_reserved_register_is_freed_by_the_scope_that_reserved_it() {
+        // `reserve` re-takes the register into the CURRENT scope, which is the
+        // one that will consume the value (the `frame`, for a verdict latched
+        // inside an inlined `proc`). Marking it busy without recording an owner
+        // would leak it for the rest of the program.
+        let mut a = RegAlloc::new();
+        a.enter_scope(); // the frame
+        a.enter_scope(); // the proc expansion
+        let latched = a.temp(&(0..0)).unwrap(); // x1
+        a.exit_scope(); // the expansion ends …
+        a.reserve(latched); // … but the frame still needs the value
+        a.exit_scope(); // the frame ends: now x1 really is free
+        assert_eq!(a.temp(&(0..0)).unwrap(), r(1), "x1 must be reclaimed");
     }
 
     #[test]
