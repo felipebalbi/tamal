@@ -134,7 +134,10 @@ pub struct Param {
     pub ty: Type,
     /// The default used when a call does not bind this parameter.
     pub default: Option<Expr>,
-    /// The span of the declaration, for diagnostics.
+    /// Where a diagnostic about this parameter is anchored: the name, extended
+    /// through the default expression when there is one. `bind_args` anchors
+    /// its default-type-check here, so with a default the caret covers the
+    /// value being complained about; without one it collapses to just the name.
     pub span: Span,
 }
 
@@ -984,26 +987,35 @@ mod tests {
             err[0].message
         );
         // Anchored on the SECOND declaration — the one the author must delete.
-        // `x` occurs at byte 5 and again at byte 13; the caret must be the latter.
-        assert_eq!(&src[err[0].primary.clone()], "x");
-        assert_eq!(err[0].primary, 13..14, "anchored on the second `x`");
+        let second_x = src.match_indices('x').nth(1).unwrap().0;
+        assert_eq!(
+            err[0].primary,
+            second_x..second_x + 1,
+            "anchored on the second `x`"
+        );
+    }
 
+    #[test]
+    fn rejects_a_non_adjacent_duplicate_parameter() {
         // The scan must cover every parameter declared so far, not just the
         // previous one: a duplicate need not be adjacent to its twin.
-        let apart = "fn f(x: int, y: int, x: bytes) -> int { y }\ntest t {\n pass\n}\n";
-        let toks = lex(apart).unwrap();
-        let err = parse(apart, &toks).unwrap_err();
+        let src = "fn f(x: int, y: int, x: bytes) -> int { y }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
         assert!(
             err[0].message.contains("duplicate parameter `x`"),
-            "a non-adjacent duplicate must be rejected too; got: {}",
+            "got: {}",
             err[0].message
         );
+    }
 
+    #[test]
+    fn a_duplicate_parameter_is_reported_before_its_type() {
         // The scan runs BEFORE the type is parsed, so the duplicate is what
         // gets blamed — not an unrelated later problem on the same parameter.
-        let and_bad_type = "fn f(x: int, x: word) -> int { x }\ntest t {\n pass\n}\n";
-        let toks = lex(and_bad_type).unwrap();
-        let err = parse(and_bad_type, &toks).unwrap_err();
+        let src = "fn f(x: int, x: word) -> int { x }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
         assert!(
             err[0].message.contains("duplicate parameter `x`"),
             "the duplicate must win over `unknown type`; got: {}",

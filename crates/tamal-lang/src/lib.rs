@@ -448,13 +448,21 @@ mod tests {
         // already being expanded when the default runs. Before this was
         // handled, the compiler overflowed its stack and aborted with no
         // diagnostic at all.
-        let err =
-            lower_to_asm("fn f(n: int = f()) -> int { n }\ntest t {\n send [f()]\n pass\n}\n")
-                .unwrap_err();
+        let src = "fn f(n: int = f()) -> int { n }\ntest t {\n send [f()]\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
         assert!(
             err[0].message.contains("is already being expanded"),
             "got: {:?}",
             err[0]
+        );
+        // The anchor is the non-obvious part: it points at the `f()` INSIDE the
+        // default, not at the `fn` item and not at the `f()` in the test body —
+        // the default is where the author has to break the cycle.
+        let in_default = src.find("= f()").unwrap() + 2;
+        assert_eq!(
+            err[0].primary,
+            in_default..in_default + 3,
+            "anchored on the `f()` inside the default"
         );
     }
 
@@ -520,20 +528,19 @@ mod tests {
     }
 
     #[test]
-    fn a_fn_may_not_shadow_a_builtin_or_repeat_a_name() {
-        let shadow =
+    fn a_fn_may_not_shadow_a_builtin() {
+        let err =
             lower_to_asm("fn crc8(b: bytes) -> byte { 0 }\ntest t {\n pass\n}\n").unwrap_err();
-        assert!(
-            shadow[0].message.contains("builtin"),
-            "got: {:?}",
-            shadow[0]
-        );
+        assert!(err[0].message.contains("builtin"), "got: {:?}", err[0]);
+    }
 
-        let dup = lower_to_asm(
+    #[test]
+    fn a_duplicate_fn_is_rejected() {
+        let err = lower_to_asm(
             "fn f(n: int) -> int { n }\nfn f(n: int) -> int { n }\ntest t {\n pass\n}\n",
         )
         .unwrap_err();
-        assert!(dup[0].message.contains("duplicate fn"), "got: {:?}", dup[0]);
+        assert!(err[0].message.contains("duplicate fn"), "got: {:?}", err[0]);
     }
 
     #[test]
@@ -541,9 +548,9 @@ mod tests {
         // An argument expression is written at the CALL site, so it must be
         // evaluated in the caller's scope — here `addr` is `hdr`'s parameter,
         // passed on to `lo_byte`. `bind_args` is handed the caller's `env` for
-        // exactly this reason; passing `env.module_scope()` instead would make
-        // this `unknown name `addr``. Task 3 pins the rule inside the binder;
-        // this pins the `eval_fn_call` call site that feeds it.
+        // exactly this reason; passing `env.default_scope_for(…)` instead would
+        // make this `unknown name `addr``. Task 3 pins the rule inside the
+        // binder; this pins the `eval_fn_call` call site that feeds it.
         let asm = lower_to_asm(
             "fn lo_byte(n: int) -> byte { lo(n) }\n\
              fn hdr(addr: int) -> bytes { [0x44, hi(addr), lo_byte(addr)] }\n\

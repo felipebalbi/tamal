@@ -7,9 +7,11 @@
 //! This module also owns the semantics both callables share: [`Env`], the
 //! lexical scope model (a module's `const`s plus the innermost call's
 //! parameters, looked up locals-first so a parameter shadows a same-named
-//! `const`, with defaults evaluated in module scope rather than the caller's),
-//! and [`bind_args`], the argument binder that `fn` and `proc` share so the two
-//! can never drift apart.
+//! `const`, with defaults evaluated in module scope rather than the caller's
+//! *and* with the callee counted as already being expanded, so a
+//! self-referential default is reported instead of looped on), and
+//! [`bind_args`], the argument binder that `fn` and `proc` share so the two can
+//! never drift apart.
 
 use crate::parser::{Arg, BinOp, Expr, FnDef, Param, Type};
 use std::collections::HashMap;
@@ -27,7 +29,7 @@ pub enum Value {
 
 /// The compile-time builtins. A user `fn` may not take one of these names — a
 /// builtin must always mean the same thing.
-pub const BUILTINS: [&str; 4] = ["crc8", "len", "lo", "hi"];
+pub const BUILTINS: &[&str] = &["crc8", "len", "lo", "hi"];
 
 /// The compile-time environment threaded through evaluation: the module's
 /// `const`s (the base scope) plus the parameters bound by the innermost
@@ -45,7 +47,11 @@ pub const BUILTINS: [&str; 4] = ["crc8", "len", "lo", "hi"];
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     /// Module-level `const`s: the base scope every call body starts from.
-    consts: HashMap<String, Value>,
+    ///
+    /// Behind an [`Rc`] for the same reason as `fns`, and it matters more: a
+    /// `const` may hold a `Value::Bytes`, so a deep clone reallocates every
+    /// byte string in the module on every call.
+    consts: Rc<HashMap<String, Value>>,
     /// Parameters bound by the innermost call: the callee's own scope, shadowing
     /// the module `const`s. Empty at module level; populated per call by
     /// [`Env::child_for_call_values`].
@@ -77,7 +83,7 @@ impl Env {
     /// before inserting is load-bearing — it keeps the duplicate diagnostic
     /// winning over any error from evaluating the duplicate's value.
     pub fn insert_const(&mut self, name: String, value: Value) {
-        self.consts.insert(name, value);
+        Rc::make_mut(&mut self.consts).insert(name, value);
     }
 
     /// Is `name` already defined as a module-level `const`?
@@ -109,7 +115,11 @@ impl Env {
     /// chain — which is exactly what lets legal nesting like `f(f(1))` compile.
     /// That asymmetry is why the callee is pushed here and in
     /// [`Env::child_for_call`], but never around [`bind_args`]' argument loop.
-    pub fn module_scope_for(&self, callee: &str) -> Env {
+    ///
+    /// Deliberately private: [`bind_args`]' defaults loop is the only place
+    /// this scope is correct, and a neutral-looking accessor is exactly how the
+    /// argument path would acquire it by mistake.
+    fn default_scope_for(&self, callee: &str) -> Env {
         let mut e = self.clone();
         e.locals.clear();
         e.active.push(callee.to_string());
@@ -385,16 +395,16 @@ pub fn bind_args(
     }
     // Fill the rest from defaults, in declaration order so that the first
     // missing parameter reported is stable across runs. Every default shares
-    // one scope, built here unconditionally — including when no default needs
-    // it, which is the common case and the only one this costs. At this scale
-    // that clone is irrelevant; making it lazy would not be.
+    // one scope, built at most once and only when some parameter actually needs
+    // it — in the common case every parameter is bound and no scope is built at
+    // all, which is why this is lazy rather than hoisted.
     //
-    // Note `_for(callee)`, not a bare module scope: a default belongs to the
-    // callee's declaration, so the callee counts as already being expanded and
-    // `fn f(n: int = f())` is caught by the guard in `eval_fn_call` instead of
-    // recursing until the host stack dies. The argument loop above deliberately
-    // does NOT do this — see `Env::module_scope_for`.
-    let module = env.module_scope_for(callee);
+    // Note `default_scope_for`, not a bare module scope: a default belongs to
+    // the callee's declaration, so the callee counts as already being expanded
+    // and `fn f(n: int = f())` is caught by the guard in `eval_fn_call` instead
+    // of recursing until the host stack dies. The argument loop above
+    // deliberately does NOT do this — see `Env::default_scope_for`.
+    let mut default_scope: Option<Env> = None;
     for p in params {
         if bound.contains_key(&p.name) {
             continue;
@@ -405,7 +415,8 @@ pub fn bind_args(
                 format!("`{callee}` is missing a value for parameter `{}`", p.name),
             ));
         };
-        let v = eval(default, &module)?;
+        let scope = default_scope.get_or_insert_with(|| env.default_scope_for(callee));
+        let v = eval(default, scope)?;
         check_type(
             &v,
             p.ty,
