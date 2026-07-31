@@ -32,9 +32,9 @@ pub enum Value {
 pub struct Env {
     /// Module-level `const`s: the base scope every call body starts from.
     consts: HashMap<String, Value>,
-    /// Parameters bound by the innermost call. Empty at module level; filled by
-    /// `fn`/`proc` expansion. Nothing populates it yet — `fn`/`proc` expansion
-    /// will.
+    /// Parameters bound by the innermost call: the callee's own scope, shadowing
+    /// the module `const`s. Empty at module level; populated per call by
+    /// [`Env::child_for_call_values`].
     locals: HashMap<String, Value>,
 }
 
@@ -258,7 +258,10 @@ pub fn bind_args(
         bound.insert(p.name.clone(), v);
     }
     // Fill the rest from defaults, in declaration order so that the first
-    // missing parameter reported is stable across runs.
+    // missing parameter reported is stable across runs. Every default is
+    // evaluated in the same module scope, so it is built once here rather than
+    // cloned per defaulted parameter.
+    let module = env.module_scope();
     for p in params {
         if bound.contains_key(&p.name) {
             continue;
@@ -269,7 +272,7 @@ pub fn bind_args(
                 format!("`{callee}` is missing a value for parameter `{}`", p.name),
             ));
         };
-        let v = eval(default, &env.module_scope())?;
+        let v = eval(default, &module)?;
         check_type(
             &v,
             p.ty,
@@ -470,14 +473,27 @@ mod tests {
         );
     }
 
-    use crate::parser::{Param, Type};
+    /// Distinct, recognisable spans for the binder tests. A diagnostic's anchor
+    /// is user-facing — `Emitter::remap` maps it back to `.tam` source, so a
+    /// wrong anchor puts the user's caret on the wrong line. Every helper below
+    /// stamps its own span from one of these, and none of them is `0..0`, so a
+    /// mis-anchored diagnostic can never match by coincidence.
+    fn call_span() -> Span {
+        900..901
+    }
+    fn arg_span(i: usize) -> Span {
+        100 + i..101 + i
+    }
+    fn param_span(i: usize) -> Span {
+        200 + i..201 + i
+    }
 
-    fn param(name: &str, ty: Type, default: Option<Expr>) -> Param {
+    fn param(name: &str, ty: Type, default: Option<Expr>, span: Span) -> Param {
         Param {
             name: name.into(),
             ty,
             default,
-            span: 0..0,
+            span,
         }
     }
 
@@ -497,24 +513,49 @@ mod tests {
         }
     }
 
+    /// Give each argument its own `arg_span(i)`, so a diagnostic anchored on an
+    /// argument identifies *which* one.
+    fn stamped(mut args: Vec<Arg>) -> Vec<Arg> {
+        for (i, a) in args.iter_mut().enumerate() {
+            a.span = arg_span(i);
+        }
+        args
+    }
+
     /// `(pkt: bytes, ndata: int, err: byte = 0x11)` — the shape of the library
     /// `command` proc, which is what this binder exists to serve.
     fn command_params() -> Vec<Param> {
         vec![
-            param("pkt", Type::Bytes, None),
-            param("ndata", Type::Int, None),
-            param("err", Type::Byte, Some(int(0x11))),
+            param("pkt", Type::Bytes, None, param_span(0)),
+            param("ndata", Type::Int, None, param_span(1)),
+            param("err", Type::Byte, Some(int(0x11)), param_span(2)),
         ]
     }
 
-    fn bind_ok(args: Vec<Arg>) -> std::collections::HashMap<String, Value> {
-        bind_args("command", &command_params(), &args, &Env::new(), &(0..0)).unwrap()
+    fn bind_ok(args: Vec<Arg>) -> HashMap<String, Value> {
+        bind_args(
+            "command",
+            &command_params(),
+            &stamped(args),
+            &Env::new(),
+            &call_span(),
+        )
+        .unwrap()
+    }
+
+    fn bind_diag(args: Vec<Arg>) -> Diagnostic {
+        bind_args(
+            "command",
+            &command_params(),
+            &stamped(args),
+            &Env::new(),
+            &call_span(),
+        )
+        .unwrap_err()
     }
 
     fn bind_err(args: Vec<Arg>) -> String {
-        bind_args("command", &command_params(), &args, &Env::new(), &(0..0))
-            .unwrap_err()
-            .message
+        bind_diag(args).message
     }
 
     #[test]
@@ -568,27 +609,73 @@ mod tests {
             pos(int(9)),
         ]);
         assert!(surplus.contains("takes 3 argument"), "got: {surplus}");
+        assert!(surplus.contains("got 4"), "got: {surplus}");
     }
 
     #[test]
     fn a_missing_required_parameter_is_reported_in_declaration_order() {
         // Neither `pkt` nor `ndata` is bound; the FIRST declared one is named,
         // deterministically (params are a Vec, never a HashMap).
-        let msg = bind_err(vec![]);
-        assert!(msg.contains("`pkt`"), "got: {msg}");
+        let d = bind_diag(vec![]);
+        assert!(d.message.contains("`pkt`"), "got: {}", d.message);
+        // There is no argument to point at, so this one anchors on the call.
+        assert_eq!(d.primary, call_span());
     }
 
     #[test]
     fn arguments_are_checked_against_their_declared_type() {
-        let wrong = bind_err(vec![pos(int(5)), pos(int(0))]); // pkt: bytes
-        assert!(wrong.contains("expects `bytes`"), "got: {wrong}");
+        let wrong = bind_diag(vec![pos(int(5)), pos(int(0))]); // pkt: bytes
+        assert!(
+            wrong.message.contains("expects `bytes`"),
+            "got: {}",
+            wrong.message
+        );
+        assert_eq!(wrong.primary, arg_span(0), "anchored on the bad argument");
 
-        let too_big = bind_err(vec![
+        let too_big = bind_diag(vec![
             pos(bytes(&[0x44])),
             pos(int(0)),
             named("err", int(256)),
         ]);
-        assert!(too_big.contains("expects `byte`"), "got: {too_big}");
+        assert!(
+            too_big.message.contains("expects `byte`"),
+            "got: {}",
+            too_big.message
+        );
+        assert_eq!(too_big.primary, arg_span(2), "anchored on the bad argument");
+    }
+
+    #[test]
+    fn an_argument_is_evaluated_in_the_callers_scope() {
+        // The mirror of the default rule below, and the more dangerous half: an
+        // argument expression is written at the *call* site, so it must resolve
+        // against the caller's locals. Evaluating it in module scope instead
+        // would break every nested call — `proc outer(x: int) { command(ndata =
+        // x) }` would fail with `unknown name `x`` — while leaving the rest of
+        // the suite green.
+        let caller = Env::new()
+            .child_for_call_values([("x".to_string(), Value::Int(7))].into_iter().collect());
+        let args = stamped(vec![
+            pos(bytes(&[0x44])),
+            pos(Expr::Name {
+                name: "x".into(),
+                span: 0..0,
+            }),
+        ]);
+        let b = bind_args("command", &command_params(), &args, &caller, &call_span()).unwrap();
+        assert_eq!(b["ndata"], Value::Int(7));
+    }
+
+    #[test]
+    fn a_default_is_checked_against_the_declared_type() {
+        // A default is as much a source of a wrong value as an argument is, so
+        // it gets the same type check — anchored on the *parameter*, since that
+        // is the declaration the author must fix.
+        let params = vec![param("err", Type::Byte, Some(int(300)), param_span(2))];
+        let d = bind_args("p", &params, &[], &Env::new(), &call_span()).unwrap_err();
+        assert!(d.message.contains("the default for"), "got: {}", d.message);
+        assert!(d.message.contains("expects `byte`"), "got: {}", d.message);
+        assert_eq!(d.primary, param_span(2), "anchored on the parameter");
     }
 
     #[test]
@@ -608,8 +695,9 @@ mod tests {
                 name: "K".into(),
                 span: 0..0,
             }),
+            param_span(0),
         )];
-        let err = bind_args("p", &params, &[], &caller, &(0..0)).unwrap_err();
+        let err = bind_args("p", &params, &[], &caller, &call_span()).unwrap_err();
         assert!(
             err.message.contains("unknown name `K`"),
             "got: {}",
