@@ -1113,4 +1113,66 @@ mod tests {
              __fail0:\n\thalt 0x11\n"
         );
     }
+
+    /// A fan-out `proc` chain: `p0` calls `p1` twice, … `pN` emits one line.
+    /// `depth` levels expand to `2^depth` emitted lines from a source file of
+    /// only `4 * depth` lines — no single construct is large.
+    fn fanout_chain(depth: u32) -> String {
+        let mut src = format!("proc p{depth}() {{\n cs_assert\n}}\n");
+        for n in (0..depth).rev() {
+            src += &format!("proc p{n}() {{\n p{}()\n p{}()\n}}\n", n + 1, n + 1);
+        }
+        src + "test t {\n p0()\n pass\n}\n"
+    }
+
+    #[test]
+    fn a_fanout_proc_chain_cannot_outgrow_the_emission_budget() {
+        // 2^22 lines out of a 95-line file. Every `proc` is tiny and no
+        // `repeat` is involved, so `MAX_UNROLL` cannot see this one — only a
+        // central budget can.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(&fanout_chain(22)).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
+        // The bug being prevented is a *hang*: a budget that records the error
+        // but lets the expansion run to completion still takes ~10 s here.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn nested_repeats_cannot_outgrow_the_emission_budget() {
+        // 1024 x 1024 lines, with each individual `repeat` inside MAX_UNROLL —
+        // the per-construct cap cannot bound the product.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "proc inner() { repeat 1024 { cs_assert } }\n\
+             test t {\n repeat 1024 {\n  inner()\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_program_near_the_real_limit_still_compiles() {
+        // The budget must bound runaway growth without rejecting legal work:
+        // 1000 emitted lines is a plausible program and must go through.
+        let asm = lower_to_asm("test t {\n repeat 1000 {\n  cs_assert\n }\n pass\n}\n").unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), 1000);
+    }
 }

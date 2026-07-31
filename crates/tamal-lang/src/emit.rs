@@ -15,6 +15,20 @@ use tamal_abi::isa::Reg;
 /// The eSPI WAIT_STATE response code the `wait_state` poll spins on.
 const WAIT_STATE_CODE: u8 = 0x0F;
 
+/// The largest number of asm lines a single program may emit.
+///
+/// A tamal program is capped at 1024 words, so anything beyond this can never
+/// assemble. The per-construct [`crate::MAX_UNROLL`] gives a *better message*
+/// for the obvious case (`repeat 99999999`), but only a central budget bounds
+/// *composition* — nested `repeat`s, or a `proc` that fans out to two calls per
+/// level. Without it those hang the compiler with no diagnostic.
+///
+/// Deliberately looser than 1024: `li` can tile to two words, and labels and
+/// directives emit lines that are not words at all, so a tight bound would
+/// reject legal programs. Its job is to stop unbounded growth, not to duplicate
+/// the assembler's exact cap.
+const MAX_EMITTED_LINES: usize = 4096;
+
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
 /// at the `.tam` span that produced the offending line.
@@ -57,12 +71,12 @@ impl Lowering {
 pub fn emit(module: &Module, env: Env) -> Result<Lowering, Vec<Diagnostic>> {
     let mut e = Emitter::new(env, module);
     for test in &module.tests {
-        e.push(".globl _start\n", &test.name_span);
-        e.push("_start:\n", &test.name_span);
+        e.push(".globl _start\n", &test.name_span)?;
+        e.push("_start:\n", &test.name_span)?;
         for stmt in &test.stmts {
             e.stmt(stmt, &test.name_span)?;
         }
-        e.flush_trailers();
+        e.flush_trailers()?;
     }
     Ok(e.finish())
 }
@@ -136,18 +150,46 @@ impl Emitter {
         }
     }
 
-    fn flush_trailers(&mut self) {
+    fn flush_trailers(&mut self) -> Result<(), Vec<Diagnostic>> {
         let trailers = std::mem::take(&mut self.trailers);
         for (span, block) in trailers {
-            self.push(&block, &span);
+            self.push(&block, &span)?;
         }
+        Ok(())
     }
 
     /// Append one asm line and record its `(asm byte range, .tam span)` mapping.
-    fn push(&mut self, text: &str, span: &Span) {
+    ///
+    /// Fallible **only** to enforce [`MAX_EMITTED_LINES`]. Every emitted line
+    /// funnels through here, so this is the one place that can bound total
+    /// output — and because it returns a `Result`, the `?` at each call site
+    /// unwinds every enclosing expansion loop for free. That is the point of
+    /// the fallible shape over a latch flag: a latch would record the overflow
+    /// but leave each expansion loop to notice it, so a loop that forgot to
+    /// check would still run a 2^22 expansion to completion. Here it is not
+    /// possible to forget.
+    ///
+    /// The budget is checked *before* appending, so the emitted text never
+    /// exceeds it, and the diagnostic is anchored on the line that overflowed —
+    /// the innermost construct still expanding, which is the most specific
+    /// location available (the test's entry span would point at nothing useful).
+    fn push(&mut self, text: &str, span: &Span) -> Result<(), Vec<Diagnostic>> {
+        if self.lines.len() >= MAX_EMITTED_LINES {
+            return Err(vec![
+                Diagnostic::error(
+                    span.clone(),
+                    format!("the program emits more than {MAX_EMITTED_LINES} asm lines"),
+                )
+                .with_help(
+                    "a tamal program is at most 1024 words — reduce a `repeat` count, \
+                     or a `proc` that expands to more calls than it looks like",
+                ),
+            ]);
+        }
         let start = self.asm.len();
         self.asm.push_str(text);
         self.lines.push((start..self.asm.len(), span.clone()));
+        Ok(())
     }
 
     /// A fresh, asm-safe label: `__<prefix><n>` (no leading dot — dots are
@@ -190,8 +232,8 @@ impl Emitter {
             )]);
         }
         match stmt {
-            Stmt::Pass => self.push("\thalt 0x00\n", entry),
-            Stmt::Fail { code, span } => self.push(&format!("\thalt {code}\n"), span),
+            Stmt::Pass => self.push("\thalt 0x00\n", entry)?,
+            Stmt::Fail { code, span } => self.push(&format!("\thalt {code}\n"), span)?,
             Stmt::Raw { .. } => self.lower_raw(stmt)?,
             Stmt::Send { .. } => self.lower_send(stmt)?,
             Stmt::CrcRegion { .. } => self.lower_crc_region(stmt)?,
@@ -225,7 +267,7 @@ impl Emitter {
         } else {
             format!("\t{mnemonic} {}\n", operands.join(", "))
         };
-        self.push(&text, span);
+        self.push(&text, span)?;
         Ok(())
     }
 
@@ -243,7 +285,7 @@ impl Emitter {
             bs.push(tamal_abi::crc8::crc8(&bs));
         }
         for b in bs {
-            self.push(&format!("\tput_byte 0x{b:02X}\n"), span);
+            self.push(&format!("\tput_byte 0x{b:02X}\n"), span)?;
         }
         Ok(())
     }
@@ -258,7 +300,7 @@ impl Emitter {
         }
         total.push(tamal_abi::crc8::crc8(&total));
         for b in total {
-            self.push(&format!("\tput_byte 0x{b:02X}\n"), span);
+            self.push(&format!("\tput_byte 0x{b:02X}\n"), span)?;
         }
         Ok(())
     }
@@ -277,7 +319,7 @@ impl Emitter {
         self.push(
             &format!("\tset_config {role}, {io}, {sck}, {alert}\n"),
             span,
-        );
+        )?;
         Ok(())
     }
 
@@ -287,7 +329,7 @@ impl Emitter {
         span: &Span,
         entry: &Span,
     ) -> Result<(), Vec<Diagnostic>> {
-        self.push("\tcs_assert\n", span);
+        self.push("\tcs_assert\n", span)?;
         self.alloc.enter_scope();
         self.frames.push(Vec::new());
         let mut result = Ok(());
@@ -309,12 +351,12 @@ impl Emitter {
         // we deassert here, THEN emit the deferred `bnez` verdict(s), and hoist
         // each fail-`halt` to a trailer so the `pass` path falls through. Do not
         // reorder cs_deassert after the bnez — that would strand CS# on a fail.
-        self.push("\tcs_deassert\n", span);
+        self.push("\tcs_deassert\n", span)?;
         for d in &deferred {
             self.push(
                 &format!("\tbnez {}, {}\n", reg_name(d.reg), d.label),
                 &d.span,
-            );
+            )?;
             self.trailers.push((
                 d.span.clone(),
                 format!("{}:\n\thalt 0x{:02X}\n", d.label, d.code),
@@ -338,11 +380,11 @@ impl Emitter {
             match target {
                 RecvTarget::Name(name) => {
                     let reg = self.alloc.bind(name.clone(), span).map_err(|d| vec![d])?;
-                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span);
+                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span)?;
                 }
                 RecvTarget::Discard => {
                     let reg = self.alloc.temp(span).map_err(|d| vec![d])?;
-                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span);
+                    self.push(&format!("\tget_byte {}\n", reg_name(reg)), span)?;
                     self.alloc.free(reg);
                 }
             }
@@ -356,22 +398,22 @@ impl Emitter {
         span: &Span,
     ) -> Result<(), Vec<Diagnostic>> {
         let label = self.gensym("wait");
-        self.push(&format!("{label}:\n"), span);
-        self.push("\tcrc_reset\n", span);
+        self.push(&format!("{label}:\n"), span)?;
+        self.push("\tcrc_reset\n", span)?;
         let resp = match bind {
             Some(name) => self.alloc.bind(name.clone(), span).map_err(|d| vec![d])?,
             None => self.alloc.temp(span).map_err(|d| vec![d])?,
         };
-        self.push(&format!("\tget_byte {}\n", reg_name(resp)), span);
+        self.push(&format!("\tget_byte {}\n", reg_name(resp)), span)?;
         let k = self.alloc.temp(span).map_err(|d| vec![d])?;
         self.push(
             &format!("\tli {}, 0x{WAIT_STATE_CODE:02X}\n", reg_name(k)),
             span,
-        );
+        )?;
         self.push(
             &format!("\tbeq {}, {}, {label}\n", reg_name(resp), reg_name(k)),
             span,
-        );
+        )?;
         self.alloc.free(k);
         if bind.is_none() {
             self.alloc.free(resp);
@@ -392,11 +434,11 @@ impl Emitter {
         let code = consteval::eval_byte(else_code, &self.env).map_err(|d| vec![d])?;
         // Consume the trailing CRC byte (drives the RX residue to 0).
         let discard = self.alloc.temp(span).map_err(|d| vec![d])?;
-        self.push(&format!("\tget_byte {}\n", reg_name(discard)), span);
+        self.push(&format!("\tget_byte {}\n", reg_name(discard)), span)?;
         self.alloc.free(discard);
         // Latch the residue; keep it live until the deferred branch.
         let res = self.alloc.temp(span).map_err(|d| vec![d])?;
-        self.push(&format!("\trdsr {}, crc\n", reg_name(res)), span);
+        self.push(&format!("\trdsr {}, crc\n", reg_name(res)), span)?;
         let label = self.gensym("fail");
         let frame = self.frames.last_mut().expect("in_frame() was just checked");
         frame.push(Deferred {
@@ -669,6 +711,31 @@ mod tests {
             err[0].message.contains("not in 0..=1024"),
             "got: {:?}",
             err[0]
+        );
+    }
+
+    #[test]
+    fn a_program_of_exactly_the_budget_compiles_and_one_line_more_does_not() {
+        // Pins where the cap actually falls. The `.globl`/`_start:` prologue is
+        // two lines, so `MAX_EMITTED_LINES - 2` raw statements sit exactly on
+        // it; one more is over. Driven off the constant so the boundary stays
+        // pinned if the budget is ever retuned.
+        let raws = |n: usize| -> Vec<Stmt> {
+            (0..n)
+                .map(|_| Stmt::Raw {
+                    mnemonic: "cs_assert".into(),
+                    operands: vec![],
+                    span: 0..1,
+                })
+                .collect()
+        };
+        assert!(
+            emit(&one(raws(MAX_EMITTED_LINES - 2)), Env::new()).is_ok(),
+            "exactly {MAX_EMITTED_LINES} emitted lines must compile"
+        );
+        assert!(
+            emit(&one(raws(MAX_EMITTED_LINES - 1)), Env::new()).is_err(),
+            "one line over the budget must be a diagnostic"
         );
     }
 
