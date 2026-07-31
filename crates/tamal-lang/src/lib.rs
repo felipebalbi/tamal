@@ -740,6 +740,26 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_proc_call_forwards_an_argument_from_the_callers_scope() {
+        // Two properties in one program. First, a `proc` may call another
+        // `proc` — the expansion is recursive over the body. Second, an
+        // ARGUMENT is written at the call site, so `inner(x)` must resolve `x`
+        // against `outer`'s parameters: `bind_args` is handed the *caller's*
+        // env for exactly that reason. Passing a bare module scope instead
+        // would make this `unknown name `x``, while leaving the rest green.
+        let asm = lower_to_asm(
+            "proc inner(n: int) { send [n] }\n\
+             proc outer(x: int) { inner(x) }\n\
+             test t {\n outer(0x40)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
     fn a_duplicate_proc_is_rejected() {
         // The emitter's `proc` table is a HashMap, so without this the second
         // definition would silently win.
