@@ -26,8 +26,10 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
     let module = parser::parse(source, &toks)?;
     let mut env = consteval::Env::new();
     // Install the `fn` table first: a `const` may be built by a compile-time
-    // helper, and a `fn` body is only evaluated when it is called (by which
-    // time every `const` it names is resolved).
+    // helper, so every `fn` must be callable before any `const` resolves. The
+    // `const`s themselves still resolve in source order, and a `fn` called from
+    // a `const` is expanded at that point — so its body sees only the `const`s
+    // defined ABOVE the calling `const`, not the whole module.
     for f in &module.fns {
         if consteval::BUILTINS.contains(&f.name.as_str()) {
             return Err(vec![
@@ -414,7 +416,96 @@ mod tests {
     fn a_recursive_fn_is_rejected() {
         let err = lower_to_asm("fn f(n: int) -> int { f(n) }\ntest t {\n send [f(1)]\n pass\n}\n")
             .unwrap_err();
-        assert!(err[0].message.contains("calls itself"), "got: {:?}", err[0]);
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn mutual_recursion_between_fns_is_rejected() {
+        // `f` → `g` → `f`. The guard must scan the WHOLE in-progress chain, not
+        // just its innermost entry: at the inner call the chain is ["f", "g"]
+        // and it is the *outer* `f` that makes this recursion. Checking only
+        // the last entry would loop until the host stack dies.
+        let err = lower_to_asm(
+            "fn f(n: int) -> int { g(n) }\n\
+             fn g(n: int) -> int { f(n) }\n\
+             test t {\n send [f(1)]\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_self_referential_parameter_default_is_rejected() {
+        // A default belongs to the callee's own declaration, so the callee is
+        // already being expanded when the default runs. Before this was
+        // handled, the compiler overflowed its stack and aborted with no
+        // diagnostic at all.
+        let err =
+            lower_to_asm("fn f(n: int = f()) -> int { n }\ntest t {\n send [f()]\n pass\n}\n")
+                .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_default_cycle_between_two_fns_is_rejected() {
+        // The default cycle need not be direct: `f`'s default calls `g`, whose
+        // default calls `f`.
+        let err = lower_to_asm(
+            "fn f(n: int = g()) -> int { n }\n\
+             fn g(m: int = f()) -> int { m }\n\
+             test t {\n send [f()]\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn nested_calls_to_the_same_fn_are_legal() {
+        // The regression guard for the recursion fix. An ARGUMENT is written at
+        // the call site and is evaluated in the caller's scope with the callee
+        // NOT yet on the chain, so `f(f(1))` is ordinary nesting, not recursion.
+        // Pushing the callee before binding arguments would "fix" the default
+        // cycle above while silently rejecting this — hence the exact bytes.
+        let asm =
+            lower_to_asm("fn f(n: int) -> int { n ^ 0x10 }\ntest t {\n send [f(f(1))]\n pass\n}\n")
+                .unwrap();
+        // f(1) = 1 ^ 0x10 = 0x11; f(0x11) = 0x11 ^ 0x10 = 0x01.
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x01\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_default_may_call_a_different_fn() {
+        // The guard must reject cycles without outlawing a default that simply
+        // delegates to another compile-time helper.
+        let asm = lower_to_asm(
+            "fn base() -> int { 0x40 }\n\
+             fn f(n: int = base()) -> int { n }\n\
+             test t {\n send [f()]\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
     }
 
     #[test]

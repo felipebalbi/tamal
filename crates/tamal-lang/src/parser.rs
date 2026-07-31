@@ -370,6 +370,17 @@ impl<'a> P<'a> {
         while self.peek() != Tok::RParen {
             let name_span = self.expect_ident()?;
             let name = self.lexeme(&name_span).to_string();
+            // Checked before the type and default are parsed, so a repeated
+            // name is reported as such rather than being pre-empted by an
+            // unrelated later problem (`fn f(x: int, x: word)` must blame the
+            // duplicate `x`, not the unknown type `word`).
+            if params.iter().any(|p| p.name == name) {
+                // Anchored on the second declaration — the one to delete.
+                return Err(vec![Diagnostic::error(
+                    name_span,
+                    format!("duplicate parameter `{name}`"),
+                )]);
+            }
             self.expect(Tok::Colon, "`:` and a type")?;
             let ty = self.parse_type()?;
             let mut end = name_span.end;
@@ -379,13 +390,6 @@ impl<'a> P<'a> {
                 let e = self.parse_expr()?;
                 end = e.span().end;
                 default = Some(e);
-            }
-            if params.iter().any(|p| p.name == name) {
-                // Anchored on the second declaration — the one to delete.
-                return Err(vec![Diagnostic::error(
-                    name_span,
-                    format!("duplicate parameter `{name}`"),
-                )]);
             }
             params.push(Param {
                 name,
@@ -883,7 +887,14 @@ mod tests {
     fn missing_test_keyword_is_an_error() {
         let toks = lex("smoke {\n  pass\n}\n").unwrap();
         let err = parse("smoke {\n  pass\n}\n", &toks).unwrap_err();
-        assert!(err[0].message.contains("expected `const`"));
+        // Names `fn` explicitly so dropping it from the item match is caught;
+        // still open-ended enough for Task 6, which extends the list to
+        // ``expected `const`, `fn`, `proc`, or `test``.
+        assert!(
+            err[0].message.contains("expected `const`, `fn`,"),
+            "got: {}",
+            err[0].message
+        );
     }
 
     #[test]
@@ -985,6 +996,43 @@ mod tests {
         assert!(
             err[0].message.contains("duplicate parameter `x`"),
             "a non-adjacent duplicate must be rejected too; got: {}",
+            err[0].message
+        );
+
+        // The scan runs BEFORE the type is parsed, so the duplicate is what
+        // gets blamed — not an unrelated later problem on the same parameter.
+        let and_bad_type = "fn f(x: int, x: word) -> int { x }\ntest t {\n pass\n}\n";
+        let toks = lex(and_bad_type).unwrap();
+        let err = parse(and_bad_type, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("duplicate parameter `x`"),
+            "the duplicate must win over `unknown type`; got: {}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn parses_a_multiline_parameter_list_with_a_trailing_comma() {
+        // Newlines inside the parens are not statement terminators, and a
+        // trailing comma before `)` is allowed — the same rule as `[...]` and
+        // call arguments.
+        let m = parse_ok(
+            "fn f(\n  op: byte,\n  addr: int,\n) -> bytes { [op, lo(addr)] }\ntest t {\n pass\n}\n",
+        );
+        assert_eq!(m.fns[0].params.len(), 2);
+        assert_eq!(m.fns[0].params[1].name, "addr");
+    }
+
+    #[test]
+    fn rejects_two_items_on_one_line() {
+        // A `fn` is a statement-terminated item: the closing `}` must be
+        // followed by a newline (or EOF), not by the next item.
+        let src = "fn f(n: int) -> int { n } fn g(n: int) -> int { n }\ntest t {\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0].message.contains("expected end of statement"),
+            "got: {}",
             err[0].message
         );
     }

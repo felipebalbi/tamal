@@ -13,6 +13,7 @@
 
 use crate::parser::{Arg, BinOp, Expr, FnDef, Param, Type};
 use std::collections::HashMap;
+use std::rc::Rc;
 use tamal_asm::{Diagnostic, Span};
 
 /// A folded compile-time value.
@@ -50,7 +51,12 @@ pub struct Env {
     /// [`Env::child_for_call_values`].
     locals: HashMap<String, Value>,
     /// The module's `fn` table; calls resolve against it.
-    fns: HashMap<String, FnDef>,
+    ///
+    /// Behind an [`Rc`] because `Env` is cloned twice per call (once to bind
+    /// the arguments, once for the body scope) and the table is immutable after
+    /// the driver installs it — so the clone is a refcount bump instead of a
+    /// deep copy of every `fn` AST.
+    fns: Rc<HashMap<String, FnDef>>,
     /// The callables whose expansion is in progress, innermost last. Every call
     /// is inlined, so a name that appears twice is recursion — rejected,
     /// because the ISA has no stack to recurse on.
@@ -85,14 +91,28 @@ impl Env {
         self.locals.get(name).or_else(|| self.consts.get(name))
     }
 
-    /// This environment with no parameter bindings — the module scope.
+    /// The scope a parameter **default** is evaluated in: module scope (no
+    /// parameter bindings) with `callee` pushed onto the in-progress chain.
     ///
-    /// A parameter default is written at the callee's *definition* site, so it
-    /// is evaluated here rather than in the caller's scope: a default must
-    /// never be able to capture a caller local that happens to share its name.
-    pub fn module_scope(&self) -> Env {
+    /// Two rules meet here, and they pull in opposite directions:
+    ///
+    /// * **No locals**, because a default is written at the callee's
+    ///   *definition* site: it must never capture a caller local that happens
+    ///   to share its name.
+    /// * **`callee` on the chain**, because a default is part of the callee's
+    ///   own declaration, so the callee already counts as being expanded:
+    ///   `fn f(n: int = f())` is recursion and must be reported, not looped on
+    ///   until the host stack runs out.
+    ///
+    /// An **argument** is the mirror image: written at the *call* site, it is
+    /// evaluated in the caller's scope with the callee **not** yet on the
+    /// chain — which is exactly what lets legal nesting like `f(f(1))` compile.
+    /// That asymmetry is why the callee is pushed here and in
+    /// [`Env::child_for_call`], but never around [`bind_args`]' argument loop.
+    pub fn module_scope_for(&self, callee: &str) -> Env {
         let mut e = self.clone();
         e.locals.clear();
+        e.active.push(callee.to_string());
         e
     }
 
@@ -113,7 +133,7 @@ impl Env {
         if self.fns.contains_key(&f.name) {
             return false;
         }
-        self.fns.insert(f.name.clone(), f);
+        Rc::make_mut(&mut self.fns).insert(f.name.clone(), f);
         true
     }
 
@@ -204,7 +224,13 @@ fn eval_fn_call(f: &FnDef, args: &[Arg], span: &Span, env: &Env) -> Result<Value
     if env.is_active(&f.name) {
         return Err(Diagnostic::error(
             span.clone(),
-            format!("`{}` calls itself: recursion is not possible", f.name),
+            // Not "calls itself": the chain may be mutual (`f` → `g` → `f`),
+            // in which case this fires inside `g`'s body and `f` never calls
+            // itself directly. "Already being expanded" is true of both.
+            format!(
+                "`{}` is already being expanded: recursion is not possible",
+                f.name
+            ),
         )
         .with_help("every call is inlined — the tamal ISA has no call/ret and no stack"));
     }
@@ -359,10 +385,16 @@ pub fn bind_args(
     }
     // Fill the rest from defaults, in declaration order so that the first
     // missing parameter reported is stable across runs. Every default shares
-    // one module scope, built here unconditionally — including when no default
-    // needs it, which is the common case and the only one this costs. At this
-    // scale that clone is irrelevant; making it lazy would not be.
-    let module = env.module_scope();
+    // one scope, built here unconditionally — including when no default needs
+    // it, which is the common case and the only one this costs. At this scale
+    // that clone is irrelevant; making it lazy would not be.
+    //
+    // Note `_for(callee)`, not a bare module scope: a default belongs to the
+    // callee's declaration, so the callee counts as already being expanded and
+    // `fn f(n: int = f())` is caught by the guard in `eval_fn_call` instead of
+    // recursing until the host stack dies. The argument loop above deliberately
+    // does NOT do this — see `Env::module_scope_for`.
+    let module = env.module_scope_for(callee);
     for p in params {
         if bound.contains_key(&p.name) {
             continue;
