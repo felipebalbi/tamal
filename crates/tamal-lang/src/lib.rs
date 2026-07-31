@@ -14,6 +14,14 @@ pub mod regalloc;
 
 pub use emit::Lowering;
 
+/// The largest compile-time unroll (`repeat N`, `recv N`) the compiler accepts.
+///
+/// A tamal program is capped at 1024 words, so a larger unroll can never
+/// assemble; rejecting it up front turns what would be an out-of-memory into a
+/// diagnostic. Note this is a *per-construct* bound and does not by itself
+/// bound composition — see `MAX_EMITTED_LINES` in `emit.rs`.
+pub const MAX_UNROLL: i64 = 1024;
+
 use tamal_asm::Program;
 
 /// Lower tamal-lang source to tamal-asm text plus its source map.
@@ -100,6 +108,10 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
         parser::Stmt::WaitState { .. } => false,
         parser::Stmt::Expect { .. } => false,
         parser::Stmt::Call { .. } => false,
+        // Conservative, like `Frame` and `Call`: a `repeat` body may execute
+        // zero times, so a verdict inside one is never counted as reaching a
+        // halt. A verdict belongs at the top level of the test.
+        parser::Stmt::Repeat { .. } => false,
     });
     if !halts {
         return Err(vec![
@@ -108,7 +120,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
                 format!("test `{}` never halts", test.name),
             )
             .with_help(
-                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame` or `proc` body is not counted",
+                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame`, `proc` body or `repeat` is not counted",
             ),
         ]);
     }
@@ -887,7 +899,7 @@ mod tests {
             err[0]
                 .help
                 .as_deref()
-                .is_some_and(|h| h.contains("`proc` body is not counted")),
+                .is_some_and(|h| h.contains("`proc` body")),
             "got: {:?}",
             err[0].help
         );
@@ -976,6 +988,129 @@ mod tests {
             err[0].message.contains("not allowed inside a `frame`"),
             "got: {:?}",
             err[0]
+        );
+    }
+
+    #[test]
+    fn repeat_unrolls_at_compile_time() {
+        let asm = lower_to_asm("test t {\n repeat 3 {\n  recv _\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn repeat_zero_emits_nothing() {
+        // The OOB write-completion case: `ndata = 0` contributes no reads.
+        let asm = lower_to_asm("test t {\n repeat 0 {\n  recv _\n }\n pass\n}\n").unwrap();
+        assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
+    }
+
+    #[test]
+    fn a_repeat_count_may_come_from_a_proc_parameter() {
+        let asm = lower_to_asm(
+            "proc payload(n: int) { repeat n { recv _ } }\n\
+             test t {\n payload(2)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn each_repeat_iteration_gets_its_own_register_scope() {
+        // `a` is released at the end of each iteration, so the next one reuses
+        // the same register instead of leaking a fresh one.
+        let asm = lower_to_asm("test t {\n repeat 2 {\n  recv a\n }\n pass\n}\n").unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(gets, vec!["\tget_byte x1", "\tget_byte x1"]);
+    }
+
+    #[test]
+    fn an_oversized_repeat_is_rejected() {
+        let err =
+            lower_to_asm("test t {\n repeat 99999999 {\n  cs_assert\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("not in 0..=1024"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_repeat_of_exactly_max_unroll_is_accepted() {
+        // The bound is inclusive: `MAX_UNROLL` itself is legal.
+        let src = format!("test t {{\n repeat {MAX_UNROLL} {{\n  cs_assert\n }}\n pass\n}}\n");
+        let asm = lower_to_asm(&src).unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), MAX_UNROLL as usize);
+    }
+
+    #[test]
+    fn a_repeat_one_over_max_unroll_is_rejected() {
+        let src = format!(
+            "test t {{\n repeat {} {{\n  cs_assert\n }}\n pass\n}}\n",
+            MAX_UNROLL + 1
+        );
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains("not in 0..=1024"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_terminator_inside_a_repeat_does_not_satisfy_the_halt_scan() {
+        // The same conservative rule as `proc` and `frame`: a `repeat` body may
+        // run zero times, so a `pass` reachable only through one is not counted.
+        let err = lower_to_asm("test t {\n repeat 1 {\n  pass\n }\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_verdict_latched_inside_a_repeat_survives_later_allocations() {
+        // The residue is latched in the repeat iteration's scope but branched
+        // on at the frame's exit, so `recv late` must not be handed x1.
+        let asm = lower_to_asm(
+            "test t {\n frame {\n  repeat 1 {\n   expect crc else 0x11\n  }\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_in_a_repeat_in_a_proc_still_reaches_the_frame() {
+        // Two nested expansion scopes between the `expect` and the `frame` that
+        // consumes it: the residue register must be re-taken at *each* exit, so
+        // `recv late` still gets x2 rather than clobbering x1.
+        let asm = lower_to_asm(
+            "proc p() { repeat 1 { expect crc else 0x11 } }\n\
+             test t {\n frame {\n  p()\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
         );
     }
 }

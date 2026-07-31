@@ -86,6 +86,13 @@ pub enum Stmt {
         args: Vec<Arg>,
         span: Span,
     },
+    /// `repeat N { … }` — a compile-time unroll: the body is emitted `N` times.
+    /// There is no loop counter and no branch.
+    Repeat {
+        count: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 /// One destination of a `recv`: a named binding or a `_` discard.
@@ -256,6 +263,7 @@ pub const STMT_KEYWORDS: &[&str] = &[
     "recv",
     "wait_state",
     "expect",
+    "repeat",
 ];
 
 /// Parse tokens into a [`Module`], or return diagnostics.
@@ -681,6 +689,17 @@ impl<'a> P<'a> {
                 let span = head.start..else_code.span().end;
                 self.end_stmt()?;
                 Ok(Stmt::Expect { else_code, span })
+            }
+            "repeat" => {
+                let count = self.parse_expr()?;
+                self.expect(Tok::LBrace, "`{`")?;
+                let (body, end) = self.parse_block("repeat")?;
+                self.end_stmt()?;
+                Ok(Stmt::Repeat {
+                    count,
+                    body,
+                    span: head.start..end,
+                })
             }
             _ => {
                 // `name(...)` is a `proc` call, not a raw instruction: an asm
@@ -1516,6 +1535,15 @@ mod tests {
                 assert!(matches!(body[0], Stmt::Expect { .. }));
             }
             s => panic!("expected Frame, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_repeat() {
+        let m = parse_ok("test t {\n repeat 3 {\n  recv _\n }\n pass\n}\n");
+        match &m.tests[0].stmts[0] {
+            Stmt::Repeat { body, .. } => assert_eq!(body.len(), 1),
+            s => panic!("expected Repeat, got {s:?}"),
         }
     }
 }

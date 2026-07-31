@@ -174,9 +174,9 @@ impl Emitter {
     /// The in-frame legality decision, though, lives in the `matches!` guard
     /// below — which lists only the rejected variants, so a new one silently
     /// defaults to legal inside a frame. That is deliberate for `Stmt::Call`
-    /// (and, in Task 7, `Stmt::Repeat`): both are legal in either context. A
-    /// new variant that is *not* must be added to the guard by hand; the
-    /// compiler will not prompt for it.
+    /// and `Stmt::Repeat`: both are legal at the top level, inside a `frame`
+    /// and inside a `proc`. A new variant that is *not* must be added to the
+    /// guard by hand; the compiler will not prompt for it.
     fn stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.in_frame()
             && matches!(
@@ -206,6 +206,7 @@ impl Emitter {
                 args,
                 span,
             } => self.lower_call(name, name_span, args, span, entry)?,
+            Stmt::Repeat { count, body, span } => self.lower_repeat(count, body, span, entry)?,
         }
         Ok(())
     }
@@ -478,6 +479,47 @@ impl Emitter {
         result
     }
 
+    /// `repeat N { … }` — a compile-time unroll (spec §5): emit the body `N`
+    /// times. There is no loop counter and no branch.
+    ///
+    /// Each iteration gets its own register scope, so a binding made in the
+    /// body is released before the next iteration reuses the register — closed
+    /// through `exit_expansion_scope` so a verdict latched inside the body
+    /// stays alive for the enclosing frame.
+    fn lower_repeat(
+        &mut self,
+        count: &Expr,
+        body: &[Stmt],
+        span: &Span,
+        entry: &Span,
+    ) -> Result<(), Vec<Diagnostic>> {
+        let n = consteval::eval_int(count, &self.env).map_err(|d| vec![d])?;
+        if !(0..=crate::MAX_UNROLL).contains(&n) {
+            return Err(vec![
+                Diagnostic::error(
+                    span.clone(),
+                    format!("`repeat` count {n} is not in 0..={}", crate::MAX_UNROLL),
+                )
+                .with_help(
+                    "a tamal program is at most 1024 words, so a larger unroll can never assemble",
+                ),
+            ]);
+        }
+        for _ in 0..n {
+            self.alloc.enter_scope();
+            let mut result = Ok(());
+            for s in body {
+                if let Err(e) = self.stmt(s, entry) {
+                    result = Err(e);
+                    break;
+                }
+            }
+            self.exit_expansion_scope();
+            result?;
+        }
+        Ok(())
+    }
+
     /// Close a nested expansion's register scope, keeping any pending verdict
     /// registers alive.
     ///
@@ -526,7 +568,8 @@ fn stmt_span(stmt: &Stmt, entry: &Span) -> Span {
         | Stmt::Recv { span, .. }
         | Stmt::WaitState { span, .. }
         | Stmt::Expect { span, .. }
-        | Stmt::Call { span, .. } => span.clone(),
+        | Stmt::Call { span, .. }
+        | Stmt::Repeat { span, .. } => span.clone(),
     }
 }
 
@@ -596,6 +639,36 @@ mod tests {
         assert_eq!(
             asm,
             ".globl _start\n_start:\n\tcs_assert\n\tmark 1, x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_negative_repeat_count_is_rejected() {
+        // The grammar cannot spell a negative literal today, but the AST is a
+        // public type and `Expr::Int` can hold one. Without the range check's
+        // lower bound `for _ in 0..-1` is simply an empty range, so a negative
+        // count would silently emit nothing instead of pointing at the mistake.
+        let err = emit(
+            &one(vec![Stmt::Repeat {
+                count: Expr::Int {
+                    value: -1,
+                    span: 0..1,
+                },
+                body: vec![Stmt::Raw {
+                    mnemonic: "cs_assert".into(),
+                    operands: vec![],
+                    span: 0..1,
+                }],
+                span: 0..1,
+            }]),
+            Env::new(),
+        )
+        .err()
+        .expect("a negative count is a diagnostic, not a lowering");
+        assert!(
+            err[0].message.contains("not in 0..=1024"),
+            "got: {:?}",
+            err[0]
         );
     }
 
