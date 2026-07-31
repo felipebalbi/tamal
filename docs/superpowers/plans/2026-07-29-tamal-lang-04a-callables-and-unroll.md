@@ -1182,7 +1182,11 @@ Add to `mod tests` in `crates/tamal-lang/src/lib.rs`:
             "fn f(n: int) -> int { f(n) }\ntest t {\n send [f(1)]\n pass\n}\n",
         )
         .unwrap_err();
-        assert!(err[0].message.contains("calls itself"), "got: {:?}", err[0]);
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
     }
 
     #[test]
@@ -1482,7 +1486,7 @@ fn eval_fn_call(f: &FnDef, args: &[Arg], span: &Span, env: &Env) -> Result<Value
     if env.is_active(&f.name) {
         return Err(Diagnostic::error(
             span.clone(),
-            format!("`{}` calls itself: recursion is not possible", f.name),
+            format!("`{}` is already being expanded: recursion is not possible", f.name),
         )
         .with_help("every call is inlined — the tamal ISA has no call/ret and no stack"));
     }
@@ -1922,7 +1926,11 @@ Add to `mod tests` in `crates/tamal-lang/src/lib.rs`:
     #[test]
     fn a_recursive_proc_is_rejected() {
         let err = lower_to_asm("proc p() { p() }\ntest t {\n p()\n pass\n}\n").unwrap_err();
-        assert!(err[0].message.contains("calls itself"), "got: {:?}", err[0]);
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
     }
 
     #[test]
@@ -2265,7 +2273,7 @@ Add the expansion and its register-safety helper to `impl Emitter` (after `lower
             return Err(vec![
                 Diagnostic::error(
                     span.clone(),
-                    format!("`{name}` calls itself: recursion is not possible"),
+                    format!("`{name}` is already being expanded: recursion is not possible"),
                 )
                 .with_help("every `proc` is inlined — the tamal ISA has no call/ret and no stack"),
             ]);
@@ -3020,6 +3028,22 @@ Expected: PASS across all crates — `0 failed`. Nothing outside `tamal-lang` ch
 git add crates/tamal-lang/README.md
 git commit -m "docs(tamal-lang): document the callables and the compile-time unroll"
 ```
+
+---
+
+## Known limitations & tracked follow-ups
+
+Found by review during execution. None blocks this increment; all are recorded here because "the compiler aborts or hangs with no diagnostic" is exactly the class the Task-4 blocker taught us to take seriously.
+
+1. **`fn` inlining is not memoized, so compile time is exponential in call-graph depth.** Each `fn` call re-evaluates the callee's body once per path; there is no `(name, evaluated-args) → Value` cache. Measured (release): a fan-2 chain of depth 22 — a **24-line** source file — takes ~17 s, and doubles per added level. `fn` calls are pure by construction, so memoization is sound; it is deferred because it needs shared mutable state (`Rc<RefCell<…>>`) threaded through a type that is cloned per call, which deserves its own design pass and interacts with the determinism gates planned for Plan 6. Task 4 removed the dominant *constant* factor by wrapping `Env`'s tables in `Rc` (measured ~8× on the same input), but the complexity class is unchanged.
+
+2. **Deep `fn` expansion still aborts without a diagnostic.** An *acyclic* chain of roughly a thousand `fn`s overflows the stack (exit 134/-6, no diagnostic) — the same failure mode as the Task-4 blocker, reached by depth rather than by a cycle. Note this class is **pre-existing and not confined to callables**: the recursive-descent parser overflows on ~2000-deep expression nesting (`lo(lo(lo(…)))`) and predates this plan. A `fn`-only expansion cap would therefore give false confidence while the parser path remains open; the right fix caps recursion depth across the front end and reports a diagnostic. Deferred as its own piece of work.
+
+3. **`--emit asm` diagnostics for an unclosed `(` can be misleading.** Because newlines are transparent *between* arguments, a missing `)` lets an argument list swallow following statements, so `send crc8([0x44],` / `cs_assert)` reports an arity error rather than a missing paren. This is the standard consequence of newline-transparent argument lists (Rust, C and Python behave the same way) and the obvious mitigations do not address it — the close-paren check *succeeds* in that example. Belongs with the diagnostics polish planned alongside `--lint` in Plan 6.
+
+4. **`bind_args` returns a `HashMap`; iterating it would be a determinism violation.** Both consumers move it straight into `Env::locals` and read it by key. The doc comment says so; if a future feature (a listing of per-expansion bindings, an unused-parameter lint, a debug dump) needs an order, walk `params` instead.
+
+5. **A recursion-guard regression aborts the whole test binary.** The name-based chain guard is correct and pinned, but if it is ever broken the resulting stack overflow takes down the entire `--lib` test binary rather than failing one test. Accepted property of recursion guards; noted so a future `SIGABRT` in CI is recognised for what it is.
 
 ---
 
