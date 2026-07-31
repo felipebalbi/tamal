@@ -32,7 +32,9 @@ Read this before starting; every task assumes it.
 
 4. **Argument binding is written once (`consteval::bind_args`)** and used by both callables: positional arguments in declaration order, then named (`name = value`) arguments, then each unbound parameter's default. Positional-after-named is an error. Every bound value is type-checked against its declared type (`byte` also range-checks `0..=255`). Diagnostics are emitted in **declaration order** (iterating the `params` `Vec`, never a `HashMap`), so the same source always produces the same first error — a determinism requirement, not a nicety.
 
-5. **A parameter default is evaluated in module scope**, not in the caller's. The default is written at the *definition* site (`err: byte = 0x11`), so it must not be able to see a caller local of the same name.
+5. **Arguments and defaults are evaluated in *different* scopes, and the asymmetry is load-bearing.** An **argument** is written at the *call site*, so it is evaluated in the **caller's** scope with the callee **not** yet on the in-progress chain — otherwise ordinary nesting like `f(f(1))` would be misreported as recursion. A **default** is written at the *definition site*, so it is evaluated in the callee's **module scope** with the callee **already on** the chain — otherwise a self-referential default (`fn f(n: int = f())`) recurses forever. Module scope also stops a default from capturing a caller local that happens to share its name.
+
+   > **Correction (found by review during execution).** The first draft of this plan had `bind_args` evaluate defaults via a plain `env.module_scope()`, which preserves the chain *unchanged* — and `eval_fn_call` only pushes the callee **after** `bind_args` returns. A self-referential default therefore never saw itself on the chain and overflowed the stack (exit 134, no diagnostic) on `fn f(n: int = f())`, on a mutual default cycle, and on a default cycle reached from another `fn`'s body. The fix belongs **inside `bind_args`** — a `module_scope_for(callee)` used only by the defaults loop, leaving the argument loop on the caller's `env` — so `proc` inherits it in Task 6 for free. Note the *obvious* fix (pushing the callee before `bind_args`) is wrong: it silently breaks `f(f(1))` while leaving the suite green.
 
 6. **Register hygiene comes free from `RegAlloc` (D5).** A `proc` expansion brackets its body with `enter_scope()`/`exit_scope()`. Registers live in the caller stay marked busy, so the callee's lowest-free-first allocations cannot alias them (this is exactly the invariant pinned by `regalloc.rs::nested_scope_does_not_clobber_a_live_outer_register`), and everything the callee bound is released on exit. **Label** hygiene comes free from the shared `Emitter::gensym` counter.
 
@@ -908,6 +910,13 @@ In `crates/tamal-lang/src/consteval.rs`, add these two methods to `impl Env` (af
     /// A parameter default is written at the callee's *definition* site, so it
     /// is evaluated here rather than in the caller's scope: a default must
     /// never be able to capture a caller local that happens to share its name.
+    ///
+    /// **Correction during execution:** the defaults loop must additionally push
+    /// the callee onto the in-progress chain, or a self-referential default
+    /// (`fn f(n: int = f())`) recurses until the stack overflows. Implement this
+    /// as `module_scope_for(callee)` and use it *only* for defaults — the
+    /// argument loop must stay on the caller's `env`, or legal nesting like
+    /// `f(f(1))` is misreported as recursion. See architecture note 5.
     pub fn module_scope(&self) -> Env {
         let mut e = self.clone();
         e.locals.clear();
