@@ -29,6 +29,26 @@ const WAIT_STATE_CODE: u8 = 0x0F;
 /// the assembler's exact cap.
 const MAX_EMITTED_LINES: usize = 4096;
 
+/// The largest number of *expansions* — `proc` inlines plus `repeat`
+/// iterations — a single program may perform.
+///
+/// [`MAX_EMITTED_LINES`] bounds the *output*, which is only the same thing as
+/// bounding the *work* while every unit of expansion emits something. A body
+/// that emits nothing — `{ }`, `send []`, `recv 0`, `repeat 0 { … }`, a call to
+/// an empty `proc` — still costs a full scope enter/exit per iteration, so
+/// `repeat 1024 { repeat 1024 { repeat 1024 { } } }` does 2^30 units of work,
+/// emits three lines, and never reaches `push` at all. This bounds that work
+/// directly, so the two budgets together cover both halves.
+///
+/// 16x [`MAX_EMITTED_LINES`] by construction: an expansion that contributes to
+/// the program emits at least one line, and the program is capped at 4096 of
+/// those, so this leaves 16 expansions of slack for every line actually
+/// emitted. Measured against the expansion-densest legal programs: a doubly
+/// nested `repeat 63 { repeat 64 { cs_assert } }` sitting near the line ceiling
+/// costs 4095 expansions (16x headroom), and the degenerate-but-legal
+/// zero-emitting `repeat 1024 { send [] }` costs 1024 (64x headroom).
+const MAX_EXPANSIONS: usize = 16 * MAX_EMITTED_LINES;
+
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
 /// at the `.tam` span that produced the offending line.
@@ -112,6 +132,11 @@ struct Emitter {
     /// `fn`s, which consteval resolves. See `lower_call` for why the two are
     /// kept apart rather than unified.
     active_procs: Vec<String>,
+    /// How many expansions (`proc` inlines + `repeat` iterations) have been
+    /// performed so far, for [`MAX_EXPANSIONS`]. A **whole-program** running
+    /// total: never reset per construct, or composition would escape it the
+    /// same way it escapes the per-construct [`crate::MAX_UNROLL`].
+    expansions: usize,
 }
 
 /// A verdict branch an `expect` deferred to its enclosing `frame`: after CS
@@ -140,6 +165,7 @@ impl Emitter {
                 .map(|p| (p.name.clone(), Rc::new(p.clone())))
                 .collect(),
             active_procs: Vec::new(),
+            expansions: 0,
         }
     }
 
@@ -175,21 +201,23 @@ impl Emitter {
     /// location available (the test's entry span would point at nothing useful).
     fn push(&mut self, text: &str, span: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.lines.len() >= MAX_EMITTED_LINES {
-            return Err(vec![
-                Diagnostic::error(
-                    span.clone(),
-                    format!("the program emits more than {MAX_EMITTED_LINES} asm lines"),
-                )
-                .with_help(
-                    "a tamal program is at most 1024 words — reduce a `repeat` count, \
-                     or a `proc` that expands to more calls than it looks like",
-                ),
-            ]);
+            return Err(self.budget_error(
+                span,
+                format!("the program emits more than {MAX_EMITTED_LINES} asm lines"),
+                "a tamal program is at most 1024 words — reduce a `repeat` count, \
+                 or a `proc` that expands to more calls than it looks like",
+            ));
         }
         let start = self.asm.len();
         self.asm.push_str(text);
         self.lines.push((start..self.asm.len(), span.clone()));
         Ok(())
+    }
+
+    /// Build the diagnostic for either compile-time budget, so both report the
+    /// same way. `site` is where the budget ran out.
+    fn budget_error(&self, site: &Span, message: String, help: &str) -> Vec<Diagnostic> {
+        vec![Diagnostic::error(site.clone(), message).with_help(help)]
     }
 
     /// A fresh, asm-safe label: `__<prefix><n>` (no leading dot — dots are
@@ -495,6 +523,9 @@ impl Emitter {
         }
         let bindings =
             consteval::bind_args(name, &p.params, args, &self.env, span).map_err(|d| vec![d])?;
+        // Charged before anything is swapped, so the over-budget path has
+        // nothing to unwind.
+        self.enter_expansion_scope(span)?;
         // `child_for_call_values`, NOT `child_for_call`: the callee is pushed
         // onto `active_procs` below instead of onto `Env`'s chain. The two
         // chains are kept separate because the `Env` one tracks `fn`s (read
@@ -505,7 +536,6 @@ impl Emitter {
         let child = self.env.child_for_call_values(bindings);
         let saved = std::mem::replace(&mut self.env, child);
         self.active_procs.push(name.to_string());
-        self.alloc.enter_scope();
         let mut result = Ok(());
         for s in &p.body {
             if let Err(e) = self.stmt(s, entry) {
@@ -515,9 +545,9 @@ impl Emitter {
         }
         // Unwind in reverse, on the error path too, so the emitter is never
         // left inside a half-expanded call.
-        self.exit_expansion_scope();
-        self.active_procs.pop();
         self.env = saved;
+        self.active_procs.pop();
+        self.exit_expansion_scope();
         result
     }
 
@@ -548,7 +578,7 @@ impl Emitter {
             ]);
         }
         for _ in 0..n {
-            self.alloc.enter_scope();
+            self.enter_expansion_scope(span)?;
             let mut result = Ok(());
             for s in body {
                 if let Err(e) = self.stmt(s, entry) {
@@ -559,6 +589,34 @@ impl Emitter {
             self.exit_expansion_scope();
             result?;
         }
+        Ok(())
+    }
+
+    /// Open one expansion's register scope, charging it to [`MAX_EXPANSIONS`].
+    ///
+    /// The entry twin of [`Emitter::exit_expansion_scope`]: every expansion
+    /// scope (a `proc` inline, one `repeat` iteration) must be opened through
+    /// here rather than by calling `enter_scope` directly, because this is the
+    /// one place that counts expansion *work*. `push` cannot: a body that emits
+    /// nothing never reaches it, so the emission budget is blind to exactly the
+    /// shapes that cost the most per emitted line.
+    ///
+    /// Fallible for the same reason `push` is: the `?` at each call site
+    /// unwinds every enclosing expansion loop for free, so a loop cannot forget
+    /// to check. On the error path this is a no-op — nothing is pushed and no
+    /// scope is opened — so the caller returns without a matching exit.
+    fn enter_expansion_scope(&mut self, site: &Span) -> Result<(), Vec<Diagnostic>> {
+        if self.expansions >= MAX_EXPANSIONS {
+            return Err(self.budget_error(
+                site,
+                format!("the program performs more than {MAX_EXPANSIONS} expansions"),
+                "every `repeat` iteration and every `proc` call is expanded at compile time, \
+                 even when its body emits nothing — reduce a `repeat` count, or a `proc` that \
+                 expands to more calls than it looks like",
+            ));
+        }
+        self.expansions += 1;
+        self.alloc.enter_scope();
         Ok(())
     }
 

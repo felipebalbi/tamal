@@ -1156,6 +1156,12 @@ mod tests {
              test t {\n repeat 1024 {\n  inner()\n }\n pass\n}\n",
         )
         .unwrap_err();
+        // The MESSAGE is the load-bearing assertion, not the timer below: this
+        // program trips the *line* budget after ~4100 expansions, well under
+        // the expansion budget. Let the unroll run past the first error instead
+        // of stopping at it and the expansion budget trips too, so the reported
+        // diagnostic changes — which pins "stop at the budget" deterministically
+        // rather than by wall clock.
         assert!(
             err[0].message.contains("more than 4096 asm lines"),
             "got: {:?}",
@@ -1174,5 +1180,101 @@ mod tests {
         // 1000 emitted lines is a plausible program and must go through.
         let asm = lower_to_asm("test t {\n repeat 1000 {\n  cs_assert\n }\n pass\n}\n").unwrap();
         assert_eq!(asm.matches("cs_assert").count(), 1000);
+    }
+
+    #[test]
+    fn nested_repeats_that_emit_nothing_cannot_outgrow_the_expansion_budget() {
+        // The blind spot the *emission* budget cannot see: a body that emits
+        // nothing (`send []` here, but `{ }`, `recv 0` and `repeat 0 { … }`
+        // behave the same) never reaches `push`, so the line budget never
+        // fires — while the unroll still costs a scope enter/exit per
+        // iteration. 2^30 of those took ~50 s and reported success.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n    send []\n   }\n  }\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("more than 65536 expansions"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_empty_repeat_body_still_costs_expansion_budget() {
+        // The strongest form of the same hole: the body is literally empty, so
+        // `Emitter::stmt` is never even called. A counter placed at the top of
+        // `stmt` would miss this entirely; only one charged per *iteration*
+        // catches it.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("more than 65536 expansions"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_fanout_proc_chain_of_empty_procs_cannot_outgrow_the_expansion_budget() {
+        // `fanout_chain`'s leaf emits a line, so the emission budget catches
+        // it. Give the leaf an empty body and the same 2^24-node tree emits
+        // nothing at all — 5 s of work, exit 0.
+        let mut src = String::from("proc p24() {\n}\n");
+        for n in (0..24).rev() {
+            src += &format!("proc p{n}() {{\n p{}()\n p{}()\n}}\n", n + 1, n + 1);
+        }
+        src += "test t {\n p0()\n pass\n}\n";
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 65536 expansions"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_a_zero_emitting_but_legal_unroll() {
+        // The false-rejection guard. `repeat MAX_UNROLL { send [] }` performs
+        // 1024 expansions while emitting nothing, so the expansion budget has
+        // to be meaningfully looser than the 4096-line one. 64x headroom here.
+        assert!(lower_to_asm("test t {\n repeat 1024 {\n  send []\n }\n pass\n}\n").is_ok());
+        // And the same shape through an empty `proc`: 2048 expansions.
+        assert!(
+            lower_to_asm("proc p() { }\ntest t {\n repeat 1024 {\n  p()\n }\n pass\n}\n").is_ok()
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_a_program_at_the_emission_ceiling() {
+        // The expansion budget must never fire before the emission one on a
+        // program the emission budget itself accepts. This is the measured
+        // expansion-densest such program: doubly nested `repeat`s emitting
+        // 4035 lines cost 4095 expansions — 16x under the cap.
+        let asm = lower_to_asm(
+            "test t {\n repeat 63 {\n  repeat 64 {\n   cs_assert\n  }\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), 63 * 64);
     }
 }
