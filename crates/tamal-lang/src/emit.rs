@@ -137,6 +137,15 @@ struct Emitter {
     /// total: never reset per construct, or composition would escape it the
     /// same way it escapes the per-construct [`crate::MAX_UNROLL`].
     expansions: usize,
+    /// The source span of each expansion currently in progress, outermost
+    /// first — the caret [`Emitter::budget_error`] anchors on.
+    ///
+    /// A `Vec`, never a map: the *order* is the whole point (`first()` is the
+    /// outermost), and a map's iteration order would put nondeterminism into a
+    /// diagnostic. Pushed and popped by the [`Emitter::enter_expansion_scope`]
+    /// / [`Emitter::exit_expansion_scope`] pair, so it stays balanced on the
+    /// error path too.
+    expansion_sites: Vec<Span>,
 }
 
 /// A verdict branch an `expect` deferred to its enclosing `frame`: after CS
@@ -166,6 +175,7 @@ impl Emitter {
                 .collect(),
             active_procs: Vec::new(),
             expansions: 0,
+            expansion_sites: Vec::new(),
         }
     }
 
@@ -196,9 +206,8 @@ impl Emitter {
     /// possible to forget.
     ///
     /// The budget is checked *before* appending, so the emitted text never
-    /// exceeds it, and the diagnostic is anchored on the line that overflowed —
-    /// the innermost construct still expanding, which is the most specific
-    /// location available (the test's entry span would point at nothing useful).
+    /// exceeds it. See [`Emitter::budget_error`] for where the diagnostic
+    /// points.
     fn push(&mut self, text: &str, span: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.lines.len() >= MAX_EMITTED_LINES {
             return Err(self.budget_error(
@@ -215,9 +224,26 @@ impl Emitter {
     }
 
     /// Build the diagnostic for either compile-time budget, so both report the
-    /// same way. `site` is where the budget ran out.
+    /// same way. `site` is where the budget actually ran out — the line that
+    /// overflowed, or the expansion that was being entered.
+    ///
+    /// The caret goes on the **outermost** expansion still in progress, not on
+    /// `site`. `site` is specific but neither relevant nor stable: which
+    /// statement it lands on depends on where the overflowing line happens to
+    /// fall, so adding an unrelated earlier statement moves the caret, and on
+    /// `repeat 1024 { cs_assert cs_deassert tar 2 crc_reset }` it accuses
+    /// `tar 2` when the culprit is the `repeat`. The outermost expansion is the
+    /// construct the author has to shrink. `site` is kept as a secondary label
+    /// so the specific location is not lost; when nothing is expanding (a
+    /// straight-line program, or a trailer flushed after every expansion has
+    /// closed) `site` *is* the caret and the label would be a duplicate.
     fn budget_error(&self, site: &Span, message: String, help: &str) -> Vec<Diagnostic> {
-        vec![Diagnostic::error(site.clone(), message).with_help(help)]
+        let primary = self.expansion_sites.first().unwrap_or(site).clone();
+        let mut d = Diagnostic::error(primary.clone(), message).with_help(help);
+        if primary != *site {
+            d = d.with_label(site.clone(), "the budget ran out here");
+        }
+        vec![d]
     }
 
     /// A fresh, asm-safe label: `__<prefix><n>` (no leading dot — dots are
@@ -604,7 +630,8 @@ impl Emitter {
     /// Fallible for the same reason `push` is: the `?` at each call site
     /// unwinds every enclosing expansion loop for free, so a loop cannot forget
     /// to check. On the error path this is a no-op — nothing is pushed and no
-    /// scope is opened — so the caller returns without a matching exit.
+    /// scope is opened — so the caller returns without a matching exit, and the
+    /// diagnostic still sees the enclosing expansions it should point at.
     fn enter_expansion_scope(&mut self, site: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.expansions >= MAX_EXPANSIONS {
             return Err(self.budget_error(
@@ -616,6 +643,7 @@ impl Emitter {
             ));
         }
         self.expansions += 1;
+        self.expansion_sites.push(site.clone());
         self.alloc.enter_scope();
         Ok(())
     }
@@ -630,6 +658,7 @@ impl Emitter {
     /// branches on. The frame's *own* exit is the exception — it closes its
     /// scope after its verdicts are already emitted.
     fn exit_expansion_scope(&mut self) {
+        self.expansion_sites.pop();
         self.alloc.exit_scope();
         self.reserve_deferred();
     }

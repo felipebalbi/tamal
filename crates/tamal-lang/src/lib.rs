@@ -1277,4 +1277,89 @@ mod tests {
         .unwrap();
         assert_eq!(asm.matches("cs_assert").count(), 63 * 64);
     }
+
+    #[test]
+    fn the_emission_budget_accuses_the_outer_repeat_not_the_statement_it_overflowed_on() {
+        // Anchoring: the caret belongs on the construct the author has to
+        // shrink. The overflowing line lands on whichever body statement
+        // happens to be at line 4097 — `tar 2` here — which is specific but
+        // neither relevant nor stable: adding an unrelated statement earlier in
+        // the test would move it. The `repeat` is the culprit, and the
+        // overflowing statement stays as a secondary label.
+        let src = "test t {\n repeat 1024 {\n  cs_assert\n  cs_deassert\n  tar 2\n  crc_reset\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
+        let start = src.find("repeat").unwrap();
+        let end = src.find("}\n pass").unwrap() + 1;
+        assert_eq!(
+            err[0].primary,
+            start..end,
+            "the caret must land on the whole `repeat`, got {:?}",
+            src.get(err[0].primary.clone())
+        );
+        assert_eq!(
+            err[0]
+                .labels
+                .iter()
+                .map(|(s, _)| src.get(s.clone()).unwrap_or(""))
+                .collect::<Vec<_>>(),
+            vec!["tar 2"],
+            "the overflowing statement stays as a secondary label"
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accuses_the_outermost_repeat_not_the_innermost() {
+        // The same policy for the expansion budget: the caret is the OUTERMOST
+        // expansion in progress, so it does not slide inward as the nesting
+        // deepens. The innermost `repeat` — the one that was being entered when
+        // the budget ran out — stays as the secondary label.
+        let src = "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 65536 expansions"),
+            "got: {:?}",
+            err[0]
+        );
+        let start = src.find("repeat").unwrap();
+        let end = src.find("}\n pass").unwrap() + 1;
+        assert_eq!(
+            err[0].primary,
+            start..end,
+            "the caret must land on the OUTER `repeat`, got {:?}",
+            src.get(err[0].primary.clone())
+        );
+        let inner = src.rfind("repeat").unwrap();
+        assert_eq!(
+            err[0]
+                .labels
+                .iter()
+                .map(|(s, _)| s.start)
+                .collect::<Vec<_>>(),
+            vec![inner],
+            "the innermost expansion stays as a secondary label"
+        );
+    }
+
+    #[test]
+    fn a_budget_diagnostic_outside_any_expansion_keeps_its_own_span() {
+        // The fallback half of the anchoring policy: with nothing expanding
+        // there is no outer construct to accuse, so the caret stays on the
+        // overflowing line — and the label would just duplicate it, so there
+        // is none.
+        let filler = "cs_assert\n".repeat(4096);
+        let src = format!("test t {{\n{filler} pass\n}}\n");
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(src.get(err[0].primary.clone()), Some("cs_assert"));
+        assert!(err[0].labels.is_empty(), "got: {:?}", err[0].labels);
+    }
 }
