@@ -645,7 +645,9 @@ impl Emitter {
     /// here rather than by calling `enter_scope` directly, because this is the
     /// one place that counts expansion *work*. `push` cannot: a body that emits
     /// nothing never reaches it, so the emission budget is blind to exactly the
-    /// shapes that cost the most per emitted line.
+    /// shapes that cost the most per emitted line. Nor can `Emitter::stmt`: an
+    /// empty body never calls it, so a counter there charges nothing for the
+    /// innermost level's iterations.
     ///
     /// Fallible for the same reason `push` is: the `?` at each call site
     /// unwinds every enclosing expansion loop for free, so a loop cannot forget

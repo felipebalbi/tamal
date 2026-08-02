@@ -1236,9 +1236,10 @@ mod tests {
     #[test]
     fn an_empty_repeat_body_still_costs_expansion_budget() {
         // The strongest form of the same hole: the body is literally empty, so
-        // `Emitter::stmt` is never even called. A counter placed at the top of
-        // `stmt` would miss this entirely; only one charged per *iteration*
-        // catches it.
+        // `Emitter::stmt` is never called for it at all. A counter at the top
+        // of `stmt` charges nothing for the innermost 1024 iterations — it
+        // undercounts by the innermost factor — which is why the charge belongs
+        // at the scope boundary, where the work actually happens.
         let start = std::time::Instant::now();
         let err = lower_to_asm(
             "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n",
