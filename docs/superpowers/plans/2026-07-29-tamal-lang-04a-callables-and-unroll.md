@@ -3082,7 +3082,25 @@ Found by review during execution. None blocks this increment; all are recorded h
 
 6. **`RegAlloc::bind` does not shadow — a callee binding a caller's name destroys the caller's binding.** `bind` overwrites `bindings[name]` and records the name in the *current* scope, so `exit_scope` then removes it outright. A `proc` body doing `recv status`, inlined into a test that also bound `status`, leaves the caller's `status` unresolvable afterwards even though its register is still busy. Unreachable today because `RegAlloc::lookup` has no non-test caller — but **Plan 4b wires named references into operand position**, at which point this becomes live, and `proc` inlining makes the collision likely in practice (it is exactly what a shared library `proc` looks like). Fix when 4b lands: make it a per-scope shadow stack (`bindings: HashMap<String, Vec<Reg>>`, popped on `exit_scope`).
 
-7. **`const` `++` doubling blows up memory with no diagnostic.** `const c1 = c0 ++ c0` repeated 30 times turns a 32-line source file into a 1 GiB `bytes` value. Predates this plan entirely (Plan 2's `++` operator) and is a sibling of item 1 — the same missing consteval bound, reached through value *size* rather than call count, so the same work budget should cover both (charge per emitted byte as well as per eval step). Recorded here only because item 1 is where a future implementer will look.
+7. **`const` `++` doubling blows up memory with no *useful* diagnostic.** `const c1 = c0 ++ c0` repeated turns a handful of source lines into an arbitrarily large `bytes` value. Predates this plan entirely (Plan 2's `++` operator) and is a sibling of item 1 — the same missing consteval bound, reached through value *size* rather than call count, so the same work budget should cover both (charge per emitted byte as well as per eval step). Recorded here because item 1 is where a future implementer will look, and item 1 is currently written up purely as a *time* blowup; this is the **memory** half of the same class.
+
+   Measured (release), `const A0 = [0;8]` then `const A{i} = A{i-1} ++ A{i-1}`:
+
+   | depth | source | value | wall |
+   |---|---|---|---|
+   | 20 | 25 lines | 8 MB | 39 ms |
+   | 22 | 27 lines | 32 MB | 127 ms |
+   | 24 | 29 lines | 128 MB | 389 ms |
+
+   A clean ×4 per two levels, so **depth 30 is a 35-line source file demanding 8 GiB**.
+
+   `MAX_EMITTED_LINES` *does* fire here — every row above ends in `the program emits more than 4096 asm lines`. That is precisely the problem: `eval_bytes` (`consteval.rs:184-193`) materialises the whole `Vec<u8>` **before any budget sees a line**, so the memory is already spent when the diagnostic arrives, and the diagnostic names *asm lines* when the fault is one `const`. The same shape Task 8 fixed for `recv N`: a global budget that fires late and accuses the wrong construct is not a substitute for bounding the construct that allocates.
+
+8. **`recv <name>` silently shadows a `const` instead of reading that many bytes.** Given `const N = 8`, `recv N` lowers to **one** `get_byte` bound to a register named `N` — the name/discard arm of the grammar — while `recv 8` lowers to eight. Verified. Pre-existing and a direct consequence of the grammar: the count arm is entered only on `Tok::Number` (`parser.rs:625`), so a symbolic count is not "unsupported", it is *a different statement that happens to parse*. Silent, plausible-looking, and exactly the kind of thing `--lint` should refuse — a natural Plan 6 diagnostic ("`recv N` where `N` names a const reads one byte; write the count as a literal").
+
+   **This makes Task 8's placement comment load-bearing.** The cap lives in the parser because the count is a literal there. A future symbolic count would arrive through `consteval`, at which point the cap must move or be duplicated, or it silently stops applying and `recv BIG_CONST` is an OOM again.
+
+9. **The cap's help text hard-codes "1024 words".** Both `recv`'s and `repeat`'s help say "a tamal program is at most 1024 words", but that figure comes from `tamal-asm`'s **private** `const MAX_WORDS: usize = 1024` (`tamal-asm/src/lib.rs:59`) and is retyped in `tamal-lang`, not derived. Retuning `MAX_UNROLL` alone leaves the pair reading *"count 600 is not in 0..=512 — a tamal program is at most 1024 words"*: still true, no longer obviously so. Fixing it means making `MAX_WORDS` public, which is a `tamal-asm` public-API decision affecting both constructs equally — deliberately **not** folded into Task 8. Note the two constants are independent on purpose: `MAX_UNROLL` is a *safety* bound one notch looser than the real cap, so a near-miss (`recv 1024` → 1025 words) gets the assembler's precise word-count message rather than a blunt refusal.
 
 
 ---
