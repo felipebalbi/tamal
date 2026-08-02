@@ -625,17 +625,23 @@ impl<'a> P<'a> {
                 if self.peek() == Tok::Number {
                     // `recv N` — N discards.
                     let n = self.expect(Tok::Number, "a byte count")?;
-                    let count = parse_number(self.lexeme(&n.span))
-                        .filter(|&c| c >= 0)
-                        .ok_or_else(|| {
-                            vec![Diagnostic::error(n.span.clone(), "invalid recv count")]
-                        })?;
+                    let count = parse_number(self.lexeme(&n.span)).ok_or_else(|| {
+                        vec![Diagnostic::error(n.span.clone(), "invalid recv count")]
+                    })?;
                     // Bound the count *before* materialising the targets: the
                     // loop below is the allocation, so `recv 99999999` is an
                     // out-of-memory long before any later budget can see it.
                     // The same per-construct cap `repeat` takes, checked here
                     // rather than in `emit` because the count is a literal.
-                    if count > crate::MAX_UNROLL {
+                    //
+                    // A range, not `count > MAX_UNROLL`, to match `lower_repeat`
+                    // and to keep the *whole* advertised bound in one place: a
+                    // negative is unreachable today (the lexer starts a number
+                    // at a digit, and `parse_number` returns `None` rather than
+                    // wrapping on overflow), but should a symbolic count ever
+                    // arrive it gets this message instead of the far vaguer
+                    // `invalid recv count` a lower-bound filter would give it.
+                    if !(0..=crate::MAX_UNROLL).contains(&count) {
                         return Err(vec![
                             Diagnostic::error(
                                 n.span.clone(),
@@ -1537,6 +1543,38 @@ mod tests {
     }
 
     #[test]
+    fn a_recv_count_too_large_for_i64_is_rejected() {
+        // The other half of the count resolution, and the one with no coverage
+        // until now: a literal `parse_number` cannot represent at all. It is
+        // what keeps the cap's `contains` from ever seeing a wrapped value —
+        // `from_str_radix` returns `None` on overflow rather than wrapping —
+        // so it is the reason the cap needs no lower-bound reachability.
+        for src in [
+            "test t {\n recv 0x8000000000000000\n pass\n}\n",
+            "test t {\n recv 99999999999999999999\n pass\n}\n",
+        ] {
+            let toks = lex(src).unwrap();
+            let err = parse(src, &toks).unwrap_err();
+            assert_eq!(err[0].message, "invalid recv count", "for {src:?}");
+            // Not the cap's message: this one cannot name a bound, because
+            // there is no representable count to compare against.
+            assert_eq!(err[0].help, None, "for {src:?}");
+        }
+    }
+
+    #[test]
+    fn a_recv_of_zero_is_accepted_and_emits_nothing() {
+        // The lower end of the `0..=MAX_UNROLL` the diagnostic advertises.
+        // `recv 0` is legal and reachable — `emit.rs` names it as one of the
+        // canonical empty-emitting bodies — and its sibling `repeat 0` is
+        // already pinned by `repeat_zero_emits_nothing`.
+        match &parse_ok("test t {\n recv 0\n pass\n}\n").tests[0].stmts[0] {
+            Stmt::Recv { targets, .. } => assert!(targets.is_empty()),
+            s => panic!("expected Recv, got {s:?}"),
+        }
+    }
+
+    #[test]
     fn a_recv_of_exactly_max_unroll_is_accepted() {
         // The bound is inclusive: `MAX_UNROLL` itself is legal. The
         // false-rejection guard for the cap below.
@@ -1565,7 +1603,7 @@ mod tests {
             err[0]
                 .help
                 .as_deref()
-                .is_some_and(|h| h.contains("can never assemble")),
+                .is_some_and(|h| h.contains("larger read")),
             "got: {:?}",
             err[0].help
         );
@@ -1590,8 +1628,11 @@ mod tests {
             "got: {}",
             err[0].message
         );
+        // 200 ms, not a second: measured, the guard-after-the-loop mutant takes
+        // 1.6 s even in release, so a 1 s threshold left only a 1.6x margin.
+        // The happy path is ~3 us, so this still carries ~60,000x headroom.
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
+            start.elapsed() < std::time::Duration::from_millis(200),
             "the count must be rejected before the targets are built (took {:?})",
             start.elapsed()
         );
