@@ -88,7 +88,7 @@ pub(crate) const MAX_EMITTED_LINES: usize = 4096;
 /// expansion count moves while it runs. `repeat` reaches it — `lower_repeat`
 /// evaluates its count expression once per invocation, so
 /// `repeat 1024 { repeat f0() { } }` multiplies the fan-out by the unroll and
-/// takes 12.7 s for three emitted lines. See the plan's tracked follow-up; the
+/// takes 13 s for three emitted lines. See the plan's tracked follow-up; the
 /// remedy is a consteval work budget, which is `consteval`-shaped work.
 const MAX_EXPANSIONS: usize = 65536;
 
