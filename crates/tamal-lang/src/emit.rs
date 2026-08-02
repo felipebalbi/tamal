@@ -15,12 +15,10 @@ use tamal_abi::isa::Reg;
 /// The eSPI WAIT_STATE response code the `wait_state` poll spins on.
 const WAIT_STATE_CODE: u8 = 0x0F;
 
-/// The largest number of [`Emitter::push`] calls a single program may make.
+/// The largest number of asm lines a single program may emit.
 ///
-/// Almost always one asm line each, but not exactly: `flush_trailers` pushes a
-/// two-line `"{label}:\n\thalt …\n"` block as a single entry, so the true line
-/// count runs up to one line per `expect` above this. Still bounded, which is
-/// all the budget is for.
+/// Exactly that: every [`Emitter::push`] appends one line, `flush_trailers`
+/// included, so the count and the line total never diverge.
 ///
 /// A tamal program is capped at 1024 words, so anything beyond this can never
 /// assemble. The per-construct [`crate::MAX_UNROLL`] gives a *better message*
@@ -152,7 +150,10 @@ struct Emitter {
     lines: Vec<(Span, Span)>,
     alloc: RegAlloc,
     gensym: u32,
-    trailers: Vec<(Span, String)>,
+    /// Per-test verdict trailers hoisted out of a `frame`, as
+    /// `(originating .tam span, label, halt code)`. Kept as parts rather than
+    /// pre-rendered text so `flush_trailers` can emit one `push` per asm line.
+    trailers: Vec<(Span, String, u8)>,
     /// One entry per `frame` currently being lowered, innermost last; each
     /// holds the verdicts its `expect`s deferred to the frame exit. A stack
     /// (rather than a parameter) so an inlined `proc` body reaches the
@@ -231,8 +232,12 @@ impl Emitter {
 
     fn flush_trailers(&mut self) -> Result<(), Vec<Diagnostic>> {
         let trailers = std::mem::take(&mut self.trailers);
-        for (span, block) in trailers {
-            self.push(&block, &span)?;
+        for (span, label, code) in trailers {
+            // Two pushes, not one block: it keeps `MAX_EMITTED_LINES` an exact
+            // line count rather than an approximate one, and gives the source
+            // map per-line granularity over the trailer.
+            self.push(&format!("{label}:\n"), &span)?;
+            self.push(&format!("\thalt 0x{code:02X}\n"), &span)?;
         }
         Ok(())
     }
@@ -248,9 +253,11 @@ impl Emitter {
     /// check would still run a 2^22 expansion to completion. Here it is not
     /// possible to forget.
     ///
-    /// The budget is checked *before* appending, so the emitted text never
-    /// exceeds it. See [`Emitter::budget_error`] for where the diagnostic
-    /// points.
+    /// Implementation note, not an invariant anything relies on: the budget is
+    /// checked before the append rather than after, so `asm` never transiently
+    /// holds an over-budget line. Nothing can observe the difference —
+    /// [`Lowering`] is only built on the `Ok` path — so moving the check would
+    /// be a wash. See [`Emitter::budget_error`] for where the diagnostic points.
     ///
     /// **Invariant the callers depend on: an emit error is always fatal.**
     /// Every `?` here is an early return that skips cleanup — `lower_recv`,
@@ -482,10 +489,8 @@ impl Emitter {
                 &format!("\tbnez {}, {}\n", reg_name(d.reg), d.label),
                 &d.span,
             )?;
-            self.trailers.push((
-                d.span.clone(),
-                format!("{}:\n\thalt 0x{:02X}\n", d.label, d.code),
-            ));
+            self.trailers
+                .push((d.span.clone(), d.label.clone(), d.code));
         }
         // The one `exit_scope` that is NOT routed through
         // `exit_expansion_scope`: this frame's verdicts have just been emitted,
@@ -703,8 +708,9 @@ impl Emitter {
     /// Fallible for the same reason `push` is: the `?` at each call site
     /// unwinds every enclosing expansion loop for free, so a loop cannot forget
     /// to check. On the error path this is a no-op — nothing is pushed and no
-    /// scope is opened — so the caller returns without a matching exit, and the
-    /// diagnostic still sees the enclosing expansions it should point at.
+    /// scope is opened — so the caller returns without *needing* a matching
+    /// exit (the stack stays balanced), and the diagnostic still sees the
+    /// enclosing expansions it should point at.
     fn enter_expansion_scope(&mut self, site: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.expansions >= MAX_EXPANSIONS {
             return Err(self.budget_error(
