@@ -852,6 +852,23 @@ mod tests {
     }
 
     #[test]
+    fn a_proc_may_not_be_named_repeat() {
+        // `repeat` earns its place in STMT_KEYWORDS the same way `send` does:
+        // it is a `parse_stmt` arm, so `repeat()` parses as the `repeat`
+        // statement and `proc repeat() { … }` would be definable but
+        // uncallable. Pinned separately from the `send` case above because the
+        // list is only checked in one direction — removing `"repeat"` from
+        // STMT_KEYWORDS passes every other test in the suite.
+        let err = lower_to_asm("proc repeat() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(err[0].primary, 5..11, "anchored on the `proc` name");
+    }
+
+    #[test]
     fn a_fn_may_not_be_named_after_a_statement_keyword_either() {
         // A `fn` of that name IS reachable (`send send(1)` works, because calls
         // appear in expression position). It is rejected anyway: `fn` and `proc`
@@ -1031,12 +1048,24 @@ mod tests {
 
     #[test]
     fn an_oversized_repeat_is_rejected() {
-        let err =
-            lower_to_asm("test t {\n repeat 99999999 {\n  cs_assert\n }\n pass\n}\n").unwrap_err();
+        let src = "test t {\n repeat 99999999 {\n  cs_assert\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
         assert!(
             err[0].message.contains("not in 0..=1024"),
             "got: {:?}",
             err[0]
+        );
+        // The span covers the WHOLE construct, `repeat` head through the
+        // closing brace — not just the keyword. It is the span every `repeat`
+        // diagnostic is anchored on, including the two budgets, so a caret over
+        // the bare keyword would silently narrow all of them.
+        let start = src.find("repeat").unwrap();
+        let end = src.find("}\n pass").unwrap() + 1;
+        assert_eq!(
+            err[0].primary,
+            start..end,
+            "got: {:?}",
+            src.get(err[0].primary.clone())
         );
     }
 
@@ -1361,5 +1390,26 @@ mod tests {
         );
         assert_eq!(src.get(err[0].primary.clone()), Some("cs_assert"));
         assert!(err[0].labels.is_empty(), "got: {:?}", err[0].labels);
+    }
+
+    #[test]
+    fn a_trailer_that_does_not_fit_the_budget_is_a_diagnostic() {
+        // `flush_trailers` runs after the test body, so it is the one `push`
+        // site whose error nothing downstream would notice. Swallow it and the
+        // `bnez` branching to `__fail0` survives with no `__fail0:` label to
+        // land on, so the failure surfaces as a confusing backend complaint
+        // about an undefined symbol instead of as the budget.
+        //
+        // Sized so the trailer push is exactly the one over the line: prologue
+        // (2) + cs_assert + get_byte + rdsr + cs_deassert + bnez (5) + filler +
+        // halt (1) == MAX_EMITTED_LINES, leaving the trailer as push 4097.
+        let filler = "cs_assert\n".repeat(emit::MAX_EMITTED_LINES - 8);
+        let src = format!("test t {{\n frame {{\n  expect crc else 0x11\n }}\n{filler} pass\n}}\n");
+        let err = compile(&src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
     }
 }

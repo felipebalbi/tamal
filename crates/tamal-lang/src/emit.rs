@@ -27,7 +27,9 @@ const WAIT_STATE_CODE: u8 = 0x0F;
 /// directives emit lines that are not words at all, so a tight bound would
 /// reject legal programs. Its job is to stop unbounded growth, not to duplicate
 /// the assembler's exact cap.
-const MAX_EMITTED_LINES: usize = 4096;
+/// `pub(crate)` only so the driver's tests can place a program exactly on the
+/// boundary; nothing outside this module reads it.
+pub(crate) const MAX_EMITTED_LINES: usize = 4096;
 
 /// The largest number of *expansions* — `proc` inlines plus `repeat`
 /// iterations — a single program may perform.
