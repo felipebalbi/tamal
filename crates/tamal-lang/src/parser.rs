@@ -630,6 +630,22 @@ impl<'a> P<'a> {
                         .ok_or_else(|| {
                             vec![Diagnostic::error(n.span.clone(), "invalid recv count")]
                         })?;
+                    // Bound the count *before* materialising the targets: the
+                    // loop below is the allocation, so `recv 99999999` is an
+                    // out-of-memory long before any later budget can see it.
+                    // The same per-construct cap `repeat` takes, checked here
+                    // rather than in `emit` because the count is a literal.
+                    if count > crate::MAX_UNROLL {
+                        return Err(vec![
+                            Diagnostic::error(
+                                n.span.clone(),
+                                format!("`recv` count {count} is not in 0..={}", crate::MAX_UNROLL),
+                            )
+                            .with_help(
+                                "a tamal program is at most 1024 words, so a larger read can never assemble",
+                            ),
+                        ]);
+                    }
                     for _ in 0..count {
                         targets.push(RecvTarget::Discard);
                     }
@@ -1518,6 +1534,67 @@ mod tests {
             }
             s => panic!("expected Recv, got {s:?}"),
         }
+    }
+
+    #[test]
+    fn a_recv_of_exactly_max_unroll_is_accepted() {
+        // The bound is inclusive: `MAX_UNROLL` itself is legal. The
+        // false-rejection guard for the cap below.
+        let src = format!("test t {{\n recv {}\n pass\n}}\n", crate::MAX_UNROLL);
+        match &parse_ok(&src).tests[0].stmts[0] {
+            Stmt::Recv { targets, .. } => {
+                assert_eq!(targets.len(), crate::MAX_UNROLL as usize);
+            }
+            s => panic!("expected Recv, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn a_recv_one_over_max_unroll_is_rejected() {
+        // The exact boundary, derived from the constant so a retune moves the
+        // test with it rather than failing as a string mismatch.
+        let count = crate::MAX_UNROLL + 1;
+        let src = format!("test t {{\n recv {count}\n pass\n}}\n");
+        let toks = lex(&src).unwrap();
+        let err = parse(&src, &toks).unwrap_err();
+        assert_eq!(
+            err[0].message,
+            format!("`recv` count {count} is not in 0..={}", crate::MAX_UNROLL)
+        );
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("can never assemble")),
+            "got: {:?}",
+            err[0].help
+        );
+        // The caret sits on the count, not on the whole statement.
+        let count_text = count.to_string();
+        assert_eq!(src.get(err[0].primary.clone()), Some(count_text.as_str()));
+    }
+
+    #[test]
+    fn an_oversized_recv_count_is_rejected() {
+        // The regression: `recv 99999999` materialised 99,999,999 AST nodes —
+        // an out-of-memory — long before any later budget could see them. Must
+        // be a diagnostic, and a *prompt* one.
+        let src = "test t {\n recv 99999999\n pass\n}\n";
+        let toks = lex(src).unwrap();
+        let start = std::time::Instant::now();
+        let err = parse(src, &toks).unwrap_err();
+        assert!(
+            err[0]
+                .message
+                .contains(&format!("not in 0..={}", crate::MAX_UNROLL)),
+            "got: {}",
+            err[0].message
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the count must be rejected before the targets are built (took {:?})",
+            start.elapsed()
+        );
     }
 
     #[test]
