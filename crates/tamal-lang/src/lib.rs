@@ -185,6 +185,19 @@ pub fn compile(source: &str) -> Result<Program, Vec<Diagnostic>> {
 mod tests {
     use super::*;
 
+    /// The emission budget's message, derived from the constant. `emit.rs`'s
+    /// boundary tests already build their programs from these; matching on a
+    /// hard-coded "4096" here would make a retune fail as a confusing string
+    /// mismatch in eight tests instead of on the boundary in one.
+    fn line_budget_msg() -> String {
+        format!("more than {} asm lines", emit::MAX_EMITTED_LINES)
+    }
+
+    /// The expansion budget's message, derived from the constant.
+    fn expansion_budget_msg() -> String {
+        format!("more than {} expansions", emit::MAX_EXPANSIONS)
+    }
+
     #[test]
     fn lowers_smoke_to_asm() {
         let asm = lower_to_asm("test smoke {\n    pass\n}\n").unwrap();
@@ -1160,7 +1173,7 @@ mod tests {
         let start = std::time::Instant::now();
         let err = lower_to_asm(&fanout_chain(22)).unwrap_err();
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1190,7 +1203,7 @@ mod tests {
         // diagnostic changes — which pins "stop at the budget" deterministically
         // rather than by wall clock.
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1222,7 +1235,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err[0].message.contains("more than 65536 expansions"),
+            err[0].message.contains(&expansion_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1246,7 +1259,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err[0].message.contains("more than 65536 expansions"),
+            err[0].message.contains(&expansion_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1270,7 +1283,7 @@ mod tests {
         let start = std::time::Instant::now();
         let err = lower_to_asm(&src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 65536 expansions"),
+            err[0].message.contains(&expansion_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1329,7 +1342,7 @@ mod tests {
         // *depth*, which is the only thing that changes between the two.
         let err = lower_to_asm(&deep_nest(64)).unwrap_err();
         assert!(
-            err[0].message.contains("more than 65536 expansions"),
+            err[0].message.contains(&expansion_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1367,7 +1380,7 @@ mod tests {
         let src = "test t {\n repeat 1024 {\n  cs_assert\n  cs_deassert\n  tar 2\n  crc_reset\n }\n pass\n}\n";
         let err = lower_to_asm(src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1383,10 +1396,18 @@ mod tests {
             err[0]
                 .labels
                 .iter()
-                .map(|(s, _)| src.get(s.clone()).unwrap_or(""))
+                .map(|(s, t)| (src.get(s.clone()).unwrap_or(""), t.as_str()))
                 .collect::<Vec<_>>(),
-            vec!["tar 2"],
+            vec![("tar 2", "the budget ran out here")],
             "the overflowing statement stays as a secondary label"
+        );
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("reduce a `repeat` count")),
+            "the actionable half of the message must survive, got: {:?}",
+            err[0].help
         );
     }
 
@@ -1399,7 +1420,7 @@ mod tests {
         let src = "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n";
         let err = lower_to_asm(src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 65536 expansions"),
+            err[0].message.contains(&expansion_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1416,10 +1437,21 @@ mod tests {
             err[0]
                 .labels
                 .iter()
-                .map(|(s, _)| s.start)
+                .map(|(s, t)| (s.start, t.as_str()))
                 .collect::<Vec<_>>(),
-            starts[1..].to_vec(),
+            vec![
+                (starts[1], "nested expansion"),
+                (starts[2], "the budget ran out here"),
+            ],
             "every `repeat` below the caret is labelled, innermost last"
+        );
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("even when its body emits nothing")),
+            "the actionable half of the message must survive, got: {:?}",
+            err[0].help
         );
     }
 
@@ -1435,7 +1467,7 @@ mod tests {
                    test t {\n repeat 1 {\n  big()\n }\n pass\n}\n";
         let err = lower_to_asm(src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1445,16 +1477,32 @@ mod tests {
             "the caret stays on the outermost expansion"
         );
         // Outermost first: the call, then both library-internal `repeat`s, then
-        // the line that actually overflowed.
-        let labelled: Vec<&str> = err[0]
+        // the line that actually overflowed. Spans are asserted whole, not just
+        // by start offset — the call's site must be `big()`, not the bare name
+        // `big`, and each `repeat`'s must run to its closing brace.
+        let rendered: Vec<(&str, &str)> = err[0]
             .labels
             .iter()
-            .map(|(s, _)| src[s.start..].split(['\n', '{']).next().unwrap().trim())
+            .map(|(s, t)| (&src[s.clone()], t.as_str()))
             .collect();
-        assert_eq!(
-            labelled,
-            vec!["big()", "repeat 1024", "repeat 1024", "cs_assert"],
-            "the culprit `repeat 1024`s must appear, and they are at neither end"
+        assert_eq!(rendered.len(), 4, "got: {rendered:?}");
+        assert_eq!(rendered[0], ("big()", "nested expansion"));
+        for (i, (text, label)) in rendered[1..3].iter().enumerate() {
+            assert!(
+                text.starts_with("repeat 1024 {") && text.ends_with('}'),
+                "label {} must cover a whole `repeat`, got {text:?}",
+                i + 1
+            );
+            assert_eq!(*label, "nested expansion");
+        }
+        assert_eq!(rendered[3], ("cs_assert", "the budget ran out here"));
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("reduce a `repeat` count")),
+            "got: {:?}",
+            err[0].help
         );
     }
 
@@ -1470,7 +1518,7 @@ mod tests {
         let src = format!("test t {{\n repeat 2 {{\n  crc_reset\n }}\n{filler} pass\n}}\n");
         let err = lower_to_asm(&src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
         );
@@ -1488,14 +1536,26 @@ mod tests {
         //
         // Sized so the trailer push is exactly the one over the line: prologue
         // (2) + cs_assert + get_byte + rdsr + cs_deassert + bnez (5) + filler +
-        // halt (1) == MAX_EMITTED_LINES, leaving the trailer as push 4097.
+        // halt (1) == MAX_EMITTED_LINES, leaving the `__fail0:` trailer as the
+        // first push over. That sizing is the whole test, so it is asserted
+        // rather than merely stated — drift the filler and the message stays
+        // byte-identical while the overflow moves to a plain `cs_assert` and
+        // `flush_trailers` is never reached.
         let filler = "cs_assert\n".repeat(emit::MAX_EMITTED_LINES - 8);
         let src = format!("test t {{\n frame {{\n  expect crc else 0x11\n }}\n{filler} pass\n}}\n");
         let err = compile(&src).unwrap_err();
         assert!(
-            err[0].message.contains("more than 4096 asm lines"),
+            err[0].message.contains(&line_budget_msg()),
             "got: {:?}",
             err[0]
+        );
+        // The precondition. `flush_trailers` carries the `expect`'s span, so a
+        // caret there proves the trailer really was the overflowing push;
+        // anywhere else means the filler drifted and the test is vacuous.
+        assert_eq!(
+            src.get(err[0].primary.clone()),
+            Some("expect crc else 0x11"),
+            "the overflow must land in `flush_trailers`, not in the filler"
         );
     }
 }

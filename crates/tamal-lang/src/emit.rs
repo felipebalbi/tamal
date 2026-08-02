@@ -88,7 +88,9 @@ pub(crate) const MAX_EMITTED_LINES: usize = 4096;
 /// `repeat 1024 { repeat f0() { } }` multiplies the fan-out by the unroll and
 /// takes 13 s for three emitted lines. See the plan's tracked follow-up; the
 /// remedy is a consteval work budget, which is `consteval`-shaped work.
-const MAX_EXPANSIONS: usize = 65536;
+/// `pub(crate)` for the same reason as [`MAX_EMITTED_LINES`]: the driver's
+/// tests derive their expected diagnostics from it.
+pub(crate) const MAX_EXPANSIONS: usize = 65536;
 
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
