@@ -1528,34 +1528,40 @@ mod tests {
 
     #[test]
     fn a_trailer_that_does_not_fit_the_budget_is_a_diagnostic() {
-        // `flush_trailers` runs after the test body, so it is the one `push`
-        // site whose error nothing downstream would notice. Swallow it and the
-        // `bnez` branching to `__fail0` survives with no `__fail0:` label to
-        // land on, so the failure surfaces as a confusing backend complaint
-        // about an undefined symbol instead of as the budget.
+        // `flush_trailers` runs after the test body, so its pushes are the ones
+        // whose errors nothing downstream would notice. Swallow the first and
+        // the `bnez` branching to `__fail0` survives with no `__fail0:` label to
+        // land on — a confusing backend complaint about an undefined symbol
+        // instead of the budget. Swallow the *second* and it is worse: the
+        // label is emitted with no `halt` under it, so the verdict branch falls
+        // off the end of the program. Both pushes are checked.
         //
-        // Sized so the trailer push is exactly the one over the line: prologue
-        // (2) + cs_assert + get_byte + rdsr + cs_deassert + bnez (5) + filler +
-        // halt (1) == MAX_EMITTED_LINES, leaving the `__fail0:` trailer as the
-        // first push over. That sizing is the whole test, so it is asserted
-        // rather than merely stated — drift the filler and the message stays
-        // byte-identical while the overflow moves to a plain `cs_assert` and
-        // `flush_trailers` is never reached.
-        let filler = "cs_assert\n".repeat(emit::MAX_EMITTED_LINES - 8);
-        let src = format!("test t {{\n frame {{\n  expect crc else 0x11\n }}\n{filler} pass\n}}\n");
-        let err = compile(&src).unwrap_err();
-        assert!(
-            err[0].message.contains(&line_budget_msg()),
-            "got: {:?}",
-            err[0]
-        );
-        // The precondition. `flush_trailers` carries the `expect`'s span, so a
-        // caret there proves the trailer really was the overflowing push;
-        // anywhere else means the filler drifted and the test is vacuous.
-        assert_eq!(
-            src.get(err[0].primary.clone()),
-            Some("expect crc else 0x11"),
-            "the overflow must land in `flush_trailers`, not in the filler"
-        );
+        // `slack` places the overflow precisely: prologue (2) + cs_assert +
+        // get_byte + rdsr + cs_deassert + bnez (5) + filler + halt (1) leaves
+        // `MAX_EMITTED_LINES - slack + 8` pushes before the flush. That sizing
+        // is the whole test, so the caret is asserted rather than the sizing
+        // merely stated — drift the filler and the message stays byte-identical
+        // while the overflow moves to a plain `cs_assert` and `flush_trailers`
+        // is never reached at all.
+        let overflow_in_trailer = |slack: usize| {
+            let filler = "cs_assert\n".repeat(emit::MAX_EMITTED_LINES - slack);
+            let src =
+                format!("test t {{\n frame {{\n  expect crc else 0x11\n }}\n{filler} pass\n}}\n");
+            let err = compile(&src).unwrap_err();
+            assert!(
+                err[0].message.contains(&line_budget_msg()),
+                "slack {slack}, got: {:?}",
+                err[0]
+            );
+            // `flush_trailers` carries the `expect`'s span, so a caret there
+            // proves a trailer push really was the overflowing one.
+            assert_eq!(
+                src.get(err[0].primary.clone()),
+                Some("expect crc else 0x11"),
+                "slack {slack}: the overflow must land in `flush_trailers`"
+            );
+        };
+        overflow_in_trailer(8); // the `__fail0:` label line is push MAX + 1
+        overflow_in_trailer(9); // the label fits; the `halt` line is push MAX + 1
     }
 }
