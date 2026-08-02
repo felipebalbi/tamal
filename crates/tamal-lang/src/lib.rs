@@ -1293,17 +1293,67 @@ mod tests {
         );
     }
 
+    /// `repeat 1023 { repeat 1 { … repeat 1 { cs_assert } … } }` with `depth`
+    /// inner levels: 1023 emitted lines however deep it goes, so it isolates
+    /// nesting depth from output size. At depth 63 it assembles to exactly 1024
+    /// words — the instruction memory's hard cap.
+    fn deep_nest(depth: usize) -> String {
+        let mut body = String::from("  cs_assert\n");
+        for _ in 0..depth {
+            body = format!("  repeat 1 {{\n{body}  }}\n");
+        }
+        format!("test t {{\n repeat 1023 {{\n{body} }}\n pass\n}}\n")
+    }
+
     #[test]
-    fn the_expansion_budget_accepts_a_program_at_the_emission_ceiling() {
-        // The expansion budget must never fire before the emission one on a
-        // program the emission budget itself accepts. This is the measured
-        // expansion-densest such program: doubly nested `repeat`s emitting
-        // 4035 lines cost 4095 expansions — 16x under the cap.
+    fn the_expansion_budget_accepts_the_densest_program_the_assembler_would_take() {
+        // The real worst case, and the honest statement of what MAX_EXPANSIONS
+        // costs. The emission budget puts NO bound on expansions-per-line — a
+        // single emitting statement can be nested arbitrarily deep — so this
+        // program sits on the assembler's own 1024-word cap while costing
+        // 1023 * 64 = 65472 expansions. The ratio the budget admits is 64 per
+        // emitted word; the comment this replaced claimed 16 per emitted line,
+        // which was wrong by ~64x.
+        let prog = compile(&deep_nest(63)).expect("1024 words at depth 63 must compile");
+        assert_eq!(
+            prog.words().count(),
+            1024,
+            "the assembler's own cap — a program cannot be more legal than this"
+        );
+    }
+
+    #[test]
+    fn one_nesting_level_past_the_densest_accepted_program_is_rejected() {
+        // The other side of the same boundary: 1023 * 65 = 66495 expansions for
+        // the same 1023 emitted lines. Pins that the budget is enforced on
+        // *depth*, which is the only thing that changes between the two.
+        let err = lower_to_asm(&deep_nest(64)).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 65536 expansions"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_a_plan_5_shaped_program() {
+        // The false-rejection guard that matters: the shape Plan 5's `espi`
+        // stdlib produces — a `frame` `proc` calling two more, unrolling `recv`
+        // 64 times, driven by an outer `repeat`. A complete ~950-word program
+        // costs 816 expansions, 80x under the cap, and it is the *emission*
+        // budget that binds first as the shape is scaled up.
         let asm = lower_to_asm(
-            "test t {\n repeat 63 {\n  repeat 64 {\n   cs_assert\n  }\n }\n pass\n}\n",
+            "proc put_hdr(op: int, addr: int) { send [op, hi(addr), lo(addr)] + crc8 }\n\
+             proc response(ndata: int) {\n\
+              wait_state\n recv _\n repeat ndata { recv _ }\n expect crc else 0x11\n\
+             }\n\
+             proc command(op: int, addr: int, ndata: int) {\n\
+              frame { put_hdr(op, addr)\n response(ndata) }\n\
+             }\n\
+             test t {\n repeat 12 {\n  command(0x44, 0x0064, 64)\n }\n pass\n}\n",
         )
         .unwrap();
-        assert_eq!(asm.matches("cs_assert").count(), 63 * 64);
+        assert_eq!(asm.matches("cs_assert").count(), 12);
     }
 
     #[test]

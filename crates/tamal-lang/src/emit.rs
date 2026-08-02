@@ -51,14 +51,46 @@ pub(crate) const MAX_EMITTED_LINES: usize = 4096;
 /// emits three lines, and never reaches `push` at all. This bounds that work
 /// directly, so the two budgets together cover both halves.
 ///
-/// 16x [`MAX_EMITTED_LINES`] by construction: an expansion that contributes to
-/// the program emits at least one line, and the program is capped at 4096 of
-/// those, so this leaves 16 expansions of slack for every line actually
-/// emitted. Measured against the expansion-densest legal programs: a doubly
-/// nested `repeat 63 { repeat 64 { cs_assert } }` sitting near the line ceiling
-/// costs 4095 expansions (16x headroom), and the degenerate-but-legal
-/// zero-emitting `repeat 1024 { send [] }` costs 1024 (64x headroom).
-const MAX_EXPANSIONS: usize = 16 * MAX_EMITTED_LINES;
+/// This is a **policy**, not a derivation: it rejects a program whose average
+/// expansion nesting depth exceeds ~64. Nothing about [`MAX_EMITTED_LINES`]
+/// bounds the expansion-per-line ratio, because a single emitting statement can
+/// be nested arbitrarily deep. Measured, the exact boundary:
+///
+/// ```text
+/// test t { repeat 1023 { repeat 1 { … repeat 1 { cs_assert } … } } pass }
+/// ```
+///
+/// With 63 inner levels that is **exactly 1024 words** — the assembler's own
+/// hard cap, so as legal as a program gets — and costs 1023 * 64 = 65472
+/// expansions, sitting just under the bar. One level more is rejected. So the
+/// ratio this admits is **64 expansions per emitted word**, not 16 per emitted
+/// line; an earlier version of this comment claimed the latter and was wrong by
+/// ~64x.
+///
+/// 64 deep is far past anything real. Measured on the shape Plan 5's `espi`
+/// stdlib produces — `repeat n { command(…) }` over a `frame` `proc` that calls
+/// two more and unrolls `recv` 64 times — a complete ~950-word program costs
+/// 816 expansions (80x headroom), and pushing the same shape up to the *line*
+/// ceiling costs 3400, so the emission budget binds first at every size. The
+/// degenerate-but-legal zero-emitting `repeat 1024 { send [] }` costs 1024 (64x).
+///
+/// Deliberately **not** written as a multiple of [`MAX_EMITTED_LINES`]. It was,
+/// and the formula implied a derivation that does not exist: retuning the line
+/// budget down to its own honest 3.2x headroom (~1400) would mechanically drag
+/// this to 22400, where a depth-20 program of 1027 lines starts to sit on the
+/// edge. The two budgets bound different things and move independently.
+///
+/// ## What this does *not* bound
+///
+/// Only *expansion* work — `proc` inlining and `repeat` unrolling. Consteval is
+/// outside both budgets: a `fn` chain that fans out (`fn f0() -> int { f1() ^
+/// f1() }`, …) costs 2^depth calls, and neither the line count nor the
+/// expansion count moves while it runs. `repeat` reaches it — `lower_repeat`
+/// evaluates its count expression once per invocation, so
+/// `repeat 1024 { repeat f0() { } }` multiplies the fan-out by the unroll and
+/// takes 12.7 s for three emitted lines. See the plan's tracked follow-up; the
+/// remedy is a consteval work budget, which is `consteval`-shaped work.
+const MAX_EXPANSIONS: usize = 65536;
 
 /// The product of lowering: the tamal-asm text and a per-line source map so a
 /// backend diagnostic (whose spans index the generated asm) can be re-pointed
