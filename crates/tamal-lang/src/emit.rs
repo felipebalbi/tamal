@@ -672,8 +672,13 @@ impl Emitter {
         let n = consteval::eval_int(count, &self.env).map_err(|d| vec![d])?;
         if !(0..=crate::MAX_UNROLL).contains(&n) {
             return Err(vec![
+                // Anchored on the COUNT, not on `span`: the count is what the
+                // message names and what the user edits. `span` — the whole
+                // construct — stays the anchor for `enter_expansion_scope`
+                // below, where the budgets want the full extent so their
+                // expansion-chain labels read sensibly.
                 Diagnostic::error(
-                    span.clone(),
+                    count.span(),
                     format!("`repeat` count {n} is not in 0..={}", crate::MAX_UNROLL),
                 )
                 .with_help(

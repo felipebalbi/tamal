@@ -1066,17 +1066,21 @@ mod tests {
             "got: {:?}",
             err[0]
         );
-        // The span covers the WHOLE construct, `repeat` head through the
-        // closing brace — not just the keyword. It is the span every `repeat`
-        // diagnostic is anchored on, including the two budgets, so a caret over
-        // the bare keyword would silently narrow all of them.
-        let start = src.find("repeat").unwrap();
-        let end = src.find("}\n pass").unwrap() + 1;
+        // The caret sits on the COUNT, not on the whole construct: the count is
+        // what the message names and what the user has to edit, and a caret
+        // spanning the body buries it. Matches `recv`'s cap, which points at
+        // its count too.
+        //
+        // Deliberately NOT the span the two budgets anchor on — those keep the
+        // whole `repeat`, so their expansion-chain labels read sensibly, and
+        // they are pinned independently by
+        // `the_line_budget_accuses_the_repeat_not_the_statement_under_it` and
+        // `the_expansion_budget_accuses_the_outermost_repeat_not_the_innermost`.
         assert_eq!(
-            err[0].primary,
-            start..end,
+            src.get(err[0].primary.clone()),
+            Some("99999999"),
             "got: {:?}",
-            src.get(err[0].primary.clone())
+            err[0].primary
         );
     }
 
