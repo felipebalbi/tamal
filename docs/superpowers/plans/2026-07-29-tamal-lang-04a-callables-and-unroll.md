@@ -3056,7 +3056,21 @@ git commit -m "docs(tamal-lang): document the callables and the compile-time unr
 
 Found by review during execution. None blocks this increment; all are recorded here because "the compiler aborts or hangs with no diagnostic" is exactly the class the Task-4 blocker taught us to take seriously.
 
-1. **`fn` inlining is not memoized, so compile time is exponential in call-graph depth.** Each `fn` call re-evaluates the callee's body once per path; there is no `(name, evaluated-args) → Value` cache. Measured (release): a fan-2 chain of depth 22 — a **24-line** source file — takes ~17 s, and doubles per added level. `fn` calls are pure by construction, so memoization is sound; it is deferred because it needs shared mutable state (`Rc<RefCell<…>>`) threaded through a type that is cloned per call, which deserves its own design pass and interacts with the determinism gates planned for Plan 6. Task 4 removed the dominant *constant* factor by wrapping `Env`'s tables in `Rc` (measured ~8× on the same input), but the complexity class is unchanged.
+1. **`fn` consteval is unbounded: compile time is exponential in call-graph depth, with no diagnostic.** Each `fn` call re-evaluates the callee's body once per path, so a fan-2 chain (`fn f0() -> int { f1() ^ f1() }`, …) costs 2^depth evaluations. Measured (release): depth 22 → 11.3 s, depth 24 → 47.3 s, depth 26 → ~180 s, depth 28 → >600 s — a clean ×4 per two levels. Depth 40 is a **45-line source file** extrapolating to ≈35 days, exit 0, no diagnostic, no output. Task 4 removed the dominant *constant* factor by wrapping `Env`'s tables in `Rc` (measured ~8× on the same input); the complexity class is unchanged.
+
+   **The remedy is a consteval work budget, not memoization.** An earlier version of this entry said memoization — that is wrong. Memoization collapses the *no-argument* chain, but a chain whose arguments vary has 2^depth distinct `(fn, args)` cache keys and gets no asymptotic saving at all. Measured on `fn g20(a: int) -> int { g21(a) ^ g21(a ^ 0x100000) }` chained: depth 22 → 13.5 s, depth 24 → 59.2 s — *slower* than the no-argument chain, not faster, and on exactly the same 2^depth curve. A future implementer following the old note would build the cache, watch the no-arg reproducer go green, and ship with the hole still open.
+
+   The shape of the fix: a counter charged per `eval` step and checked against a cap, mirroring `MAX_EXPANSIONS` in `emit.rs`. It is deferred because it needs shared mutable state (`Rc<Cell<usize>>`) threaded through an `Env` that is cloned per call, and it touches every `eval*` signature — `consteval`-shaped work, not `emit`-shaped. Memoization remains worth doing for its constant factor (`fn` calls are pure by construction, so it is sound), but it is an optimisation, not the bound.
+
+   **Task 7 added a reachability path: `repeat` multiplies it.** `lower_repeat` evaluates its count expression through `consteval::eval_int` once per invocation, and `lower_repeat` itself runs once per enclosing iteration — so the fan-out is paid per iteration rather than once. Measured:
+
+   ```
+   fn f13() -> int { 0 }   …   fn f0() -> int { f1() ^ f1() }
+   test t { repeat 1024 { repeat f0() { } } pass }
+   ```
+
+   21 source lines → 13.1 s, **3 emitted asm lines**, 1024 expansions (1.5 % of `MAX_EXPANSIONS`), exit 0. Neither budget fires: the emission budget sees three lines, the expansion budget sees 1024 expansions, and all the work is in consteval where neither is looking. Task 7's budgets bound *expansion* work only — `emit.rs`'s `MAX_EXPANSIONS` doc says so explicitly under "What this does *not* bound" — and this entry is the other half of that disclosure.
+
 
 2. **Deep `fn` expansion still aborts without a diagnostic.** An *acyclic* chain of roughly a thousand `fn`s overflows the stack (exit 134/-6, no diagnostic) — the same failure mode as the Task-4 blocker, reached by depth rather than by a cycle. Note this class is **pre-existing and not confined to callables**: the recursive-descent parser overflows on ~2000-deep expression nesting (`lo(lo(lo(…)))`) and predates this plan. A `fn`-only expansion cap would therefore give false confidence while the parser path remains open; the right fix caps recursion depth across the front end and reports a diagnostic. Deferred as its own piece of work.
 
@@ -3067,6 +3081,9 @@ Found by review during execution. None blocks this increment; all are recorded h
 5. **A recursion-guard regression aborts the whole test binary.** The name-based chain guard is correct and pinned, but if it is ever broken the resulting stack overflow takes down the entire `--lib` test binary rather than failing one test. Accepted property of recursion guards; noted so a future `SIGABRT` in CI is recognised for what it is.
 
 6. **`RegAlloc::bind` does not shadow — a callee binding a caller's name destroys the caller's binding.** `bind` overwrites `bindings[name]` and records the name in the *current* scope, so `exit_scope` then removes it outright. A `proc` body doing `recv status`, inlined into a test that also bound `status`, leaves the caller's `status` unresolvable afterwards even though its register is still busy. Unreachable today because `RegAlloc::lookup` has no non-test caller — but **Plan 4b wires named references into operand position**, at which point this becomes live, and `proc` inlining makes the collision likely in practice (it is exactly what a shared library `proc` looks like). Fix when 4b lands: make it a per-scope shadow stack (`bindings: HashMap<String, Vec<Reg>>`, popped on `exit_scope`).
+
+7. **`const` `++` doubling blows up memory with no diagnostic.** `const c1 = c0 ++ c0` repeated 30 times turns a 32-line source file into a 1 GiB `bytes` value. Predates this plan entirely (Plan 2's `++` operator) and is a sibling of item 1 — the same missing consteval bound, reached through value *size* rather than call count, so the same work budget should cover both (charge per emitted byte as well as per eval step). Recorded here only because item 1 is where a future implementer will look.
+
 
 ---
 
