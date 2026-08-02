@@ -285,13 +285,32 @@ impl Emitter {
     /// fall, so adding an unrelated earlier statement moves the caret, and on
     /// `repeat 1024 { cs_assert cs_deassert tar 2 crc_reset }` it accuses
     /// `tar 2` when the culprit is the `repeat`. The outermost expansion is the
-    /// construct the author has to shrink. `site` is kept as a secondary label
-    /// so the specific location is not lost; when nothing is expanding (a
-    /// straight-line program, or a trailer flushed after every expansion has
-    /// closed) `site` *is* the caret and the label would be a duplicate.
+    /// construct the author has to shrink.
+    ///
+    /// But the caret alone is not enough either, because the culprit is often
+    /// **neither end**. When the runaway lives in a callee — the shape a
+    /// bundled stdlib produces, where the author writes one small call and the
+    /// unroll is library-internal — the outermost site is an innocent
+    /// unshrinkable wrapper and `site` is an innocent leaf:
+    ///
+    /// ```text
+    /// proc big() { repeat 1024 { repeat 1024 { cs_assert } } }
+    /// test t { repeat 1 { big() } pass }
+    /// ```
+    ///
+    /// So label the **whole chain**: every expansion between the caret and
+    /// `site`, outermost first, then `site` itself. It is ordered (the labels
+    /// come straight off the ordered site stack, never a map) and bounded by
+    /// source nesting depth — tens of entries, not thousands. `site` is skipped
+    /// when nothing is expanding (a straight-line program, or a trailer flushed
+    /// after every expansion has closed): there it *is* the caret, and the
+    /// label would only duplicate it.
     fn budget_error(&self, site: &Span, message: String, help: &str) -> Vec<Diagnostic> {
         let primary = self.expansion_sites.first().unwrap_or(site).clone();
         let mut d = Diagnostic::error(primary.clone(), message).with_help(help);
+        for nested in self.expansion_sites.iter().skip(1) {
+            d = d.with_label(nested.clone(), "nested expansion");
+        }
         if primary != *site {
             d = d.with_label(site.clone(), "the budget ran out here");
         }

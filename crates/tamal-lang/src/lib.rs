@@ -1394,8 +1394,8 @@ mod tests {
     fn the_expansion_budget_accuses_the_outermost_repeat_not_the_innermost() {
         // The same policy for the expansion budget: the caret is the OUTERMOST
         // expansion in progress, so it does not slide inward as the nesting
-        // deepens. The innermost `repeat` — the one that was being entered when
-        // the budget ran out — stays as the secondary label.
+        // deepens. Everything below it is labelled, ending with the `repeat`
+        // that was being entered when the budget ran out.
         let src = "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n";
         let err = lower_to_asm(src).unwrap_err();
         assert!(
@@ -1411,15 +1411,50 @@ mod tests {
             "the caret must land on the OUTER `repeat`, got {:?}",
             src.get(err[0].primary.clone())
         );
-        let inner = src.rfind("repeat").unwrap();
+        let starts: Vec<usize> = src.match_indices("repeat").map(|(i, _)| i).collect();
         assert_eq!(
             err[0]
                 .labels
                 .iter()
                 .map(|(s, _)| s.start)
                 .collect::<Vec<_>>(),
-            vec![inner],
-            "the innermost expansion stays as a secondary label"
+            starts[1..].to_vec(),
+            "every `repeat` below the caret is labelled, innermost last"
+        );
+    }
+
+    #[test]
+    fn a_budget_diagnostic_names_every_expansion_between_its_two_ends() {
+        // The shape a bundled stdlib produces, and the one anchoring alone
+        // cannot diagnose: the author writes one small call and the runaway
+        // unroll is library-internal. The caret lands on `repeat 1` — innocent
+        // and unshrinkable — and the overflow point is a lone `cs_assert`, also
+        // innocent. The culprit is the pair of `repeat 1024`s in `big`, which
+        // is NEITHER end, so every expansion in the chain has to be named.
+        let src = "proc big() {\n repeat 1024 {\n  repeat 1024 {\n   cs_assert\n  }\n }\n}\n\
+                   test t {\n repeat 1 {\n  big()\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains("more than 4096 asm lines"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(
+            src.get(err[0].primary.start..err[0].primary.start + 8),
+            Some("repeat 1"),
+            "the caret stays on the outermost expansion"
+        );
+        // Outermost first: the call, then both library-internal `repeat`s, then
+        // the line that actually overflowed.
+        let labelled: Vec<&str> = err[0]
+            .labels
+            .iter()
+            .map(|(s, _)| src[s.start..].split(['\n', '{']).next().unwrap().trim())
+            .collect();
+        assert_eq!(
+            labelled,
+            vec!["big()", "repeat 1024", "repeat 1024", "cs_assert"],
+            "the culprit `repeat 1024`s must appear, and they are at neither end"
         );
     }
 
