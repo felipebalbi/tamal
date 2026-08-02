@@ -847,6 +847,43 @@ mod tests {
     }
 
     #[test]
+    fn exactly_the_expansion_budget_compiles_and_one_expansion_more_does_not() {
+        // The expansion budget's twin of the test above. `repeat N { }` emits
+        // nothing at all, so this isolates it from the emission budget
+        // completely. `MAX_UNROLL` forbids reaching `MAX_EXPANSIONS` with one
+        // `repeat`, so nest two: `outer * (1 + inner)` iterations, both counts
+        // legal. Driven off the constants so the boundary stays pinned if
+        // either budget is ever retuned.
+        let rep = |n: i64, body: Vec<Stmt>| Stmt::Repeat {
+            count: Expr::Int {
+                value: n,
+                span: 0..1,
+            },
+            body,
+            span: 0..1,
+        };
+        let outer = crate::MAX_UNROLL;
+        let inner = MAX_EXPANSIONS as i64 / outer - 1;
+        assert_eq!(
+            outer * (1 + inner),
+            MAX_EXPANSIONS as i64,
+            "the budget must factor over MAX_UNROLL for this construction to be exact"
+        );
+        assert!(
+            emit(&one(vec![rep(outer, vec![rep(inner, vec![])])]), Env::new()).is_ok(),
+            "exactly {MAX_EXPANSIONS} expansions must compile"
+        );
+        assert!(
+            emit(
+                &one(vec![rep(outer, vec![rep(inner, vec![])]), rep(1, vec![])]),
+                Env::new()
+            )
+            .is_err(),
+            "one expansion over the budget must be a diagnostic"
+        );
+    }
+
+    #[test]
     fn remap_points_asm_span_at_originating_tam_span() {
         // a raw statement whose .tam span is 40..45; its emitted asm line's
         // offset must remap back to that span.

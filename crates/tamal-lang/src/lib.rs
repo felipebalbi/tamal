@@ -1376,10 +1376,12 @@ mod tests {
     fn a_budget_diagnostic_outside_any_expansion_keeps_its_own_span() {
         // The fallback half of the anchoring policy: with nothing expanding
         // there is no outer construct to accuse, so the caret stays on the
-        // overflowing line — and the label would just duplicate it, so there
-        // is none.
+        // overflowing line — and the label would just duplicate it, so there is
+        // none. The leading `repeat` is load-bearing: it *finishes* before the
+        // overflow, so an expansion-site stack that is pushed but never popped
+        // would still accuse it here.
         let filler = "cs_assert\n".repeat(4096);
-        let src = format!("test t {{\n{filler} pass\n}}\n");
+        let src = format!("test t {{\n repeat 2 {{\n  crc_reset\n }}\n{filler} pass\n}}\n");
         let err = lower_to_asm(&src).unwrap_err();
         assert!(
             err[0].message.contains("more than 4096 asm lines"),
