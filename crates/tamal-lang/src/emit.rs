@@ -15,7 +15,12 @@ use tamal_abi::isa::Reg;
 /// The eSPI WAIT_STATE response code the `wait_state` poll spins on.
 const WAIT_STATE_CODE: u8 = 0x0F;
 
-/// The largest number of asm lines a single program may emit.
+/// The largest number of [`Emitter::push`] calls a single program may make.
+///
+/// Almost always one asm line each, but not exactly: `flush_trailers` pushes a
+/// two-line `"{label}:\n\thalt …\n"` block as a single entry, so the true line
+/// count runs up to one line per `expect` above this. Still bounded, which is
+/// all the budget is for.
 ///
 /// A tamal program is capped at 1024 words, so anything beyond this can never
 /// assemble. The per-construct [`crate::MAX_UNROLL`] gives a *better message*
@@ -23,10 +28,14 @@ const WAIT_STATE_CODE: u8 = 0x0F;
 /// *composition* — nested `repeat`s, or a `proc` that fans out to two calls per
 /// level. Without it those hang the compiler with no diagnostic.
 ///
-/// Deliberately looser than 1024: `li` can tile to two words, and labels and
-/// directives emit lines that are not words at all, so a tight bound would
-/// reject legal programs. Its job is to stop unbounded growth, not to duplicate
-/// the assembler's exact cap.
+/// Deliberately looser than 1024 because labels and directives (`.globl`,
+/// `_start:`, `__waitN:`) emit lines that are not words at all, so lines can
+/// outnumber words. (`li` tiling to two words pushes the ratio the *safe* way —
+/// more words per line — so it is not a reason to loosen anything.) Measured:
+/// the line-densest legal program, all `wait_state` (5 pushes per 4 words), is
+/// 1021 words / 1278 lines, so 4096 carries 3.2x headroom. Its job is to stop
+/// unbounded growth, not to duplicate the assembler's exact cap.
+///
 /// `pub(crate)` only so the driver's tests can place a program exactly on the
 /// boundary; nothing outside this module reads it.
 pub(crate) const MAX_EMITTED_LINES: usize = 4096;
@@ -210,6 +219,15 @@ impl Emitter {
     /// The budget is checked *before* appending, so the emitted text never
     /// exceeds it. See [`Emitter::budget_error`] for where the diagnostic
     /// points.
+    ///
+    /// **Invariant the callers depend on: an emit error is always fatal.**
+    /// Every `?` here is an early return that skips cleanup — `lower_recv`,
+    /// `lower_wait_state` and `lower_expect` return before their `alloc.free`,
+    /// and `lower_frame` before its `alloc.exit_scope()` — which is sound only
+    /// because the whole compilation is abandoned, so the leaked scope is never
+    /// observed. [`emit`] returns `Vec<Diagnostic>`, so recovering and
+    /// continuing is a plausible future direction; it would turn every one of
+    /// those into a real leak.
     fn push(&mut self, text: &str, span: &Span) -> Result<(), Vec<Diagnostic>> {
         if self.lines.len() >= MAX_EMITTED_LINES {
             return Err(self.budget_error(

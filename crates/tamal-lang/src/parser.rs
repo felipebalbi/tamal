@@ -251,8 +251,14 @@ fn parse_number(lexeme: &str) -> Option<i64> {
 /// suggest the definition is unreachable. The driver rejects such a name up
 /// front instead.
 ///
-/// This list must mirror `parse_stmt`'s match arms; `stmt_keywords_shadow_a_call`
-/// fails if an arm is added without updating it.
+/// This list must mirror `parse_stmt`'s match arms, but only *one* direction is
+/// checked automatically. `stmt_keywords_shadow_a_call` iterates this list, so
+/// it fails when a word here stops being a statement — i.e. when a `parse_stmt`
+/// arm is **removed** and the list is not updated. The other direction is
+/// manual: **adding** an arm without listing the word here passes the whole
+/// suite silently, leaving a callable name that is definable but uncallable.
+/// Add the word by hand, and pin it with a test (see `a_proc_may_not_be_named_*`
+/// in the driver).
 pub const STMT_KEYWORDS: &[&str] = &[
     "pass",
     "fail",

@@ -120,7 +120,7 @@ pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
                 format!("test `{}` never halts", test.name),
             )
             .with_help(
-                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame`, `proc` body or `repeat` is not counted",
+                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame`, `proc`, or `repeat` body is not counted",
             ),
         ]);
     }
@@ -913,10 +913,8 @@ mod tests {
         let err = lower_to_asm("proc p() { pass }\ntest t {\n p()\n}\n").unwrap_err();
         assert!(err[0].message.contains("never halts"), "got: {:?}", err[0]);
         assert!(
-            err[0]
-                .help
-                .as_deref()
-                .is_some_and(|h| h.contains("`proc` body")),
+            err[0].help.as_deref().is_some_and(|h| h
+                .contains("a verdict inside a `frame`, `proc`, or `repeat` body is not counted")),
             "got: {:?}",
             err[0].help
         );
