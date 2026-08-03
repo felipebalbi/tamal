@@ -7,8 +7,13 @@ mod common;
 use common::canon;
 
 /// The shared framing/poll/verify skeleton, written once. Plan 4a has no
-/// `import` yet (that is Plan 5), so it lives in the test source; Plan 5 will
-/// move exactly this into `espi.tam` and the call sites will not change.
+/// `import` yet (that is Plan 5), so it lives in the test source.
+///
+/// Plan 5 moves this **body** into `espi.tam` verbatim — design §4.3 spells the
+/// same seven statements. Only the signature changes there: it gains `pub` and
+/// writes the default as `Verdict.Crc`, both out of Plan 4a's scope, and both
+/// spellings of the same 0x11. The **call sites** genuinely do not change
+/// beyond gaining the `espi.` qualifier that `import` introduces.
 const COMMAND_PROC: &str = "\
 proc command(pkt: bytes, ndata: int, err: byte = 0x11) {
     frame {
@@ -24,6 +29,14 @@ proc command(pkt: bytes, ndata: int, err: byte = 0x11) {
 
 /// OOB channel: a tunnelled SMBus message. A write completion returns status
 /// only, so `ndata = 0`; the arguments are named, as in the design's §4.3.
+///
+/// **Not pinned here:** §4.3 writes the named arguments in declaration order,
+/// so this test cannot tell name-matching from position-matching — binding
+/// `pkt` and `ndata` by index gives the identical bytecode. That distinction is
+/// pinned by `consteval::tests::{binds_named_arguments_by_name,
+/// rejects_a_named_argument_with_no_matching_parameter,
+/// rejects_a_parameter_bound_twice}`. Reordering them here would close the gap
+/// but drift from the §4.3 shape this file exists to demonstrate.
 fn oob_tam() -> String {
     format!(
         "const PUT_OOB = 0x06\n\n{COMMAND_PROC}\n\
@@ -123,6 +136,12 @@ fn peripheral_io_read_via_fn_and_proc_byte_matches_asm_modulo_registers() {
 fn peripheral_io_read_via_fn_and_proc_lowers_to_the_expected_asm() {
     // `iord_hdr(0x44, 0x0064)` folds to [0x44, 0x00, 0x64] and `+ crc8` to
     // 0x16; `repeat 1 { recv _ }` contributes the single payload read.
+    //
+    // **Not pinned here:** 0x0064's high byte is zero, so this golden cannot
+    // tell `hi(addr)` from a constant `0` — that is pinned by
+    // `consteval::tests::len_lo_hi_builtins`. The address is the 8042 status
+    // port hard-coded in `examples/peripheral_io_read.s`, which `frames.rs`
+    // byte-matches too, so it cannot be changed here alone.
     let asm = tamal_lang::lower_to_asm(&peripheral_tam()).expect("lower .tam");
     let expected = "\
 .globl _start
