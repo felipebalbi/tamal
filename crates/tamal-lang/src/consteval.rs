@@ -361,8 +361,9 @@ pub fn bind_args(
                     Diagnostic::error(
                         arg.span.clone(),
                         format!(
-                            "`{callee}` takes {} argument(s), got {}",
+                            "`{callee}` takes {} argument{}, got {}",
                             params.len(),
+                            if params.len() == 1 { "" } else { "s" },
                             args.len()
                         ),
                     )
@@ -761,6 +762,39 @@ mod tests {
         ]);
         assert!(surplus.contains("takes 3 argument"), "got: {surplus}");
         assert!(surplus.contains("got 4"), "got: {surplus}");
+    }
+
+    #[test]
+    fn the_arity_message_pluralises_like_the_builtins_do() {
+        // The user-callable arity message used to read "takes 1 argument(s)"
+        // while the builtin one (`builtin_arg`) read "takes 1 argument" — the
+        // `(s)` form was the odd one out in an otherwise carefully-voiced
+        // diagnostic set. Both halves need pinning: `contains("takes 3
+        // argument")` above is satisfied by "argument(s)" too, so it cannot
+        // tell the forms apart.
+        let plural = bind_err(vec![
+            pos(bytes(&[0x44])),
+            pos(int(0)),
+            pos(int(0x11)),
+            pos(int(9)),
+        ]);
+        assert!(plural.contains("takes 3 arguments, got 4"), "got: {plural}");
+
+        // …and the singular, which needs a one-parameter callee.
+        let one = vec![param("pkt", Type::Bytes, None, param_span(0))];
+        let singular = bind_args(
+            "one_arg",
+            &one,
+            &stamped(vec![pos(bytes(&[0x44])), pos(int(0))]),
+            &Env::new(),
+            &call_span(),
+        )
+        .unwrap_err()
+        .message;
+        assert!(
+            singular.contains("takes 1 argument, got 2"),
+            "got: {singular}"
+        );
     }
 
     #[test]

@@ -948,6 +948,22 @@ mod tests {
             "got: {:?}",
             err[0]
         );
+        // Anchored on the NAME, not on the whole call: the name is what is
+        // unknown and what the author retypes. `nope` starts at offset 10.
+        assert_eq!(
+            &"test t {\n nope()\n pass\n}\n"[err[0].primary.clone()],
+            "nope",
+            "the caret must cover just the name"
+        );
+        // Its `fn`-called-as-a-statement sibling carries help; so must this.
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("declare it as `proc")),
+            "got: {:?}",
+            err[0].help
+        );
     }
 
     #[test]

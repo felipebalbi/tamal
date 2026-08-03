@@ -1,7 +1,18 @@
 //! Emit: lower a `Module` to tamal-asm text, plus a source map from
-//! generated-asm byte offsets back to the originating `.tam` spans. A `test`
-//! becomes the entry label; `pass`/`fail`/raw become lines, and `send`/
-//! `crc_region` evaluate to `put_byte` runs (with the compile-time CRC-8).
+//! generated-asm byte offsets back to the originating `.tam` spans.
+//!
+//! A `test` becomes the entry label. Straight-line statements become asm lines,
+//! `send`/`crc_region` evaluate to `put_byte` runs (folding the CRC-8 at
+//! compile time), and `frame` wraps its body in `cs_assert`/`cs_deassert`,
+//! deferring each `expect`'s verdict past the deassert (D9) into a hoisted
+//! per-test trailer.
+//!
+//! Because the ISA has no `call`/`ret` and no stack, both callable forms
+//! resolve here at compile time: a `proc` call is expanded **inline** in a
+//! fresh value and register scope (D5), and `repeat N` is unrolled `N` times.
+//! Two whole-program budgets bound that expansion — [`MAX_EMITTED_LINES`] over
+//! the output, [`MAX_EXPANSIONS`] over the work — so a body that emits nothing
+//! cannot loop the compiler forever.
 
 use crate::parser::{Arg, Expr, Module, ProcDef, Stmt};
 use std::collections::HashMap;
@@ -602,10 +613,20 @@ impl Emitter {
             ]);
         }
         let Some(p) = self.procs.get(name).cloned() else {
-            return Err(vec![Diagnostic::error(
-                name_span.clone(),
-                format!("unknown `proc` `{name}`"),
-            )]);
+            // Anchored on the NAME, not on the whole call span its `fn`
+            // sibling above uses: the name is the thing that is unknown and
+            // the thing the author retypes. Deliberately more precise than the
+            // sibling — do not "make them consistent" by widening this one.
+            //
+            // The help must not list the declared `proc`s: `self.procs` is a
+            // `HashMap`, so its iteration order would put nondeterminism into a
+            // diagnostic.
+            return Err(vec![
+                Diagnostic::error(name_span.clone(), format!("unknown `proc` `{name}`")).with_help(
+                    "a statement call names a `proc`; declare it as `proc <name>(…) { … }`, \
+                     or, if it returns a value, call it as a `fn` inside an expression",
+                ),
+            ]);
         };
         if self.active_procs.iter().any(|n| n == name) {
             return Err(vec![

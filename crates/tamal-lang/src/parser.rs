@@ -1,7 +1,6 @@
-//! Parser: tokens → the AST — a `Module` of `const` items, `fn` items and a
-//! `Test` of statements (`pass`, `fail N`, `send`/`crc_region`, or a verbatim
-//! raw instruction), plus the compile-time `Expr` grammar (`[bytes]`, `++`,
-//! `^`, builtin and `fn` calls).
+//! Parser: tokens → the AST — a `Module` of `const` items, `fn` items, `proc`
+//! items and tests, each test a list of statements, plus the compile-time
+//! `Expr` grammar (`[bytes]`, `++`, `^`, builtin and `fn` calls).
 
 use crate::lexer::{Tok, Token};
 use tamal_asm::{Diagnostic, Span};
@@ -31,7 +30,17 @@ pub struct Test {
     pub stmts: Vec<Stmt>,
 }
 
-/// A Plan-1 statement.
+/// One statement in a `test`, a `proc` body, or a nested block.
+///
+/// Four kinds: verdicts (`pass`/`fail`), link setup (`config`), bus activity
+/// (`send`/`crc_region`/`recv`/`wait_state`/`expect`/`frame` and the verbatim
+/// `Raw` escape hatch), and the compile-time control forms (`Call`/`Repeat`,
+/// both resolved by the emitter — the ISA has no `call`/`ret` and no stack).
+///
+/// **Adding a variant touches four wildcard-free matches**, all deliberately
+/// so: `emit::stmt` (how it lowers), `emit::legal_in_frame` (whether it may
+/// appear inside a `frame`), `emit::stmt_span` (its diagnostic anchor), and
+/// the `halts` scan in `lib.rs`.
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// `pass` → `halt 0x00`.
@@ -1009,6 +1018,28 @@ mod tests {
         let toks = lex("test t {\n  pass\n").unwrap();
         let err = parse("test t {\n  pass\n", &toks).unwrap_err();
         assert!(err[0].message.contains("missing `}`"));
+    }
+
+    #[test]
+    fn an_unterminated_block_names_the_construct_it_belongs_to() {
+        // `parse_block`'s `what` parameter reaches all four constructs, but
+        // only `test`'s message was asserted — and only for the `missing `}``
+        // half, so hard-coding `what` to `"test"` (or to anything at all)
+        // passed the whole suite. Pin every call site.
+        for (what, src) in [
+            ("test", "test t {\n  pass\n"),
+            ("proc", "proc p() {\n  cs_assert\n"),
+            ("frame", "test t {\n  frame {\n    tar 2\n"),
+            ("repeat", "test t {\n  repeat 1 {\n    tar 2\n"),
+        ] {
+            let toks = lex(src).unwrap();
+            let err = parse(src, &toks).unwrap_err();
+            assert_eq!(
+                err[0].message,
+                format!("unexpected end of file: missing `}}` for `{what}`"),
+                "an unterminated `{what}` block must name `{what}`"
+            );
+        }
     }
 
     #[test]
