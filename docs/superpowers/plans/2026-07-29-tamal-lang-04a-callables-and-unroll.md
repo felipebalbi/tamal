@@ -34,7 +34,9 @@ Read this before starting; every task assumes it.
 
 5. **Arguments and defaults are evaluated in *different* scopes, and the asymmetry is load-bearing.** An **argument** is written at the *call site*, so it is evaluated in the **caller's** scope with the callee **not** yet on the in-progress chain — otherwise ordinary nesting like `f(f(1))` would be misreported as recursion. A **default** is written at the *definition site*, so it is evaluated in the callee's **module scope** with the callee **already on** the chain — otherwise a self-referential default (`fn f(n: int = f())`) recurses forever. Module scope also stops a default from capturing a caller local that happens to share its name.
 
-   > **Correction (found by review during execution).** The first draft of this plan had `bind_args` evaluate defaults via a plain `env.module_scope()`, which preserves the chain *unchanged* — and `eval_fn_call` only pushes the callee **after** `bind_args` returns. A self-referential default therefore never saw itself on the chain and overflowed the stack (exit 134, no diagnostic) on `fn f(n: int = f())`, on a mutual default cycle, and on a default cycle reached from another `fn`'s body. The fix belongs **inside `bind_args`** — a `module_scope_for(callee)` used only by the defaults loop, leaving the argument loop on the caller's `env` — so `proc` inherits it in Task 6 for free. Note the *obvious* fix (pushing the callee before `bind_args`) is wrong: it silently breaks `f(f(1))` while leaving the suite green.
+   > **Correction (found by review during execution).** The first draft of this plan had `bind_args` evaluate defaults via a plain `env.module_scope()`, which preserves the chain *unchanged* — and `eval_fn_call` only pushes the callee **after** `bind_args` returns. A self-referential default therefore never saw itself on the chain and overflowed the stack (exit 134, no diagnostic) on `fn f(n: int = f())`, on a mutual default cycle, and on a default cycle reached from another `fn`'s body. The fix belongs **inside `bind_args`** — a scope built for the callee, used only by the defaults loop, leaving the argument loop on the caller's `env` — so `proc` inherits it in Task 6 for free. Note the *obvious* fix (pushing the callee before `bind_args`) is wrong: it silently breaks `f(f(1))` while leaving the suite green.
+   >
+   > **As shipped, that method is the private `Env::default_scope_for(callee)` (`consteval.rs:122`).** It *replaced* `module_scope` rather than joining it: neither `module_scope` nor the `module_scope_for` this plan first called it exists in the tree. It is private on purpose — the defaults loop is the only place the scope is correct, and a neutral-looking public accessor is exactly how the argument path would acquire it by mistake.
 
 6. **Register hygiene comes free from `RegAlloc` (D5).** A `proc` expansion brackets its body with `enter_scope()`/`exit_scope()`. Registers live in the caller stay marked busy, so the callee's lowest-free-first allocations cannot alias them (this is exactly the invariant pinned by `regalloc.rs::nested_scope_does_not_clobber_a_live_outer_register`), and everything the callee bound is released on exit. **Label** hygiene comes free from the shared `Emitter::gensym` counter.
 
@@ -913,10 +915,12 @@ In `crates/tamal-lang/src/consteval.rs`, add these two methods to `impl Env` (af
     ///
     /// **Correction during execution:** the defaults loop must additionally push
     /// the callee onto the in-progress chain, or a self-referential default
-    /// (`fn f(n: int = f())`) recurses until the stack overflows. Implement this
-    /// as `module_scope_for(callee)` and use it *only* for defaults — the
-    /// argument loop must stay on the caller's `env`, or legal nesting like
-    /// `f(f(1))` is misreported as recursion. See architecture note 5.
+    /// (`fn f(n: int = f())`) recurses until the stack overflows. As shipped
+    /// this is the **private** `Env::default_scope_for(callee)`, which replaces
+    /// the `module_scope` below rather than sitting beside it, and it is used
+    /// *only* for defaults — the argument loop must stay on the caller's `env`,
+    /// or legal nesting like `f(f(1))` is misreported as recursion. See
+    /// architecture note 5.
     pub fn module_scope(&self) -> Env {
         let mut e = self.clone();
         e.locals.clear();
@@ -3072,7 +3076,16 @@ Found by review during execution. None blocks this increment; all are recorded h
    21 source lines → 13.1 s, **3 emitted asm lines**, 1024 expansions (1.5 % of `MAX_EXPANSIONS`), exit 0. Neither budget fires: the emission budget sees three lines, the expansion budget sees 1024 expansions, and all the work is in consteval where neither is looking. Task 7's budgets bound *expansion* work only — `emit.rs`'s `MAX_EXPANSIONS` doc says so explicitly under "What this does *not* bound" — and this entry is the other half of that disclosure.
 
 
-2. **Deep `fn` expansion still aborts without a diagnostic.** An *acyclic* chain of roughly a thousand `fn`s overflows the stack (exit 134/-6, no diagnostic) — the same failure mode as the Task-4 blocker, reached by depth rather than by a cycle. Note this class is **pre-existing and not confined to callables**: the recursive-descent parser overflows on ~2000-deep expression nesting (`lo(lo(lo(…)))`) and predates this plan. A `fn`-only expansion cap would therefore give false confidence while the parser path remains open; the right fix caps recursion depth across the front end and reports a diagnostic. Deferred as its own piece of work.
+2. **Deep `fn` expansion still aborts without a diagnostic.** An *acyclic* chain of `fn`s overflows the stack (exit 134/-6, no diagnostic) — the same failure mode as the Task-4 blocker, reached by depth rather than by a cycle. Note this class is **pre-existing and not confined to callables**: the recursive-descent parser overflows on deeply nested expressions (`lo(lo(lo(…)))`) and predates this plan. A `fn`-only expansion cap would therefore give false confidence while the parser path remains open; the right fix caps recursion depth across the front end and reports a diagnostic. Deferred as its own piece of work.
+
+   **The depths are profile-dependent, so always state the profile.** Follow-up 1 says "(release)"; this entry originally did not, which invites a future implementer to measure in release, see the shallow figure survive, and wrongly conclude the entry is stale. Re-measured on an 8 MiB main-thread stack (`ulimit -s 8192`):
+
+   | reproducer | debug | release |
+   |---|---|---|
+   | `fn` chain (`fn f0() -> int { f1() }`, …, driving `repeat f0() { }`) | aborts at **1 000** | survives 16 000; aborts at **20 000** |
+   | parser nesting (`lo(lo(…1…))`) | aborts at **2 000** | survives 6 000; aborts at **8 000** |
+
+   So release buys roughly 20x on the `fn` chain and only ~4x on the parser, and *both* remain reachable from a source file a person could plausibly generate. The figures are stack-size-dependent as well as profile-dependent — they are an order of magnitude, not a contract.
 
 3. **`--emit asm` diagnostics for an unclosed `(` can be misleading.** Because newlines are transparent *between* arguments, a missing `)` lets an argument list swallow following statements, so `send crc8([0x44],` / `cs_assert)` reports an arity error rather than a missing paren. This is the standard consequence of newline-transparent argument lists (Rust, C and Python behave the same way) and the obvious mitigations do not address it — the close-paren check *succeeds* in that example. Belongs with the diagnostics polish planned alongside `--lint` in Plan 6.
 
@@ -3098,7 +3111,7 @@ Found by review during execution. None blocks this increment; all are recorded h
 
    A clean ×4 per two levels, so **depth 30 is a 35-line source file demanding 8 GiB**.
 
-   `MAX_EMITTED_LINES` *does* fire here — every row above ends in `the program emits more than 4096 asm lines`. That is precisely the problem: `eval_bytes` (`consteval.rs:184-193`) materialises the whole `Vec<u8>` **before any budget sees a line**, so the memory is already spent when the diagnostic arrives, and the diagnostic names *asm lines* when the fault is one `const`. The same shape Task 8 fixed for `recv N`: a global budget that fires late and accuses the wrong construct is not a substitute for bounding the construct that allocates.
+   `MAX_EMITTED_LINES` *does* fire here — every row above ends in `the program emits more than 4096 asm lines`. That is precisely the problem: the `Concat` arm of `eval` (`consteval.rs:184-193`) materialises the whole `Vec<u8>` **before any budget sees a line**, so the memory is already spent when the diagnostic arrives, and the diagnostic names *asm lines* when the fault is one `const`. (An earlier version of this entry called those lines `eval_bytes` — right code, wrong name; `eval_bytes` proper is the thin `Value::Bytes` unwrapper at `consteval.rs:290`, and it allocates nothing itself.) The same shape Task 8 fixed for `recv N`: a global budget that fires late and accuses the wrong construct is not a substitute for bounding the construct that allocates.
 
 8. **`recv <name>` silently shadows a `const` instead of reading that many bytes.** Given `const N = 8`, `recv N` lowers to **one** `get_byte` bound to a register named `N` — the name/discard arm of the grammar — while `recv 8` lowers to eight. Verified. Pre-existing and a direct consequence of the grammar: the count arm is entered only on `Tok::Number` (`parser.rs:625`), so a symbolic count is not "unsupported", it is *a different statement that happens to parse*. Silent, plausible-looking, and exactly the kind of thing `--lint` should refuse — a natural Plan 6 diagnostic ("`recv N` where `N` names a const reads one byte; write the count as a literal").
 
@@ -3112,12 +3125,52 @@ Found by review during execution. None blocks this increment; all are recorded h
 
     Not introduced by Task 9: it is inherited verbatim from Plan 3's `frames.rs` and reproduced literally by this plan's own Task-9 code block, so Task 9 moved it rather than wrote it. The right moment to fix it — replace the wildcard with the 10 variants spelled out — is `tamal-abi`'s next ISA change, when the compiler would otherwise be silent about the new one.
 
+11. **An uncalled `proc`/`fn` body is never checked at all.** This is the one hazard genuinely *new* with this increment: before Plan 4a every statement in a module was emitted, so every statement was checked. Now a callable body is only ever visited at expansion, and a callable nobody calls is never expanded. The whole file below compiles clean, **exit 0, no diagnostic**, on `--emit asm`, `--emit bin` and `--emit listing` alike:
+
+    ```
+    proc never_called() { bogus_mnemonic_xyz 1, 2 }
+    fn never_used() -> bytes { UNDEFINED_NAME }
+    fn bad_ret(n: int) -> bytes { n }
+    proc bad_default(x: byte = 999) { send [x] }
+    test t { pass }
+    ```
+
+    Each of the four *is* a hard error the moment it is called — verified one at a time: `unknown name \`UNDEFINED_NAME\``, `` the body of `bad_ret` expects `bytes`, found the integer 1 ``, `` the default for `x` of `bad_default` expects `byte`: 999 is out of range 0..=255 ``, and (for the raw mnemonic, which passes through to the backend) `` unknown instruction `bogus_mnemonic_xyz` ``. Nothing is mis-emitted; the checks simply never run.
+
+    **The `repeat 0` variant is the same hole reached from statement position** — `test t { repeat 0 { bogus_mnemonic_xyz 1, 2 } pass }` also compiles clean, because `lower_repeat`'s `for _ in 0..n` body never executes. Any construct that can decline to expand its body inherits this; `if false` in Plan 4b will be the next one.
+
+    **This is not a correctness bug.** It is inherent to compile-time inline expansion — C++ templates behave identically, and for the same reason: an uninstantiated body has no context to check against. `--lint` (Plan 6) is the right home for the fix, as a separate best-effort pass over unexpanded bodies (name resolution, return types, and defaults are all checkable without a call site; the raw-mnemonic arm needs the assembler's opcode table).
+
+    **It lands hardest on Plan 5.** Plan 5 bundles an `espi.tam` stdlib, and most of it will be uncalled by any given test — that is the *point* of a library. A typo, a wrong return type or an out-of-range default in a library `proc` therefore ships green and surfaces only when someone finally calls it, at which moment it looks like *their* bug. A stdlib is exactly the shape this hole is worst for, so Plan 5 should not rely on "the suite is green" as evidence that `espi.tam` is well-formed; it needs at least one test that calls every `pub` callable, or the `--lint` pass brought forward.
+
+12. **`lib.rs`'s test module has outgrown its home — split it before Plan 4b.** `lib.rs` is 1587 lines, of which **1404** are `#[cfg(test)]` (base at the start of this plan: 362 total, 265 of tests); the driver itself is ~150 lines. It now holds essentially every end-to-end lowering test in the crate — frames, `recv`, `wait_state`, `expect`, `fn`, `proc`, `repeat`, and both budgets — all of the "compile this string, assert this asm" shape, i.e. integration tests of the `pub` API. Meanwhile `tests/` holds 16 tests across four files.
+
+    Three concrete costs, not a style preference: the slow budget tests (consteval fan-out depth 22, `repeat 1024³`) share one binary with ~190 fast unit tests; follow-up 5's blast radius is *precisely* 197 tests because everything lives here; and "where are the `repeat` tests?" is not answerable from the file layout.
+
+    **Deliberately not done in this increment.** Reorganising 1404 lines of tests as the final act of a 40-plus-commit increment is risk with no functional gain. But **Plan 4b adds `if`/`while`/`do-while`/comparisons and will do this again**, so the split (e.g. `tests/budgets.rs`, `tests/procs.rs`) is best done *before* it, as its own focused piece of work, while the diff is still only a move.
+
+13. **A `const` and a callable may share a name, silently.** `lower`'s comment at `lib.rs:51-52` — "their names are validated here, beside the `fn`s, so every callable-name collision is caught in one place" — overstates what the block below it (`lib.rs:53-66`) does. It checks builtins, statement keywords, `fn`↔`fn` and `fn`↔`proc` — **not `const`**. Verified:
+
+    ```
+    const dup = 0x40
+    fn dup(n: int) -> int { n }
+    test t { send [dup]  send [dup(0x41)]  pass }
+    ```
+
+    compiles clean to `put_byte 0x40` / `put_byte 0x41`: `dup` means the **const** in operand position and the **fn** in call position. This is structural, not an oversight in one check — `Env` keeps `consts` and `fns` in separate maps (`consteval.rs:54`, `:65`), so there is no single namespace to collide in. `enum` (Plan 5) and `let` (Plan 4b) both add more name-introducing forms and make it worse. The fix is a single name table consulted by every introducer, which is a `consteval`/driver design change rather than one more `if`.
+
+14. **`bind_args` partially unifies the two recursion chains that `lower_call` insists must stay separate.** `emit.rs` (the comment above `child_for_call_values` in `lower_call`) explains at length why `active_procs` and `Env::active` are deliberately distinct — one tracks `proc`s and is read only by emit, the other tracks `fn`s and is read only by consteval — and warns that qualified names (`espi.command`) may weaken the fn/proc no-collision guarantee that would make sharing safe. But `bind_args`' defaults loop calls `env.default_scope_for(callee)` (`consteval.rs:419`) **unconditionally**, and `default_scope_for` does `e.active.push(callee)` (`consteval.rs:122-127`) — so calling a `proc` pushes its name onto the **`fn`** chain for the duration of default evaluation. Harmless today *only* because the driver forbids a `fn` and a `proc` sharing a name, which is precisely the guarantee the neighbouring comment says not to depend on. Undocumented at either site. Either document the coupling at both ends, or give `bind_args` a callee-kind parameter so it pushes onto the right chain.
+
+15. **The unroll bound is implemented twice.** `emit.rs:685-700` (`repeat`) and `parser.rs:653-663` (`recv N`) are the same `!(0..=crate::MAX_UNROLL).contains(&n)` guard with hand-duplicated message *and* help text ("a tamal program is at most 1024 words, so a larger unroll/read can never assemble"). Both are pinned today, so they cannot drift silently *into* being wrong — but nothing keeps them drifting *apart*, and follow-up 9 (which notes the hard-coded "1024 words" in that help) reads as though there were one copy to fix. There are two. Whoever acts on follow-up 9 must fix both.
+
+16. **Three sibling limits, two homes, two visibility policies.** `MAX_UNROLL` is `pub` in `lib.rs:23`; `MAX_EMITTED_LINES` (`emit.rs:50`) and `MAX_EXPANSIONS` (`emit.rs:104`) are `pub(crate)`. All three are whole-language limits a caller might reasonably want to query, and all three are referenced by tests that derive their expected diagnostics from them — so the split is historical (`MAX_UNROLL` needed to be reachable from `parser.rs` *and* `emit.rs`) rather than principled. Either all three are published as language limits, or none is and `MAX_UNROLL` drops to `pub(crate)`. Worth settling before Plan 6's `--lint`, which will want to report against them.
+
 
 ---
 
 ## Notes for the implementer
 
-- **Adding a `parser::Stmt` variant now touches THREE exhaustive matches** (Task 5 merged two of the old four): `emit.rs::stmt`, `emit.rs::stmt_span`, and the `lib.rs` M2 `halts` scan. All three are wildcard-free on purpose — lean on the compiler to flag an omission. A new emitting statement is not a terminator, so it is `=> false` in `halts`.
+- **Adding a `parser::Stmt` variant touches FOUR exhaustive matches**: `emit.rs::stmt` (how it lowers), `emit.rs::legal_in_frame` (whether it may appear inside a `frame`), `emit.rs::stmt_span` (its diagnostic anchor), and the `lib.rs` M2 `halts` scan. All four are wildcard-free on purpose — lean on the compiler to flag an omission. A new emitting statement is not a terminator, so it is `=> false` in `halts`. (Task 5 merged two of the original four matchers into one, leaving three; the closeout added `legal_in_frame`, which had been a `matches!` guard listing only the *rejected* variants — so a new variant silently defaulted to legal inside a frame, which is exactly the trap Plan 4b's five new variants would have walked into.)
 - **Adding an `Expr` variant** still requires updating the `eval` match in `consteval.rs` (exhaustive, no wildcard, intentional).
 - **The asm label grammar is `[A-Za-z_][A-Za-z0-9_]*` — no leading dot** (a `.`-prefixed token lexes as a directive). Gensym labels use the `__` prefix.
 - **`gensym` is a single shared counter**, so numbers do not restart per prefix: a `wait_state` followed by an `expect` yields `__wait0` then `__fail1`. Both capstone goldens depend on this.
@@ -3140,13 +3193,13 @@ Found by review during execution. None blocks this increment; all are recorded h
 | §2 / §5 `repeat N { … }` compile-time unroll | Task 7 |
 | §5 / D5 per-expansion register hygiene (fresh registers, no clobber) | Task 6 (`enter_scope`/`exit_scope` + the clobber test) |
 | §5 label hygiene across expansions (gensym) | Task 6 (`two_expansions_get_fresh_registers_and_labels`) |
-| §5 lexical scoping: a callee sees its params + module consts only | Tasks 1, 3 (`child_for_call` / `module_scope`, with a test) |
+| §5 lexical scoping: a callee sees its params + module consts only | Tasks 1, 3 (`child_for_call` / `default_scope_for`, with a test) |
 | §5 every field/type range-checked, never silently wrapped | Task 3 (`check_type`) |
 | §7 register safety: never alias a live value; no spill | Task 6 (`reserve` closes the deferred-verdict hole) |
 | §7 no invented linkage | Tasks 4, 6 (recursion is an error, not a stack) |
 | §7 determinism: no `HashMap` iteration reaches output or error order | Task 3 (errors walk `params`/`args` in order) |
-| §9 channel examples byte-match modulo register allocation | Task 9 (OOB **and** peripheral) |
-| §9 every TX CRC re-derived, never typed (`0xB1`, `0x16`) | Task 9 |
+| §9 channel examples byte-match modulo register allocation | Task 9 (OOB + peripheral); closeout added virtual-wire + flash, so **all four** §9 examples are pinned off the one `command` proc |
+| §9 every TX CRC re-derived, never typed (`0xB1`, `0x16`, and `0x89`, `0xE8` at closeout) | Task 9 + closeout |
 | §4.3 the library `command`/`iowr_hdr` shapes are expressible | Task 9 (`COMMAND_PROC`, `iord_hdr`) |
 | Plan-3 follow-up: unbounded `recv N` OOM | Task 8 |
 
@@ -3155,7 +3208,7 @@ Out of scope by design and stated in the header: `if`/`while`/`do-while`/compari
 **2. Placeholder scan.** No `TBD`, `todo!()`, "implement later", or "similar to Task N". Every step that changes code shows the code. The `unreachable!` arms inherited from Plan 3's `lower_*` helpers are real guards (the caller only dispatches the matching variant), not placeholders. Both capstone goldens and both CRC bytes were computed against the actual tree, not guessed.
 
 **3. Type consistency.**
-- `Env::{new, insert_const, has_const, get, module_scope, child_for_call_values, define_fn, get_fn, is_active, child_for_call}` — each introduced once (Tasks 1, 3, 4) and used with those exact names afterwards.
+- `Env::{new, insert_const, has_const, get, child_for_call_values, define_fn, get_fn, is_active, child_for_call}` — each introduced once (Tasks 1, 3, 4) and used with those exact names afterwards. **Corrected after execution:** this list also named `module_scope`, which is not in the tree — the shipped method is the *private* `default_scope_for` (`consteval.rs:122`), which replaced it during the Task-3 correction (architecture note 5). The certification stands for every other name; `module_scope` is the one that drifted, and it drifted because the correction landed in the code without being carried back into this table.
 - `bind_args(callee, params, args, env, call_span) -> Result<HashMap<String, Value>, Diagnostic>` (Task 3) is called with that exact signature by `eval_fn_call` (Task 4) and `lower_call` (Task 6). `check_type(v, ty, span, what)` likewise.
 - `Arg { name, value, span }`, `Param { name, ty, default, span }`, `Type::{Byte, Int, Bytes}` + `Type::name()`, `FnDef { name, name_span, params, ret, body }`, `ProcDef { name, name_span, params, body }` — defined once, matched with identical shapes everywhere.
 - `Stmt::Call { name, name_span, args, span }` and `Stmt::Repeat { count, body, span }` are destructured identically in `emit.rs::stmt`, `emit.rs::stmt_span`, and the `lib.rs` `halts` scan.
