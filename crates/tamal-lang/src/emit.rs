@@ -343,23 +343,14 @@ impl Emitter {
     ///
     /// `entry` is the test's name span, used by statements (like `pass`) that
     /// have no more specific span of their own. Legality is context-dependent:
-    /// `pass`/`fail`/`config`/`frame` are rejected inside a `frame`, and
-    /// `expect` is rejected outside one. The dispatch match is wildcard-free by
-    /// design, so a new `Stmt` variant forces a decision *about lowering* here.
+    /// [`legal_in_frame`] decides what may appear inside a `frame`, and
+    /// `expect` is rejected outside one.
     ///
-    /// The in-frame legality decision, though, lives in the `matches!` guard
-    /// below — which lists only the rejected variants, so a new one silently
-    /// defaults to legal inside a frame. That is deliberate for `Stmt::Call`
-    /// and `Stmt::Repeat`: both are legal at the top level, inside a `frame`
-    /// and inside a `proc`. A new variant that is *not* must be added to the
-    /// guard by hand; the compiler will not prompt for it.
+    /// Both matches — the dispatch below and [`legal_in_frame`] — are
+    /// wildcard-free by design, so a new `Stmt` variant forces two separate
+    /// deliberate decisions: how it lowers, and whether it is legal in a frame.
     fn stmt(&mut self, stmt: &Stmt, entry: &Span) -> Result<(), Vec<Diagnostic>> {
-        if self.in_frame()
-            && matches!(
-                stmt,
-                Stmt::Pass | Stmt::Fail { .. } | Stmt::Config { .. } | Stmt::Frame { .. }
-            )
-        {
+        if self.in_frame() && !legal_in_frame(stmt) {
             return Err(vec![Diagnostic::error(
                 stmt_span(stmt, entry),
                 "this statement is not allowed inside a `frame`",
@@ -769,6 +760,45 @@ impl Emitter {
     }
 }
 
+/// May `stmt` appear inside a `frame`?
+///
+/// **Wildcard-free on purpose, and it lists the *accepted* variants too.** A
+/// guard that named only the rejected ones would compile unchanged when a new
+/// `Stmt` variant is added, silently defaulting it to legal inside a frame —
+/// so the D9 reasoning below would be extended to a statement nobody weighed.
+/// Spelling both sides means a new variant does not compile until someone
+/// answers the question. (`Emitter::stmt`'s dispatch match forces the separate
+/// question of how it *lowers*.)
+///
+/// The four rejections, and why:
+///
+/// - `pass` / `fail` halt the program, and a `frame` owes the bus an
+///   unconditional `cs_deassert` first (D9) — a verdict inside the body would
+///   strand CS# asserted.
+/// - `config` sets up the link before any transfer; inside a frame it would
+///   retune the bus mid-transaction.
+/// - `frame` does not nest: `lower_frame` emits one `cs_assert`/`cs_deassert`
+///   pair and `reserve_deferred` assumes a single innermost frame owns the
+///   pending verdicts.
+///
+/// Everything else is legal in all three positions — top level, inside a
+/// `frame`, and inside a `proc` body. (`expect` is the mirror image: legal
+/// *only* inside a frame, which `lower_expect` enforces on its own because it
+/// needs the frame to defer its verdict into.)
+fn legal_in_frame(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Pass | Stmt::Fail { .. } | Stmt::Config { .. } | Stmt::Frame { .. } => false,
+        Stmt::Raw { .. }
+        | Stmt::Send { .. }
+        | Stmt::CrcRegion { .. }
+        | Stmt::Recv { .. }
+        | Stmt::WaitState { .. }
+        | Stmt::Expect { .. }
+        | Stmt::Call { .. }
+        | Stmt::Repeat { .. } => true,
+    }
+}
+
 /// The best source span for a statement, for diagnostics. `pass` carries no
 /// span of its own, so it borrows the test's entry span.
 fn stmt_span(stmt: &Stmt, entry: &Span) -> Span {
@@ -946,6 +976,190 @@ mod tests {
             )
             .is_err(),
             "one expansion over the budget must be a diagnostic"
+        );
+    }
+
+    #[test]
+    fn every_stmt_variant_has_a_pinned_in_frame_legality() {
+        // Pins `legal_in_frame` over the WHOLE `Stmt` enum, both sides. The
+        // function is wildcard-free so a new variant will not compile until it
+        // is classified — this test is the other half: it makes *reclassifying*
+        // an existing variant a test failure rather than a silent behaviour
+        // change.
+        //
+        // The probe is the diagnostic, not `Ok`/`Err`: several variants fail in
+        // a frame for their own unrelated reasons (`Stmt::Call` names no
+        // declared `proc` here, `Stmt::Send` would need a real expression), so
+        // "legal in a frame" means precisely "does not produce *this*
+        // diagnostic".
+        let expr = || Expr::Int {
+            value: 0,
+            span: 0..1,
+        };
+        let raw = || Stmt::Raw {
+            mnemonic: "tar".into(),
+            operands: vec!["2".into()],
+            span: 0..1,
+        };
+        // Every variant of `parser::Stmt`, in declaration order, with the
+        // legality `legal_in_frame` must report.
+        let cases: Vec<(&str, Stmt, bool)> = vec![
+            ("Pass", Stmt::Pass, false),
+            (
+                "Fail",
+                Stmt::Fail {
+                    code: "0x22".into(),
+                    span: 0..1,
+                },
+                false,
+            ),
+            ("Raw", raw(), true),
+            (
+                "Send",
+                Stmt::Send {
+                    bytes: Expr::Bytes {
+                        elems: vec![expr()],
+                        span: 0..1,
+                    },
+                    append_crc: false,
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "CrcRegion",
+                Stmt::CrcRegion {
+                    sends: vec![Expr::Bytes {
+                        elems: vec![expr()],
+                        span: 0..1,
+                    }],
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "Config",
+                Stmt::Config {
+                    role: "controller".into(),
+                    io: "x1".into(),
+                    sck: "sck20".into(),
+                    alert: "alert_pin".into(),
+                    span: 0..1,
+                },
+                false,
+            ),
+            (
+                "Frame",
+                Stmt::Frame {
+                    body: vec![raw()],
+                    span: 0..1,
+                },
+                false,
+            ),
+            (
+                "Recv",
+                Stmt::Recv {
+                    targets: vec![crate::parser::RecvTarget::Discard],
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "WaitState",
+                Stmt::WaitState {
+                    bind: None,
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "Expect",
+                Stmt::Expect {
+                    else_code: expr(),
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "Call",
+                Stmt::Call {
+                    name: "nosuchproc".into(),
+                    name_span: 0..1,
+                    args: vec![],
+                    span: 0..1,
+                },
+                true,
+            ),
+            (
+                "Repeat",
+                Stmt::Repeat {
+                    count: Expr::Int {
+                        value: 1,
+                        span: 0..1,
+                    },
+                    body: vec![raw()],
+                    span: 0..1,
+                },
+                true,
+            ),
+        ];
+        for (name, stmt, want_legal) in cases {
+            // Direct unit check…
+            assert_eq!(
+                legal_in_frame(&stmt),
+                want_legal,
+                "`legal_in_frame` misclassifies `Stmt::{name}`"
+            );
+            // …and the behaviour it drives, end to end through `emit`.
+            let m = one(vec![
+                Stmt::Frame {
+                    body: vec![stmt],
+                    span: 0..1,
+                },
+                Stmt::Pass,
+            ]);
+            let rejected = emit(&m, Env::new())
+                .err()
+                .is_some_and(|ds| ds[0].message.contains("not allowed inside a `frame`"));
+            assert_eq!(
+                !rejected, want_legal,
+                "`Stmt::{name}` inside a `frame`: expected legal = {want_legal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rejected_statement_anchors_on_itself_not_on_the_test_entry() {
+        // The other half of the guard: `legal_in_frame` decides *whether* to
+        // reject, `stmt_span` decides *where the caret lands*. Nothing pinned
+        // the latter — the only span assertion in the suite is on `Stmt::Pass`
+        // (`lib.rs::pass_inside_a_frame_points_at_the_test_not_the_file_start`),
+        // and `stmt_span(Pass, entry) == entry`, so it cannot tell
+        // `stmt_span(stmt, entry)` from a bare `entry.clone()`. Use a variant
+        // that carries its own span, and give it one that differs from the
+        // entry's.
+        let m = one(vec![
+            Stmt::Frame {
+                body: vec![Stmt::Fail {
+                    code: "0x22".into(),
+                    span: 40..45,
+                }],
+                span: 0..1,
+            },
+            Stmt::Pass,
+        ]);
+        let err = emit(&m, Env::new())
+            .err()
+            .expect("`fail` inside a `frame` is rejected");
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(
+            err[0].primary,
+            40..45,
+            "the caret must land on the offending statement, not the test entry"
         );
     }
 
