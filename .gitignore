@@ -3,6 +3,9 @@
 # ──────────────────────────────────────────────────────────────────────────
 /target
 **/*.rs.bk
+# Compiled bytecode emitted next to the source by `tamal-asm`/`tamalc`
+# (`<input>.bin`, e.g. examples/smoke.bin) — build artifacts, not sources.
+/examples/*.bin
 # Cargo.lock IS committed (we ship binaries) — do not ignore it.
 
 # ──────────────────────────────────────────────────────────────────────────

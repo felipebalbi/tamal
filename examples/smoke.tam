@@ -1,0 +1,4 @@
+// smoke.tam - the tamal-lang equivalent of examples/smoke_halt.s
+test smoke {
+    pass
+}

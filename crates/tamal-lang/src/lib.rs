@@ -1,0 +1,1587 @@
+//! `tamal-lang` — the compiler for tamal-lang, a high-level language that lowers
+//! to tamal assembly text and, through [`tamal_asm::assemble`], to tamal
+//! bytecode. See `docs/superpowers/specs/2026-07-20-tamal-lang-design.md`.
+
+#![forbid(unsafe_code)]
+
+pub use tamal_asm::{Diagnostic, Severity, Span};
+
+pub mod consteval;
+pub mod emit;
+pub mod lexer;
+pub mod parser;
+pub mod regalloc;
+
+pub use emit::Lowering;
+
+/// The largest compile-time unroll (`repeat N`, `recv N`) the compiler accepts.
+///
+/// A tamal program is capped at 1024 words, so a larger unroll can never
+/// assemble; rejecting it up front turns what would be an out-of-memory into a
+/// diagnostic. Note this is a *per-construct* bound and does not by itself
+/// bound composition — see `MAX_EMITTED_LINES` in `emit.rs`.
+pub const MAX_UNROLL: i64 = 1024;
+
+use tamal_asm::Program;
+
+/// Lower tamal-lang source to tamal-asm text plus its source map.
+///
+/// Validates the callable names (`fn` and `proc`) and installs the `fn` table,
+/// resolves `const`s, then requires exactly one `test` per file (one program
+/// entry point); zero or many is a diagnostic, and a test that can never halt
+/// is rejected.
+pub fn lower(source: &str) -> Result<Lowering, Vec<Diagnostic>> {
+    let toks = lexer::lex(source)?;
+    let module = parser::parse(source, &toks)?;
+    let mut env = consteval::Env::new();
+    // Install the `fn` table first: a `const` may be built by a compile-time
+    // helper, so every `fn` must be callable before any `const` resolves. The
+    // `const`s themselves still resolve in source order, and a `fn` called from
+    // a `const` is expanded at that point — so its body sees only the `const`s
+    // defined ABOVE the calling `const`, not the whole module.
+    for f in &module.fns {
+        check_callable_name(&f.name, &f.name_span, "fn")?;
+        if !env.define_fn(f.clone()) {
+            return Err(vec![Diagnostic::error(
+                f.name_span.clone(),
+                format!("duplicate fn `{}`", f.name),
+            )]);
+        }
+    }
+    // `proc`s are expanded by the emitter, but their names are validated here,
+    // beside the `fn`s, so every callable-name collision is caught in one place.
+    for (i, p) in module.procs.iter().enumerate() {
+        check_callable_name(&p.name, &p.name_span, "proc")?;
+        if env.get_fn(&p.name).is_some() {
+            return Err(vec![Diagnostic::error(
+                p.name_span.clone(),
+                format!("`{}` is already defined as a `fn`", p.name),
+            )]);
+        }
+        if module.procs[..i].iter().any(|q| q.name == p.name) {
+            return Err(vec![Diagnostic::error(
+                p.name_span.clone(),
+                format!("duplicate proc `{}`", p.name),
+            )]);
+        }
+    }
+    // Resolve `const`s in source order; each may reference earlier ones.
+    // Duplicate names and references to undefined names are hard errors.
+    for c in &module.consts {
+        if env.has_const(&c.name) {
+            return Err(vec![Diagnostic::error(
+                c.name_span.clone(),
+                format!("duplicate const `{}`", c.name),
+            )]);
+        }
+        let v = consteval::eval(&c.value, &env).map_err(|d| vec![d])?;
+        env.insert_const(c.name.clone(), v);
+    }
+    if module.tests.len() != 1 {
+        let span = module
+            .tests
+            .get(1)
+            .map(|t| t.name_span.clone())
+            .unwrap_or(0..0);
+        return Err(vec![Diagnostic::error(
+            span,
+            format!(
+                "a .tam file must contain exactly one `test` (found {})",
+                module.tests.len()
+            ),
+        )]);
+    }
+    // M2: every test must reach a terminator (`pass`, `fail`, or a raw `halt`).
+    // `wait_state`/`expect` add branches (a poll loop, a verdict `bnez`), but
+    // none of them is a program terminator, so this scan for at least one
+    // terminator statement still soundly rejects a body that would run the
+    // engine off the end (e.g. a `frame { expect … }` with no following `pass`).
+    let test = &module.tests[0];
+    let halts = test.stmts.iter().any(|s| match s {
+        parser::Stmt::Pass | parser::Stmt::Fail { .. } => true,
+        parser::Stmt::Raw { mnemonic, .. } => mnemonic == "halt",
+        parser::Stmt::Send { .. } => false,
+        parser::Stmt::CrcRegion { .. } => false,
+        parser::Stmt::Config { .. } => false,
+        parser::Stmt::Frame { .. } => false,
+        parser::Stmt::Recv { .. } => false,
+        parser::Stmt::WaitState { .. } => false,
+        parser::Stmt::Expect { .. } => false,
+        parser::Stmt::Call { .. } => false,
+        // Conservative, like `Frame` and `Call`: a `repeat` body may execute
+        // zero times, so a verdict inside one is never counted as reaching a
+        // halt. A verdict belongs at the top level of the test.
+        parser::Stmt::Repeat { .. } => false,
+    });
+    if !halts {
+        return Err(vec![
+            Diagnostic::error(
+                test.name_span.clone(),
+                format!("test `{}` never halts", test.name),
+            )
+            .with_help(
+                "a test must reach `pass`, `fail`, or a `halt` at the top level of the test — a verdict inside a `frame`, `proc`, or `repeat` body is not counted",
+            ),
+        ]);
+    }
+    emit::emit(&module, env)
+}
+
+/// Reject a callable name that is already spoken for. `kind` is `"fn"` or
+/// `"proc"`, for the diagnostic.
+///
+/// Two classes of reserved name, shared by both callables because they share
+/// one namespace (a `proc` may not collide with a `fn`, and vice versa), so the
+/// set of legal names must not depend on the kind:
+///
+/// * a compile-time **builtin** — it must always mean the same thing;
+/// * a **statement keyword** — `parse_stmt` matches those before it would ever
+///   see a call, so `proc send() { … }` is definable but uncallable. A `fn` of
+///   that name *is* reachable (calls appear in expression position, e.g.
+///   `send send(1)`), but it is rejected all the same: converting a `fn` to a
+///   `proc` must never turn a legal name illegal.
+fn check_callable_name(name: &str, span: &Span, kind: &str) -> Result<(), Vec<Diagnostic>> {
+    if consteval::BUILTINS.contains(&name) {
+        return Err(vec![
+            Diagnostic::error(
+                span.clone(),
+                format!("`{name}` is a builtin and cannot be redefined"),
+            )
+            .with_help(format!(
+                "the builtins are {}",
+                consteval::BUILTINS.join(", ")
+            )),
+        ]);
+    }
+    if parser::STMT_KEYWORDS.contains(&name) {
+        return Err(vec![
+            Diagnostic::error(
+                span.clone(),
+                format!("`{name}` is a statement keyword and cannot be used as a `{kind}` name"),
+            )
+            .with_help(format!(
+                "the statement keywords are {}",
+                parser::STMT_KEYWORDS.join(", ")
+            )),
+        ]);
+    }
+    Ok(())
+}
+
+/// Lower to just the tamal-asm text (the `--emit asm` artifact).
+pub fn lower_to_asm(source: &str) -> Result<String, Vec<Diagnostic>> {
+    Ok(lower(source)?.asm)
+}
+
+/// Compile tamal-lang source to a tamal [`Program`] (bytecode), lowering to
+/// asm text and handing it to the [`tamal_asm::assemble`] backend. Backend
+/// diagnostics are re-pointed at the `.tam` source via the lowering's map.
+pub fn compile(source: &str) -> Result<Program, Vec<Diagnostic>> {
+    let lowering = lower(source)?;
+    tamal_asm::assemble(&lowering.asm).map_err(|diags| lowering.remap(diags))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The emission budget's message, derived from the constant. `emit.rs`'s
+    /// boundary tests already build their programs from these; matching on a
+    /// hard-coded "4096" here would make a retune fail as a confusing string
+    /// mismatch in eight tests instead of on the boundary in one.
+    fn line_budget_msg() -> String {
+        format!("more than {} asm lines", emit::MAX_EMITTED_LINES)
+    }
+
+    /// The expansion budget's message, derived from the constant.
+    fn expansion_budget_msg() -> String {
+        format!("more than {} expansions", emit::MAX_EXPANSIONS)
+    }
+
+    #[test]
+    fn lowers_smoke_to_asm() {
+        let asm = lower_to_asm("test smoke {\n    pass\n}\n").unwrap();
+        assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
+    }
+
+    #[test]
+    fn compile_pass_is_one_halt_word() {
+        let prog = compile("test smoke {\n    pass\n}\n").unwrap();
+        let words: Vec<u32> = prog.words().collect();
+        assert_eq!(words, vec![0x4000_0000]); // CTRL group, HALT sub, imm 0
+    }
+
+    #[test]
+    fn rejects_zero_tests() {
+        let err = lower_to_asm("// just a comment\n").unwrap_err();
+        assert!(err[0].message.contains("exactly one `test`"));
+    }
+
+    #[test]
+    fn rejects_multiple_tests() {
+        let src = "test a {\n pass\n}\ntest b {\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(err[0].message.contains("exactly one `test`"));
+    }
+
+    // M2: a test whose body cannot reach a terminator would run the engine off
+    // the end of the program. Such a test must be rejected, not compiled to an
+    // empty/haltless program.
+    #[test]
+    fn rejects_test_with_no_statements() {
+        let err = lower_to_asm("test empty {\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"));
+    }
+
+    #[test]
+    fn rejects_test_that_never_halts() {
+        let err = lower_to_asm("test t {\n cs_assert\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"));
+    }
+
+    #[test]
+    fn accepts_raw_halt_as_terminator() {
+        // a raw `halt` instruction is a valid terminator on its own
+        let prog = compile("test t {\n halt 0x05\n}\n").unwrap();
+        assert_eq!(prog.words().count(), 1);
+    }
+
+    // M1: a backend error on user-authored raw/fail content must be re-pointed
+    // at the `.tam` source (via the source map), not left indexing generated asm.
+    #[test]
+    fn compile_error_points_at_tam_for_bad_raw() {
+        let source = "test t {\n bogus_op\n pass\n}\n";
+        let err = compile(source).unwrap_err();
+        assert_eq!(
+            source.get(err[0].primary.clone()),
+            Some("bogus_op"),
+            "diagnostic should point at the .tam token, not generated asm"
+        );
+    }
+
+    #[test]
+    fn compile_error_points_at_tam_for_out_of_range_fail() {
+        let source = "test t {\n fail 300\n}\n";
+        let err = compile(source).unwrap_err();
+        let pointed = source.get(err[0].primary.clone()).unwrap_or("");
+        assert!(
+            pointed.contains("300"),
+            "diagnostic should point at the .tam `fail 300`, got {pointed:?}"
+        );
+    }
+
+    #[test]
+    fn resolves_const_referencing_earlier_const() {
+        assert!(lower_to_asm("const A = 0x40\nconst B = A\ntest t {\n pass\n}\n").is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_const() {
+        let err = lower_to_asm("const A = 1\nconst A = 2\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("duplicate const"));
+    }
+
+    #[test]
+    fn rejects_const_with_unknown_name() {
+        let err = lower_to_asm("const A = NOPE\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("unknown name"));
+    }
+
+    #[test]
+    fn send_lowers_to_put_byte_run() {
+        let asm =
+            lower_to_asm("const OP = 0x44\ntest t {\n send [OP, 0x00, 0x64]\n pass\n}\n").unwrap();
+        assert!(asm.contains("put_byte 0x44"));
+        assert!(asm.contains("put_byte 0x00"));
+        assert!(asm.contains("put_byte 0x64"));
+    }
+
+    #[test]
+    fn send_plus_crc8_appends_folded_byte() {
+        let asm = lower_to_asm("test t {\n send [0x44, 0x00, 0x64] + crc8\n pass\n}\n").unwrap();
+        assert!(asm.contains("put_byte 0x16")); // compile-time CRC-8, poly 0x07
+    }
+
+    #[test]
+    fn config_lowers_to_set_config() {
+        let asm =
+            lower_to_asm("test t {\n config controller, x1, sck20, alert_pin\n pass\n}\n").unwrap();
+        assert!(
+            asm.contains("\tset_config controller, x1, sck20, alert_pin\n"),
+            "got:\n{asm}"
+        );
+    }
+
+    #[test]
+    fn config_assembles_to_the_v1_config_word() {
+        // controller,x1,sck20,alert_pin packs to 0x00 -> SET_CONFIG word 0x5800_0000
+        let prog =
+            compile("test t {\n config controller, x1, sck20, alert_pin\n pass\n}\n").unwrap();
+        let words: Vec<u32> = prog.words().collect();
+        assert_eq!(words[0], 0x5800_0000);
+    }
+
+    #[test]
+    fn crc_region_folds_over_all_emitted_bytes() {
+        // the same three bytes as the peripheral command phase → the same 0x16
+        let asm = lower_to_asm(
+            "test t {\n crc_region {\n  send [0x44]\n  send [0x00, 0x64]\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert!(asm.contains("put_byte 0x44"));
+        assert!(asm.contains("put_byte 0x64"));
+        assert!(asm.contains("put_byte 0x16"));
+    }
+
+    #[test]
+    fn frame_wraps_body_in_cs_assert_deassert() {
+        let asm = lower_to_asm("test t {\n frame {\n  tar 2\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tcs_assert\n\ttar 2\n\tcs_deassert\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn recv_names_allocate_ascending_registers() {
+        let asm = lower_to_asm("test t {\n recv a, b, c\n pass\n}\n").unwrap();
+        assert!(asm.contains("\tget_byte x1\n"), "got:\n{asm}");
+        assert!(asm.contains("\tget_byte x2\n"), "got:\n{asm}");
+        assert!(asm.contains("\tget_byte x3\n"), "got:\n{asm}");
+    }
+
+    #[test]
+    fn recv_discards_reuse_the_same_scratch_register() {
+        // `_` is freed immediately, so three discards all reuse x1.
+        let asm = lower_to_asm("test t {\n recv _, _, _\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn frame_scope_frees_recv_registers_on_exit() {
+        // recv inside a frame binds x1,x2; after the frame a second recv reuses
+        // x1,x2 (the frame scope released them).
+        let asm =
+            lower_to_asm("test t {\n frame {\n  recv a, b\n }\n recv c, d\n pass\n}\n").unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(
+            gets,
+            vec![
+                "\tget_byte x1",
+                "\tget_byte x2",
+                "\tget_byte x1",
+                "\tget_byte x2"
+            ]
+        );
+    }
+
+    #[test]
+    fn wait_state_lowers_to_the_poll_idiom() {
+        let asm = lower_to_asm("test t {\n wait_state\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             __wait0:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait0\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn named_wait_state_keeps_the_terminal_byte_bound() {
+        // `wait_state term` keeps the response register live, so a following
+        // recv allocates the NEXT register (x2), not x1.
+        let asm = lower_to_asm("test t {\n wait_state term\n recv d\n pass\n}\n").unwrap();
+        // poll uses x1 (resp, kept) and x2 (constant, freed); recv d -> x2 reused.
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(gets, vec!["\tget_byte x1", "\tget_byte x2"]);
+    }
+
+    #[test]
+    fn expect_crc_defers_the_verdict_past_cs_deassert() {
+        let asm =
+            lower_to_asm("test t {\n frame {\n  expect crc else 0x11\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn expect_crc_outside_a_frame_is_an_error() {
+        let err = lower_to_asm("test t {\n expect crc else 0x11\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("inside a `frame`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn expect_requires_the_crc_keyword() {
+        let err =
+            lower_to_asm("test t {\n frame {\n  expect foo else 0x11\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("expected `crc`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn expect_requires_the_else_keyword() {
+        // `then` is a valid identifier but not `else`, so it reaches the guard.
+        let err =
+            lower_to_asm("test t {\n frame {\n  expect crc then 0x11\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("`else <byte>`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn config_inside_a_frame_is_rejected() {
+        let err = lower_to_asm(
+            "test t {\n frame {\n  config controller, x1, sck20, alert_pin\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0].message
+        );
+    }
+
+    #[test]
+    fn fn_call_folds_to_its_returned_value() {
+        // A `fn` disappears entirely: the call is replaced by its bytes, and
+        // `+ crc8` folds the CRC over exactly those bytes (0x16).
+        let asm = lower_to_asm(
+            "fn iord_hdr(op: byte, addr: int) -> bytes { [op, hi(addr), lo(addr)] }\n\
+             test t {\n send iord_hdr(0x44, 0x0064) + crc8\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_const_can_call_a_fn() {
+        // The `fn` table is installed before `const`s resolve, so a `const` may
+        // be built by a compile-time helper.
+        let asm = lower_to_asm(
+            "fn iord_hdr(op: byte, addr: int) -> bytes { [op, hi(addr), lo(addr)] }\n\
+             const HDR = iord_hdr(0x44, 0x0064)\n\
+             test t {\n send HDR + crc8\n pass\n}\n",
+        )
+        .unwrap();
+        assert!(asm.contains("\tput_byte 0x16\n"), "got:\n{asm}");
+    }
+
+    #[test]
+    fn a_recursive_fn_is_rejected() {
+        let err = lower_to_asm("fn f(n: int) -> int { f(n) }\ntest t {\n send [f(1)]\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn mutual_recursion_between_fns_is_rejected() {
+        // `f` → `g` → `f`. The guard must scan the WHOLE in-progress chain, not
+        // just its innermost entry: at the inner call the chain is ["f", "g"]
+        // and it is the *outer* `f` that makes this recursion. Checking only
+        // the last entry would loop until the host stack dies.
+        let err = lower_to_asm(
+            "fn f(n: int) -> int { g(n) }\n\
+             fn g(n: int) -> int { f(n) }\n\
+             test t {\n send [f(1)]\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_self_referential_parameter_default_is_rejected() {
+        // A default belongs to the callee's own declaration, so the callee is
+        // already being expanded when the default runs. Before this was
+        // handled, the compiler overflowed its stack and aborted with no
+        // diagnostic at all.
+        let src = "fn f(n: int = f()) -> int { n }\ntest t {\n send [f()]\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+        // The anchor is the non-obvious part: it points at the `f()` INSIDE the
+        // default, not at the `fn` item and not at the `f()` in the test body —
+        // the default is where the author has to break the cycle.
+        let in_default = src.find("= f()").unwrap() + 2;
+        assert_eq!(
+            err[0].primary,
+            in_default..in_default + 3,
+            "anchored on the `f()` inside the default"
+        );
+    }
+
+    #[test]
+    fn a_default_cycle_between_two_fns_is_rejected() {
+        // The default cycle need not be direct: `f`'s default calls `g`, whose
+        // default calls `f`.
+        let err = lower_to_asm(
+            "fn f(n: int = g()) -> int { n }\n\
+             fn g(m: int = f()) -> int { m }\n\
+             test t {\n send [f()]\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("is already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn nested_calls_to_the_same_fn_are_legal() {
+        // The regression guard for the recursion fix. An ARGUMENT is written at
+        // the call site and is evaluated in the caller's scope with the callee
+        // NOT yet on the chain, so `f(f(1))` is ordinary nesting, not recursion.
+        // Pushing the callee before binding arguments would "fix" the default
+        // cycle above while silently rejecting this — hence the exact bytes.
+        let asm =
+            lower_to_asm("fn f(n: int) -> int { n ^ 0x10 }\ntest t {\n send [f(f(1))]\n pass\n}\n")
+                .unwrap();
+        // f(1) = 1 ^ 0x10 = 0x11; f(0x11) = 0x11 ^ 0x10 = 0x01.
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x01\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_default_may_call_a_different_fn() {
+        // The guard must reject cycles without outlawing a default that simply
+        // delegates to another compile-time helper.
+        let asm = lower_to_asm(
+            "fn base() -> int { 0x40 }\n\
+             fn f(n: int = base()) -> int { n }\n\
+             test t {\n send [f()]\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_fn_body_must_produce_its_declared_type() {
+        let err = lower_to_asm("fn bad(n: int) -> bytes { n }\ntest t {\n send bad(5)\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("expects `bytes`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_fn_may_not_shadow_a_builtin() {
+        let err =
+            lower_to_asm("fn crc8(b: bytes) -> byte { 0 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("builtin"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_duplicate_fn_is_rejected() {
+        let err = lower_to_asm(
+            "fn f(n: int) -> int { n }\nfn f(n: int) -> int { n }\ntest t {\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(err[0].message.contains("duplicate fn"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_fn_argument_resolves_in_the_calling_fns_scope() {
+        // An argument expression is written at the CALL site, so it must be
+        // evaluated in the caller's scope — here `addr` is `hdr`'s parameter,
+        // passed on to `lo_byte`. `bind_args` is handed the caller's `env` for
+        // exactly this reason; passing `env.default_scope_for(…)` instead would
+        // make this `unknown name `addr``. Task 3 pins the rule inside the
+        // binder; this pins the `eval_fn_call` call site that feeds it.
+        let asm = lower_to_asm(
+            "fn lo_byte(n: int) -> byte { lo(n) }\n\
+             fn hdr(addr: int) -> bytes { [0x44, hi(addr), lo_byte(addr)] }\n\
+             test t {\n send hdr(0x0064)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_proc_call_inlines_its_body() {
+        let asm = lower_to_asm(
+            "proc cfg() { config controller, x1, sck20, alert_pin }\n\
+             test t {\n cfg()\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tset_config controller, x1, sck20, alert_pin\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn proc_parameters_are_visible_in_its_body() {
+        let asm = lower_to_asm(
+            "proc emit_pkt(pkt: bytes) { send pkt + crc8 }\n\
+             test t {\n emit_pkt([0x44, 0x00, 0x64])\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tput_byte 0x44\n\tput_byte 0x00\n\tput_byte 0x64\n\tput_byte 0x16\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn two_expansions_get_fresh_registers_and_labels() {
+        // Hygiene (D2/D5): each expansion re-uses the same registers (the
+        // previous one released them) but never the same label.
+        let asm =
+            lower_to_asm("proc poll() { wait_state }\ntest t {\n poll()\n poll()\n pass\n}\n")
+                .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             __wait0:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait0\n\
+             __wait1:\n\tcrc_reset\n\tget_byte x1\n\tli x2, 0x0F\n\tbeq x1, x2, __wait1\n\
+             \thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_proc_expansion_cannot_clobber_a_live_caller_register() {
+        let asm = lower_to_asm(
+            "proc read() { recv inner }\n\
+             test t {\n recv keep\n read()\n recv after\n pass\n}\n",
+        )
+        .unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        // `keep` holds x1 across the call, so the callee is handed x2 — and
+        // releases it on exit, so the next binding reuses x2.
+        assert_eq!(
+            gets,
+            vec!["\tget_byte x1", "\tget_byte x2", "\tget_byte x2"]
+        );
+    }
+
+    #[test]
+    fn a_proc_call_inside_a_frame_defers_its_expect_to_that_frame() {
+        let asm = lower_to_asm(
+            "proc verify() { expect crc else 0x11 }\n\
+             test t {\n frame {\n  verify()\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_inside_a_proc_survives_later_allocations() {
+        // The residue lives in the proc's scope but is branched on at the
+        // frame's exit: the `recv` after the call must NOT be handed x1.
+        let asm = lower_to_asm(
+            "proc verify() { expect crc else 0x11 }\n\
+             test t {\n frame {\n  verify()\n  recv extra\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_two_expansions_deep_survives_every_scope_exit() {
+        // The hard case for `exit_expansion_scope`: `inner` latches the
+        // residue, `outer` allocates after it, and the frame allocates after
+        // that. Ownership of the residue register has to walk outward one scope
+        // at a time — inner -> outer -> frame — so a single `reserve` at the
+        // innermost exit is not enough. `mid` and `late` both get x2 (each is
+        // released by the scope that owned it); neither may be handed x1.
+        let asm = lower_to_asm(
+            "proc inner() { expect crc else 0x11 }\n\
+             proc outer() { inner()\n recv mid\n }\n\
+             test t {\n frame {\n  outer()\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_recursive_proc_is_rejected() {
+        let err = lower_to_asm("proc p() { p() }\ntest t {\n p()\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn mutual_recursion_between_procs_is_rejected() {
+        // The guard must scan the WHOLE in-progress chain, not just its
+        // innermost entry: at the inner call the chain is ["a", "b"] and it is
+        // the *outer* `a` that makes this recursion. Checking only the last
+        // entry does not merely mis-report — it inlines until the host stack
+        // dies (a SIGABRT with no diagnostic at all).
+        let err = lower_to_asm(
+            "proc a() { b() }\n\
+             proc b() { a() }\n\
+             test t {\n a()\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("already being expanded"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn proc_parameters_do_not_leak_past_the_call() {
+        // D5 hygiene, the caller's half: the expansion swaps in the callee's
+        // value scope and must swap the caller's back. Here `N` is both a
+        // module `const` and a parameter, so a leaked scope is visible in the
+        // emitted bytes — the second `send` would re-emit the argument.
+        let asm = lower_to_asm(
+            "const N = 0x40\n\
+             proc p(N: int) { send [N] }\n\
+             test t {\n p(1)\n send [N]\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x01\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_nested_proc_call_forwards_an_argument_from_the_callers_scope() {
+        // Two properties in one program. First, a `proc` may call another
+        // `proc` — the expansion is recursive over the body. Second, an
+        // ARGUMENT is written at the call site, so `inner(x)` must resolve `x`
+        // against `outer`'s parameters: `bind_args` is handed the *caller's*
+        // env for exactly that reason. Passing a bare module scope instead
+        // would make this `unknown name `x``, while leaving the rest green.
+        let asm = lower_to_asm(
+            "proc inner(n: int) { send [n] }\n\
+             proc outer(x: int) { inner(x) }\n\
+             test t {\n outer(0x40)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tput_byte 0x40\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn a_proc_may_not_be_named_after_a_statement_keyword() {
+        // `proc send() {…}` is definable but uncallable: `send()` parses as the
+        // `send` statement and dies on the empty expression, with nothing to
+        // suggest the definition is unreachable. Reject it at the definition.
+        let err = lower_to_asm("proc send() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        // Anchored on the name being defined, and the help lists the words.
+        assert_eq!(err[0].primary, 5..9, "anchored on the `proc` name");
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("crc_region")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_proc_may_not_be_named_repeat() {
+        // `repeat` earns its place in STMT_KEYWORDS the same way `send` does:
+        // it is a `parse_stmt` arm, so `repeat()` parses as the `repeat`
+        // statement and `proc repeat() { … }` would be definable but
+        // uncallable. Pinned separately from the `send` case above because the
+        // list is only checked in one direction — removing `"repeat"` from
+        // STMT_KEYWORDS passes every other test in the suite.
+        let err = lower_to_asm("proc repeat() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(err[0].primary, 5..11, "anchored on the `proc` name");
+    }
+
+    #[test]
+    fn a_fn_may_not_be_named_after_a_statement_keyword_either() {
+        // A `fn` of that name IS reachable (`send send(1)` works, because calls
+        // appear in expression position). It is rejected anyway: `fn` and `proc`
+        // share one namespace, so converting one to the other must never turn a
+        // legal name illegal.
+        let err = lower_to_asm("fn recv(n: int) -> int { n }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("is a statement keyword"),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(err[0].message.contains("`fn` name"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_proc_may_not_shadow_a_builtin() {
+        // The `fn` rule (`a_fn_may_not_shadow_a_builtin`) applies to `proc`s
+        // too — one namespace, one set of legal names.
+        let err = lower_to_asm("proc crc8() { tar 2 }\ntest t {\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("builtin"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_duplicate_proc_is_rejected() {
+        // The emitter's `proc` table is a HashMap, so without this the second
+        // definition would silently win.
+        let err = lower_to_asm("proc p() { cs_assert }\nproc p() { tar 2 }\ntest t {\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("duplicate proc"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_terminator_inside_a_proc_body_does_not_satisfy_the_halt_scan() {
+        // The M2 scan is a *top-level* scan of the test's own statements, so a
+        // `pass` reachable only through an expansion does not count. That is
+        // deliberately conservative — this program would in fact halt — and the
+        // help text says so, so both are pinned together.
+        let err = lower_to_asm("proc p() { pass }\ntest t {\n p()\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"), "got: {:?}", err[0]);
+        assert!(
+            err[0].help.as_deref().is_some_and(|h| h
+                .contains("a verdict inside a `frame`, `proc`, or `repeat` body is not counted")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_fn_cannot_be_called_as_a_statement() {
+        let err =
+            lower_to_asm("fn f(n: int) -> int { n }\ntest t {\n f(1)\n pass\n}\n").unwrap_err();
+        assert!(err[0].message.contains("is a `fn`"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn an_unknown_call_is_rejected() {
+        let err = lower_to_asm("test t {\n nope()\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("unknown `proc`"),
+            "got: {:?}",
+            err[0]
+        );
+        // Anchored on the NAME, not on the whole call: the name is what is
+        // unknown and what the author retypes. `nope` starts at offset 10.
+        assert_eq!(
+            &"test t {\n nope()\n pass\n}\n"[err[0].primary.clone()],
+            "nope",
+            "the caret must cover just the name"
+        );
+        // Its `fn`-called-as-a-statement sibling carries help; so must this.
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("declare it as `proc")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_proc_may_not_collide_with_a_fn() {
+        let err = lower_to_asm(
+            "fn dup(n: int) -> int { n }\nproc dup() { cs_assert }\ntest t {\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains("already defined as a `fn`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_in_a_plain_frame_survives_later_allocations() {
+        // The same residue-liveness property as the proc case, without a proc:
+        // the register holding the residue must stay live until the `bnez`.
+        let asm = lower_to_asm(
+            "test t {\n frame {\n  recv a\n  expect crc else 0x11\n  recv b\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\
+             \tget_byte x2\n\trdsr x2, crc\n\
+             \tget_byte x3\n\
+             \tcs_deassert\n\
+             \tbnez x2, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn pass_inside_a_frame_points_at_the_test_not_the_file_start() {
+        // Task 5 gave `pass` a real span; without it the caret lands at 0..0,
+        // i.e. the start of the file.
+        let err = lower_to_asm("test t {\n frame {\n  pass\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(err[0].primary, 5..6, "the caret must land on `t`, not 0..0");
+    }
+
+    #[test]
+    fn fail_inside_a_frame_is_rejected() {
+        let err = lower_to_asm("test t {\n frame {\n  fail 0x22\n }\n pass\n}\n").unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_nested_frame_is_rejected() {
+        let err = lower_to_asm("test t {\n frame {\n  frame {\n   tar 2\n  }\n }\n pass\n}\n")
+            .unwrap_err();
+        assert!(
+            err[0].message.contains("not allowed inside a `frame`"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn repeat_unrolls_at_compile_time() {
+        let asm = lower_to_asm("test t {\n repeat 3 {\n  recv _\n }\n pass\n}\n").unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn repeat_zero_emits_nothing() {
+        // The OOB write-completion case: `ndata = 0` contributes no reads.
+        let asm = lower_to_asm("test t {\n repeat 0 {\n  recv _\n }\n pass\n}\n").unwrap();
+        assert_eq!(asm, ".globl _start\n_start:\n\thalt 0x00\n");
+    }
+
+    #[test]
+    fn a_repeat_count_may_come_from_a_proc_parameter() {
+        let asm = lower_to_asm(
+            "proc payload(n: int) { repeat n { recv _ } }\n\
+             test t {\n payload(2)\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\tget_byte x1\n\tget_byte x1\n\thalt 0x00\n"
+        );
+    }
+
+    #[test]
+    fn each_repeat_iteration_gets_its_own_register_scope() {
+        // `a` is released at the end of each iteration, so the next one reuses
+        // the same register instead of leaking a fresh one.
+        let asm = lower_to_asm("test t {\n repeat 2 {\n  recv a\n }\n pass\n}\n").unwrap();
+        let gets: Vec<&str> = asm.lines().filter(|l| l.contains("get_byte")).collect();
+        assert_eq!(gets, vec!["\tget_byte x1", "\tget_byte x1"]);
+    }
+
+    #[test]
+    fn an_oversized_repeat_is_rejected() {
+        let src = "test t {\n repeat 99999999 {\n  cs_assert\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains("not in 0..=1024"),
+            "got: {:?}",
+            err[0]
+        );
+        // The caret sits on the COUNT, not on the whole construct: the count is
+        // what the message names and what the user has to edit, and a caret
+        // spanning the body buries it. Matches `recv`'s cap, which points at
+        // its count too.
+        //
+        // Deliberately NOT the span the two budgets anchor on — those keep the
+        // whole `repeat`, so their expansion-chain labels read sensibly, and
+        // they are pinned independently by
+        // `the_line_budget_accuses_the_repeat_not_the_statement_under_it` and
+        // `the_expansion_budget_accuses_the_outermost_repeat_not_the_innermost`.
+        assert_eq!(
+            src.get(err[0].primary.clone()),
+            Some("99999999"),
+            "got: {:?}",
+            err[0].primary
+        );
+    }
+
+    #[test]
+    fn a_repeat_of_exactly_max_unroll_is_accepted() {
+        // The bound is inclusive: `MAX_UNROLL` itself is legal.
+        let src = format!("test t {{\n repeat {MAX_UNROLL} {{\n  cs_assert\n }}\n pass\n}}\n");
+        let asm = lower_to_asm(&src).unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), MAX_UNROLL as usize);
+    }
+
+    #[test]
+    fn a_repeat_one_over_max_unroll_is_rejected() {
+        let src = format!(
+            "test t {{\n repeat {} {{\n  cs_assert\n }}\n pass\n}}\n",
+            MAX_UNROLL + 1
+        );
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains("not in 0..=1024"),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn a_terminator_inside_a_repeat_does_not_satisfy_the_halt_scan() {
+        // The same conservative rule as `proc` and `frame`: a `repeat` body may
+        // run zero times, so a `pass` reachable only through one is not counted.
+        let err = lower_to_asm("test t {\n repeat 1 {\n  pass\n }\n}\n").unwrap_err();
+        assert!(err[0].message.contains("never halts"), "got: {:?}", err[0]);
+    }
+
+    #[test]
+    fn a_verdict_latched_inside_a_repeat_survives_later_allocations() {
+        // The residue is latched in the repeat iteration's scope but branched
+        // on at the frame's exit, so `recv late` must not be handed x1.
+        let asm = lower_to_asm(
+            "test t {\n frame {\n  repeat 1 {\n   expect crc else 0x11\n  }\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    #[test]
+    fn a_verdict_latched_in_a_repeat_in_a_proc_still_reaches_the_frame() {
+        // Two nested expansion scopes between the `expect` and the `frame` that
+        // consumes it: the residue register must be re-taken at *each* exit, so
+        // `recv late` still gets x2 rather than clobbering x1.
+        let asm = lower_to_asm(
+            "proc p() { repeat 1 { expect crc else 0x11 } }\n\
+             test t {\n frame {\n  p()\n  recv late\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            asm,
+            ".globl _start\n_start:\n\
+             \tcs_assert\n\
+             \tget_byte x1\n\trdsr x1, crc\n\
+             \tget_byte x2\n\
+             \tcs_deassert\n\
+             \tbnez x1, __fail0\n\
+             \thalt 0x00\n\
+             __fail0:\n\thalt 0x11\n"
+        );
+    }
+
+    /// A fan-out `proc` chain: `p0` calls `p1` twice, … `pN` emits one line.
+    /// `depth` levels expand to `2^depth` emitted lines from a source file of
+    /// only `4 * depth` lines — no single construct is large.
+    fn fanout_chain(depth: u32) -> String {
+        let mut src = format!("proc p{depth}() {{\n cs_assert\n}}\n");
+        for n in (0..depth).rev() {
+            src += &format!("proc p{n}() {{\n p{}()\n p{}()\n}}\n", n + 1, n + 1);
+        }
+        src + "test t {\n p0()\n pass\n}\n"
+    }
+
+    #[test]
+    fn a_fanout_proc_chain_cannot_outgrow_the_emission_budget() {
+        // 2^22 lines out of a 95-line file. Every `proc` is tiny and no
+        // `repeat` is involved, so `MAX_UNROLL` cannot see this one — only a
+        // central budget can.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(&fanout_chain(22)).unwrap_err();
+        assert!(
+            err[0].message.contains(&line_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        // The bug being prevented is a *hang*: a budget that records the error
+        // but lets the expansion run to completion still takes ~10 s here.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn nested_repeats_cannot_outgrow_the_emission_budget() {
+        // 1024 x 1024 lines, with each individual `repeat` inside MAX_UNROLL —
+        // the per-construct cap cannot bound the product.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "proc inner() { repeat 1024 { cs_assert } }\n\
+             test t {\n repeat 1024 {\n  inner()\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        // The MESSAGE is the load-bearing assertion, not the timer below: this
+        // program trips the *line* budget after ~4100 expansions, well under
+        // the expansion budget. Let the unroll run past the first error instead
+        // of stopping at it and the expansion budget trips too, so the reported
+        // diagnostic changes — which pins "stop at the budget" deterministically
+        // rather than by wall clock.
+        assert!(
+            err[0].message.contains(&line_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_program_near_the_real_limit_still_compiles() {
+        // The budget must bound runaway growth without rejecting legal work:
+        // 1000 emitted lines is a plausible program and must go through.
+        let asm = lower_to_asm("test t {\n repeat 1000 {\n  cs_assert\n }\n pass\n}\n").unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), 1000);
+    }
+
+    #[test]
+    fn nested_repeats_that_emit_nothing_cannot_outgrow_the_expansion_budget() {
+        // The blind spot the *emission* budget cannot see: a body that emits
+        // nothing (`send []` here, but `{ }`, `recv 0` and `repeat 0 { … }`
+        // behave the same) never reaches `push`, so the line budget never
+        // fires — while the unroll still costs a scope enter/exit per
+        // iteration. 2^30 of those took ~50 s and reported success.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n    send []\n   }\n  }\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains(&expansion_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_empty_repeat_body_still_costs_expansion_budget() {
+        // The strongest form of the same hole: the body is literally empty, so
+        // `Emitter::stmt` is never called for it at all. A counter at the top
+        // of `stmt` charges nothing for the innermost 1024 iterations — it
+        // undercounts by the innermost factor — which is why the charge belongs
+        // at the scope boundary, where the work actually happens.
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(
+            "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n",
+        )
+        .unwrap_err();
+        assert!(
+            err[0].message.contains(&expansion_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_fanout_proc_chain_of_empty_procs_cannot_outgrow_the_expansion_budget() {
+        // `fanout_chain`'s leaf emits a line, so the emission budget catches
+        // it. Give the leaf an empty body and the same 2^24-node tree emits
+        // nothing at all — 5 s of work, exit 0.
+        let mut src = String::from("proc p24() {\n}\n");
+        for n in (0..24).rev() {
+            src += &format!("proc p{n}() {{\n p{}()\n p{}()\n}}\n", n + 1, n + 1);
+        }
+        src += "test t {\n p0()\n pass\n}\n";
+        let start = std::time::Instant::now();
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains(&expansion_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "expansion must stop at the budget, not run to completion (took {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_a_zero_emitting_but_legal_unroll() {
+        // The false-rejection guard. `repeat MAX_UNROLL { send [] }` performs
+        // 1024 expansions while emitting nothing, so the expansion budget has
+        // to be meaningfully looser than the 4096-line one. 64x headroom here.
+        assert!(lower_to_asm("test t {\n repeat 1024 {\n  send []\n }\n pass\n}\n").is_ok());
+        // And the same shape through an empty `proc`: 2048 expansions.
+        assert!(
+            lower_to_asm("proc p() { }\ntest t {\n repeat 1024 {\n  p()\n }\n pass\n}\n").is_ok()
+        );
+    }
+
+    /// `repeat 1023 { repeat 1 { … repeat 1 { cs_assert } … } }` with `depth`
+    /// inner levels: 1023 emitted lines however deep it goes, so it isolates
+    /// nesting depth from output size. At depth 63 it assembles to exactly 1024
+    /// words — the instruction memory's hard cap.
+    fn deep_nest(depth: usize) -> String {
+        let mut body = String::from("  cs_assert\n");
+        for _ in 0..depth {
+            body = format!("  repeat 1 {{\n{body}  }}\n");
+        }
+        format!("test t {{\n repeat 1023 {{\n{body} }}\n pass\n}}\n")
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_the_densest_program_the_assembler_would_take() {
+        // The real worst case, and the honest statement of what MAX_EXPANSIONS
+        // costs. The emission budget puts NO bound on expansions-per-line — a
+        // single emitting statement can be nested arbitrarily deep — so this
+        // program sits on the assembler's own 1024-word cap while costing
+        // 1023 * 64 = 65472 expansions. The ratio the budget admits is 64 per
+        // emitted word; the comment this replaced claimed 16 per emitted line,
+        // which was wrong by ~64x.
+        let prog = compile(&deep_nest(63)).expect("1024 words at depth 63 must compile");
+        assert_eq!(
+            prog.words().count(),
+            1024,
+            "the assembler's own cap — a program cannot be more legal than this"
+        );
+    }
+
+    #[test]
+    fn one_nesting_level_past_the_densest_accepted_program_is_rejected() {
+        // The other side of the same boundary: 1023 * 65 = 66495 expansions for
+        // the same 1023 emitted lines. Pins that the budget is enforced on
+        // *depth*, which is the only thing that changes between the two.
+        let err = lower_to_asm(&deep_nest(64)).unwrap_err();
+        assert!(
+            err[0].message.contains(&expansion_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accepts_a_plan_5_shaped_program() {
+        // The false-rejection guard that matters: the shape Plan 5's `espi`
+        // stdlib produces — a `frame` `proc` calling two more, unrolling `recv`
+        // 64 times, driven by an outer `repeat`. A complete ~950-word program
+        // costs 816 expansions, 80x under the cap, and it is the *emission*
+        // budget that binds first as the shape is scaled up.
+        let asm = lower_to_asm(
+            "proc put_hdr(op: int, addr: int) { send [op, hi(addr), lo(addr)] + crc8 }\n\
+             proc response(ndata: int) {\n\
+              wait_state\n recv _\n repeat ndata { recv _ }\n expect crc else 0x11\n\
+             }\n\
+             proc command(op: int, addr: int, ndata: int) {\n\
+              frame { put_hdr(op, addr)\n response(ndata) }\n\
+             }\n\
+             test t {\n repeat 12 {\n  command(0x44, 0x0064, 64)\n }\n pass\n}\n",
+        )
+        .unwrap();
+        assert_eq!(asm.matches("cs_assert").count(), 12);
+    }
+
+    #[test]
+    fn the_emission_budget_accuses_the_outer_repeat_not_the_statement_it_overflowed_on() {
+        // Anchoring: the caret belongs on the construct the author has to
+        // shrink. The overflowing line lands on whichever body statement
+        // happens to be at line 4097 — `tar 2` here — which is specific but
+        // neither relevant nor stable: adding an unrelated statement earlier in
+        // the test would move it. The `repeat` is the culprit, and the
+        // overflowing statement stays as a secondary label.
+        let src = "test t {\n repeat 1024 {\n  cs_assert\n  cs_deassert\n  tar 2\n  crc_reset\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains(&line_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        let start = src.find("repeat").unwrap();
+        let end = src.find("}\n pass").unwrap() + 1;
+        assert_eq!(
+            err[0].primary,
+            start..end,
+            "the caret must land on the whole `repeat`, got {:?}",
+            src.get(err[0].primary.clone())
+        );
+        assert_eq!(
+            err[0]
+                .labels
+                .iter()
+                .map(|(s, t)| (src.get(s.clone()).unwrap_or(""), t.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("tar 2", "the budget ran out here")],
+            "the overflowing statement stays as a secondary label"
+        );
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("reduce a `repeat` count")),
+            "the actionable half of the message must survive, got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn the_expansion_budget_accuses_the_outermost_repeat_not_the_innermost() {
+        // The same policy for the expansion budget: the caret is the OUTERMOST
+        // expansion in progress, so it does not slide inward as the nesting
+        // deepens. Everything below it is labelled, ending with the `repeat`
+        // that was being entered when the budget ran out.
+        let src = "test t {\n repeat 1024 {\n  repeat 1024 {\n   repeat 1024 {\n   }\n  }\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains(&expansion_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        let start = src.find("repeat").unwrap();
+        let end = src.find("}\n pass").unwrap() + 1;
+        assert_eq!(
+            err[0].primary,
+            start..end,
+            "the caret must land on the OUTER `repeat`, got {:?}",
+            src.get(err[0].primary.clone())
+        );
+        let starts: Vec<usize> = src.match_indices("repeat").map(|(i, _)| i).collect();
+        assert_eq!(
+            err[0]
+                .labels
+                .iter()
+                .map(|(s, t)| (s.start, t.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (starts[1], "nested expansion"),
+                (starts[2], "the budget ran out here"),
+            ],
+            "every `repeat` below the caret is labelled, innermost last"
+        );
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("even when its body emits nothing")),
+            "the actionable half of the message must survive, got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_budget_diagnostic_names_every_expansion_between_its_two_ends() {
+        // The shape a bundled stdlib produces, and the one anchoring alone
+        // cannot diagnose: the author writes one small call and the runaway
+        // unroll is library-internal. The caret lands on `repeat 1` — innocent
+        // and unshrinkable — and the overflow point is a lone `cs_assert`, also
+        // innocent. The culprit is the pair of `repeat 1024`s in `big`, which
+        // is NEITHER end, so every expansion in the chain has to be named.
+        let src = "proc big() {\n repeat 1024 {\n  repeat 1024 {\n   cs_assert\n  }\n }\n}\n\
+                   test t {\n repeat 1 {\n  big()\n }\n pass\n}\n";
+        let err = lower_to_asm(src).unwrap_err();
+        assert!(
+            err[0].message.contains(&line_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(
+            src.get(err[0].primary.start..err[0].primary.start + 8),
+            Some("repeat 1"),
+            "the caret stays on the outermost expansion"
+        );
+        // Outermost first: the call, then both library-internal `repeat`s, then
+        // the line that actually overflowed. Spans are asserted whole, not just
+        // by start offset — the call's site must be `big()`, not the bare name
+        // `big`, and each `repeat`'s must run to its closing brace.
+        let rendered: Vec<(&str, &str)> = err[0]
+            .labels
+            .iter()
+            .map(|(s, t)| (&src[s.clone()], t.as_str()))
+            .collect();
+        assert_eq!(rendered.len(), 4, "got: {rendered:?}");
+        assert_eq!(rendered[0], ("big()", "nested expansion"));
+        for (i, (text, label)) in rendered[1..3].iter().enumerate() {
+            assert!(
+                text.starts_with("repeat 1024 {") && text.ends_with('}'),
+                "label {} must cover a whole `repeat`, got {text:?}",
+                i + 1
+            );
+            assert_eq!(*label, "nested expansion");
+        }
+        assert_eq!(rendered[3], ("cs_assert", "the budget ran out here"));
+        assert!(
+            err[0]
+                .help
+                .as_deref()
+                .is_some_and(|h| h.contains("reduce a `repeat` count")),
+            "got: {:?}",
+            err[0].help
+        );
+    }
+
+    #[test]
+    fn a_budget_diagnostic_outside_any_expansion_keeps_its_own_span() {
+        // The fallback half of the anchoring policy: with nothing expanding
+        // there is no outer construct to accuse, so the caret stays on the
+        // overflowing line — and the label would just duplicate it, so there is
+        // none. The leading `repeat` is load-bearing: it *finishes* before the
+        // overflow, so an expansion-site stack that is pushed but never popped
+        // would still accuse it here.
+        let filler = "cs_assert\n".repeat(4096);
+        let src = format!("test t {{\n repeat 2 {{\n  crc_reset\n }}\n{filler} pass\n}}\n");
+        let err = lower_to_asm(&src).unwrap_err();
+        assert!(
+            err[0].message.contains(&line_budget_msg()),
+            "got: {:?}",
+            err[0]
+        );
+        assert_eq!(src.get(err[0].primary.clone()), Some("cs_assert"));
+        assert!(err[0].labels.is_empty(), "got: {:?}", err[0].labels);
+    }
+
+    #[test]
+    fn a_trailer_that_does_not_fit_the_budget_is_a_diagnostic() {
+        // `flush_trailers` runs after the test body, so its pushes are the ones
+        // whose errors nothing downstream would notice. Swallow the first and
+        // the `bnez` branching to `__fail0` survives with no `__fail0:` label to
+        // land on — a confusing backend complaint about an undefined symbol
+        // instead of the budget. Swallow the *second* and it is worse: the
+        // label is emitted with no `halt` under it, so the verdict branch falls
+        // off the end of the program. Both pushes are checked.
+        //
+        // `slack` places the overflow precisely: prologue (2) + cs_assert +
+        // get_byte + rdsr + cs_deassert + bnez (5) + filler + halt (1) leaves
+        // `MAX_EMITTED_LINES - slack + 8` pushes before the flush. That sizing
+        // is the whole test, so the caret is asserted rather than the sizing
+        // merely stated — drift the filler and the message stays byte-identical
+        // while the overflow moves to a plain `cs_assert` and `flush_trailers`
+        // is never reached at all.
+        let overflow_in_trailer = |slack: usize| {
+            let filler = "cs_assert\n".repeat(emit::MAX_EMITTED_LINES - slack);
+            let src =
+                format!("test t {{\n frame {{\n  expect crc else 0x11\n }}\n{filler} pass\n}}\n");
+            let err = compile(&src).unwrap_err();
+            assert!(
+                err[0].message.contains(&line_budget_msg()),
+                "slack {slack}, got: {:?}",
+                err[0]
+            );
+            // `flush_trailers` carries the `expect`'s span, so a caret there
+            // proves a trailer push really was the overflowing one.
+            assert_eq!(
+                src.get(err[0].primary.clone()),
+                Some("expect crc else 0x11"),
+                "slack {slack}: the overflow must land in `flush_trailers`"
+            );
+        };
+        overflow_in_trailer(8); // the `__fail0:` label line is push MAX + 1
+        overflow_in_trailer(9); // the label fits; the `halt` line is push MAX + 1
+    }
+}
